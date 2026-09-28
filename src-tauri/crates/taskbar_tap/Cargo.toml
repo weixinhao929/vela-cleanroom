@@ -1,0 +1,52 @@
+[package]
+name = "velatap"
+version = "0.1.0"
+description = "Vela taskbar TAP: XAML Diagnostics tap DLL injected into explorer.exe (TB-TAP fills)"
+authors = ["浩浩浩"]
+license = "MIT"
+edition = "2021"
+publish = false
+
+# 产物 velatap.dll（x64，与 explorer 同位数）。协议定义共享主 crate 的
+# src/taskbar/protocol.rs（#[path] 包含，见 lib.rs）。
+# rlib 追加是为 cargo test / examples（inject_demo）能链接本 crate；
+# cdylib 仍是唯一发布产物。
+[lib]
+name = "velatap"
+crate-type = ["cdylib", "rlib"]
+
+# 铁律（需求 R1）：DLL 跑在 explorer 进程内，panic 只能是 abort。
+# Cargo 只认 workspace 根（src-tauri/Cargo.toml）里的 [profile]，本会话
+# 无权改根 manifest —— 等效防线已内置：
+#   1) 每个 COM/FFI 入口都包 catch_unwind，panic 永不出界；
+#   2) extern "system" 非 unwind ABI：即便漏网，unind 到边界也是立即 abort。
+# 合根时建议 CORE 在 workspace 根补：
+#   [profile.dev]   panic = "abort"
+#   [profile.release] panic = "abort", opt-level = "z"
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-core = "0.61"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_IO",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_WinRT",
+    "Win32_System_Ole",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_UI_WindowsAndMessaging",
+    "Foundation",
+    "System",
+    "UI",
+    "Graphics_Effects",
+    "UI_Composition",
+] }

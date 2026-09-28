@@ -1,0 +1,33 @@
+/* === 整行点击完成：DDL 面板 === */
+.deadline-row {
+  cursor: pointer;
+  border-radius: var(--rad-10);
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.deadline-row:hover {
+  background: var(--surface-soft);
+}
+/* 已完成：文字变灰 + 删除线 */
+.deadline-row.done .deadline-copy strong,
+.deadline-row.done .deadline-copy span {
+  color: var(--muted-2);
+}
+.deadline-row.done .deadline-copy strong {
+  text-decoration: line-through;
+}
+.deadline-row.done .date-tile {
+  opacity: 0.5;
+}
+
+/* === 整行点击完成：今日待办 === */
+.task-row {
+  cursor: pointer;
+  border-radius: var(--rad-10);
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.task-row:hover {
+  background: var(--surface-soft);
+}
+/* #104 删除退场（fade + collapse）：唯一定义地在 widget-anim.css（静态加载、
+   含 max-height 收拢）。此处原有一份缺收拢参数的重复定义，已收敛删除，
+   避免两处时长/参数漂移。 */

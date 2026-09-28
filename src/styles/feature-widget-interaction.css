@@ -1,0 +1,215 @@
+﻿/* === 小组件交互增强：点击置顶 / 悬停反馈 / 菜单动画 === */
+
+/* A11（审计合并）：.widget-card 静息阴影/过渡与 hover 反馈已统一收编到
+   widget.css 单一出处——本文件此前动态加载，双写导致加载前后 transition
+   列表不一致、background-color 过渡丢失。此处只保留拖拽态与菜单动画等
+   真正的「交互增强」。 */
+
+/* 拖拽中：轻微放大托起手感 + 主色轮廓环 + 最深一档分层投影，明确"被抓起"
+   的层级；投影只跟随被拖拽的卡片本身，不越界盖到相邻悬浮窗。
+   预览位移由 WidgetCard 逐帧写 --drag-dx/--drag-dy（合成器路径），在此与
+   scale(1.01) 组合进同一 transform——此前 scale 被内联 transform 整体覆盖，
+   只在按下一瞬可见；改变量后整个拖拽期都保持托起态。 */
+.widget-card.dragging {
+  transform: translate3d(var(--drag-dx, 0px), var(--drag-dy, 0px), 0) scale(1.01);
+  /* 拖拽期间从过渡列表移除 transform：预览位移需 1:1 跟随指针；若过渡生效，
+     卡片会滞后于指针并在松手提交帧瞬时追平，叠加成"松手滑一小段"。 */
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--anim-dur, 0.25s) var(--ease-fx, ease);
+  box-shadow:
+    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 8%, transparent),
+    0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 10px 28px -8px var(--widget-drag-shadow, rgba(0, 0, 0, 0.18)),
+    0 28px 64px -20px var(--widget-drag-shadow, rgba(0, 0, 0, 0.18));
+}
+
+/* BentoDesk #2 拖拽合并投放目标：主色虚线环 + 类挂上时的一次性扩散脉冲，
+   提示「松手即合并到此卡」。此前命中判定只在松手后弹 toast，拖拽全程没有
+   投放意图提示。仅 border/box-shadow（重绘级，一次性动画短于 1s），
+   环本体由 border 过渡（基础声明）平滑浮现。 */
+.widget-card.merge-target {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line-strong));
+  animation: w-merge-pulse calc(0.6s * var(--fx-scale, 1)) var(--ease-fx, ease);
+}
+@keyframes w-merge-pulse {
+  from {
+    box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+/* C. 右键菜单打开动画：淡入 + 轻微缩放/上移，时长跟随 --anim-dur。 */
+@keyframes tw-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.widget-menu {
+  transform-origin: top left;
+  animation: tw-menu-in var(--anim-dur, 0.25s) var(--ease-out) both;
+}
+
+/* === 待办 / DDL 悬浮窗打磨 ===
+   视作独立小应用：列表在浮窗内滚动，行内空间更舒展，视觉层级清晰。 */
+.widget-card .tasks-panel,
+.widget-card .deadline-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 列表在浮窗内独立滚动，不撑破卡片。
+   P2 三轮：滚动条由「彻底隐藏」改为「悬停浮现」——长列表无可滚暗示的问题
+   修掉，非悬停时保持极简观感（thumb 透明，列表 hover 时浮现全局 3px 细条）。 */
+.widget-card .task-list,
+.widget-card .deadline-groups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.widget-card .task-list:hover,
+.widget-card .deadline-groups:hover {
+  scrollbar-color: var(--sb-thumb) transparent;
+}
+.widget-card .task-list::-webkit-scrollbar-thumb,
+.widget-card .deadline-groups::-webkit-scrollbar-thumb {
+  background: transparent;
+  transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.widget-card .task-list:hover::-webkit-scrollbar-thumb,
+.widget-card .deadline-groups:hover::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+}
+
+/* 待办行：更舒展的间距与更利落的完成勾选 */
+.widget-card .task-row {
+  padding: 9px 6px 9px 4px;
+  border-radius: var(--rad-10);
+}
+.widget-card .task-row .check-button {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--rad-7);
+}
+
+/* DDL：日期瓷片更精致，行内主次更分明 */
+.widget-card .date-tile {
+  width: 40px;
+  border-radius: var(--rad-11);
+  padding: 4px 0;
+  background: var(--surface-soft);
+  border: 1px solid var(--line-soft);
+}
+.widget-card .date-tile strong {
+  font-size: var(--fs-16);
+}
+.widget-card .deadline-row {
+  grid-template-columns: 40px minmax(0, 1fr) 26px 26px;
+  gap: 10px;
+  padding: 8px 4px;
+}
+.widget-card .deadline-copy strong {
+  font-size: var(--fs-13);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.widget-card .deadline-copy span {
+  font-size: var(--fs-11);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* 组标题在浮窗内更克制 */
+.widget-card .deadline-group-label {
+  font-size: var(--fs-9);
+  letter-spacing: 0.1em;
+  padding: 2px 3px 5px;
+}
+
+/* 空状态在浮窗内更收敛 */
+.widget-card .empty-state {
+  padding: 18px 12px;
+}
+.widget-card .empty-state svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* === 天气 / 时钟浮窗适配 ===
+   天气在浮窗内居中展示，预报在窄宽度下独立滚动；时钟保持居中呼吸感。 */
+.widget-card .widget-weather {
+  justify-content: center;
+  gap: 5px;
+}
+.widget-card .widget-weather-forecast {
+  width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.widget-card .widget-weather-forecast:hover {
+  scrollbar-color: var(--sb-thumb) transparent;
+}
+.widget-card .widget-weather-forecast::-webkit-scrollbar-thumb {
+  background: transparent;
+  transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.widget-card .widget-weather-forecast:hover::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+}
+.widget-card .widget-weather-temp {
+  font-size: clamp(34px, 8vw, 52px);
+}
+.widget-card .widget-weather-icon svg {
+  width: 30px;
+  height: 30px;
+}
+
+/* 时钟：浮窗内保持柔和的纵向居中，日期与时间层级清晰 */
+.widget-card .widget-clock {
+  gap: 6px;
+}
+.widget-card .widget-clock-time {
+  font-size: clamp(40px, 8vw, 60px);
+}
+.widget-card .widget-clock-date {
+  font-size: var(--fs-13);
+}
+
+/* === 应用启动器 / 图库浮窗适配 ===
+   网格在浮窗内滚动，图标间距与大小更贴合浮窗比例。 */
+.widget-card .launcher-grid {
+  gap: 6px;
+  align-content: start;
+}
+.widget-card .launcher-tile {
+  gap: 4px;
+}
+.widget-card .launcher-tile-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--rad-14);
+}
+.widget-card .launcher-tile-name {
+  font-size: var(--fs-10);
+}
+.widget-card .gal-grid {
+  gap: 6px;
+}

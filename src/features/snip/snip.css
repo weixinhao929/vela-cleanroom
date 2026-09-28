@@ -1,0 +1,204 @@
+/**
+ * 截图覆盖窗样式（借鉴 ClassSoftwareHub #4）：冻结帧铺满 + 半透明遮罩 +
+ * 选区框 + 工具条。窗口本身由 Rust 无边框置顶创建，这里只管视口内布局。
+ */
+
+.snip-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+  user-select: none;
+  touch-action: none;
+}
+.snip-root.snip-loading {
+  background: rgba(0, 0, 0, 0.25);
+}
+.snip-frame {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.snip-annot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+.snip-dim {
+  position: absolute;
+  background: var(--scrim-strong);
+  pointer-events: none;
+}
+.snip-sel {
+  position: absolute;
+  border: 1.5px solid #4da3ff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.snip-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #4da3ff;
+  border: 1.5px solid #fff;
+  border-radius: var(--rad-2);
+  pointer-events: none;
+}
+.snip-size {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  padding: 2px 7px;
+  border-radius: var(--rad-4);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.snip-tip {
+  position: absolute;
+  left: 50%;
+  top: 24px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: var(--fs-12);
+  padding: 6px 14px;
+  border-radius: var(--rad-8);
+  pointer-events: none;
+  transition: opacity var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.snip-toolbar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(28, 28, 30, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--rad-10);
+  padding: 6px 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  color: #eee;
+  /* 一.7：框选完成后工具条 150ms pop 入场（原点在选区方向的上缘），与全项目
+     「弹层必入场」纪律对齐——此前瞬现。选区拖动改位置只写 inline left/top，
+     元素不重挂，不重播。 */
+  transform-origin: top left;
+  animation: snip-toolbar-in var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out) backwards;
+}
+@keyframes snip-toolbar-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+}
+html[data-reduce-motion="1"] .snip-toolbar {
+  animation: none;
+}
+.snip-tools {
+  display: flex;
+  gap: 2px;
+}
+.snip-tool {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: #cfcfcf;
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.snip-tool:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.snip-tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.snip-tool.is-active {
+  background: #3b82f6;
+  color: #fff;
+}
+.snip-colors {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.snip-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  padding: 0;
+  /* 四.2：is-active 选中环变白走过渡（原只有 transform）。 */
+  transition:
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    border-color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.snip-color:hover {
+  transform: scale(1.15);
+}
+.snip-color.is-active {
+  border-color: #fff;
+}
+.snip-outs {
+  display: flex;
+  gap: 6px;
+}
+.snip-out {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: transparent;
+  color: #eee;
+  border-radius: var(--rad-7);
+  padding: 5px 11px;
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    filter var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.snip-out:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+.snip-out:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.snip-out.is-primary {
+  border: 0;
+  background: #3b82f6;
+  color: #fff;
+  font-weight: 600;
+}
+.snip-out.is-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  background: #3b82f6;
+}
+.snip-text-input {
+  position: absolute;
+  min-width: 160px;
+  min-height: 40px;
+  background: var(--scrim);
+  border: 1px dashed rgba(255, 255, 255, 0.7);
+  outline: none;
+  font-size: var(--fs-20);
+  font-weight: 600;
+  font-family: inherit;
+  line-height: 1.25;
+  padding: 4px 6px;
+  resize: none;
+  border-radius: var(--rad-4);
+}

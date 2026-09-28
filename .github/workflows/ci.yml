@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  # 仅供手动触发 release-verify 与 e2e（这两个 job 以 if 门控，push/PR 不会跑）
+  workflow_dispatch:
+
+# 同一分支的新推送取消仍在跑的旧 run，避免排队堆积
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (typecheck / lint / gates / test / build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        # 仓库根即项目根（git toplevel 就是本目录）
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run lint:anim
+      - run: npm run lint:tokens
+      - run: npm run lint:i18n
+      - run: npm run lint:api
+      - run: npm run lint:sizes
+      # A-1/A-5：分层硬边界 + 窗口闸门清单（advisory，清单非空仍 0 退出）
+      - run: npm run lint:layering
+      - run: npm run lint:window-gates
+      - run: npm test
+      - run: npm run build
+
+  backend:
+    name: Backend (fmt / clippy / test / bindings drift)
+    # windows crate 仅在 [target.'cfg(windows)'.dependencies]，bluetooth.rs
+    # 顶层 use windows:: 无 cfg 包裹，Linux 上编译必败——必须跑 Windows runner。
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # B-8：windows crate feature 面可见性——不硬门禁（依赖升级天然带来合法
+      # 变化），但每次 CI 把展开面留档到日志，膨胀可回溯。
+      - name: Feature surface snapshot (visibility only)
+        run: cargo tree -e features --workspace
+      # --lib 含 ts-rs 导出测试：会把最新绑定写回 ../src/types/bindings
+      - run: cargo test --lib
+      - name: Bindings drift gate (ts-rs export must match committed files)
+        shell: bash
+        working-directory: .
+        run: git diff --exit-code -- src/types/bindings
+
+  # e2e（手动起步，实验性）：前置条件重——需先 tauri:build 出 release 产物，
+  # 且本机 WebView2 与 msedgedriver 大版本需匹配（见 e2e/README.md）。跑失败
+  # 不阻塞主链路；待驱动链稳定后再评估入 push/PR。
+  e2e:
+    name: e2e (manual, experimental)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm --prefix e2e ci --no-save
+        continue-on-error: true
+      - name: Build release binary for e2e
+        run: npm run tauri:build
+      - name: Run e2e
+        run: npm run test:e2e
+        continue-on-error: true # 实验性：结果先可观测，不作为门禁
+
+  # 发布校验链（docs/releasing.md）：完整打包 → SHA256SUMS → verify 必须通过 →
+  # 篡改自测（对副本翻转一字节，断言 verify 非零退出）。打包耗时长，只手动触发。
+  release-verify:
+    name: "Release verify (manual: build / sum / verify / tamper self-test)"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: .
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build installers (NSIS + MSI)
+        run: npm run tauri:build
+      - name: Generate SHA256SUMS
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/sum.ps1 -Sidecars
+      - name: Verify SHA256SUMS (must pass)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify.ps1
+      - name: Tamper self-test (verify must fail on a modified copy)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $bundle = 'src-tauri/target/release/bundle'
+          $tmp = Join-Path $env:RUNNER_TEMP 'tamper-test'
+          if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          Copy-Item -Recurse -Force "$bundle/nsis", "$bundle/msi" $tmp
+          Copy-Item -Force "$bundle/SHA256SUMS" $tmp
+          $exe = Get-ChildItem "$tmp/nsis" -Filter '*.exe' | Select-Object -First 1
+          $fs = [IO.File]::Open($exe.FullName, 'Open', 'ReadWrite')
+          $fs.Seek(1000, 'Begin') | Out-Null
+          $b = $fs.ReadByte()
+          $fs.Seek(1000, 'Begin') | Out-Null
+          $fs.WriteByte([byte](($b + 1) % 256))
+          $fs.Close()
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release/verify.ps1 -ArtifactDir $tmp
+          if ($LASTEXITCODE -eq 0) { throw 'tampered bundle passed verify - release chain is broken' }
+          Write-Host "tamper self-test OK: verify exit code $LASTEXITCODE (non-zero as expected)"
+      - name: Upload installers + manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: vela-release-bundle
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sha256
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.sha256
+            src-tauri/target/release/bundle/SHA256SUMS
+          if-no-files-found: error

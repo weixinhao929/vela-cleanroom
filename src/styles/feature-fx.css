@@ -1,0 +1,842 @@
+﻿/**
+ * 增强动效（feature-fx.css）。
+ *
+ * 消费方式：settings → 动画 → 动效模式选「增强」后 html 挂 data-fx="1"，
+ * 本文件所有规则即时生效；「标准」/「减少动态」/ 系统偏好生效时全部回到
+ * 基线（feature-animations.css）样式。收录动效语言：
+ * Star Border / Shiny Text / Aurora / Dot Grid / Spotlight / Magnet /
+ * Blur Text / Letter Pullup / Animated List / Decrypt Text / Count Up /
+ * Circular Text / Glow Pulse / Elastic Toggle / Liquid Divider /
+ * Ribbed Button / Breathing Bar，全部纯 CSS（+ fx.tsx 少量 JS），
+ * 不引入运行时依赖。
+ */
+
+/* ────────────────────────────────────────────────
+   0. 变量注册：流光边框的旋转角（@property 才能被动画插值）
+   ──────────────────────────────────────────────── */
+@property --fx-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+html[data-fx="1"] {
+  --fx-star-1: var(--accent);
+  --fx-star-2: var(--accent-2);
+  --fx-shine: color-mix(in srgb, var(--ink) 12%, #ffffff);
+  /* 弹性/出 entering 曲线一律消费 A3 契约 token（--ease-spring / --ease-out），
+     不再定义值相同的本地别名 —— 同一曲线只允许一个 token 名。 */
+}
+
+/* ────────────────────────────────────────────────
+   1. Star Border 流光边框（Star Border"）
+   沿边框旋转行进的双色光点，用于激活项与主按钮。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-sidebar-item.active,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-sidebar-sub-item.active,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-segmented-item.active,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-btn-primary,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tt-import-btn,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tt-preview-ok {
+  position: relative;
+  z-index: 0;
+}
+
+/* #80 装饰层常驻（默认 opacity:0），data-fx=1 时点亮 —— 切换动效模式时
+   流光边框以 .35s 渐显渐隐，而不是瞬现/瞬消。
+   四.2：侧栏/分段项的伪元素创建从 .active 选择器提升到 data-fx 门——
+   原「.active 才创建伪元素」让 opacity:0 起点不存在，点亮/熄灭的渐显
+   从未真正生效（瞬现瞬消）；常驻创建后 opacity 过渡才有了两端。 */
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-sidebar-item::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-sidebar-sub-item::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-segmented-item::after,
+.tm-btn-primary::after,
+.tt-import-btn::after,
+.tt-preview-ok::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.3px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--fx-angle, 0deg),
+    transparent 0deg 8deg,
+    var(--fx-star-1, transparent) 22deg,
+    transparent 40deg 172deg,
+    var(--fx-star-2, transparent) 188deg,
+    transparent 206deg 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity var(--dur-spatial-fast, 0.35s) var(--ease-fx, ease);
+}
+
+/* 点亮与旋转分两条（P1 三轮）：旋转是 @property 插值 conic-gradient 的常驻
+   paint 循环（每帧重光栅化 + 双层 mask-composite），额外受 ambientMotion
+   氛围总闸门控——闸关时边框静显、不再逐帧重绘；点亮过渡（opacity）保留，
+   开关动效模式仍平滑。 */
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-sidebar-item.active::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-sidebar-sub-item.active::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-segmented-item.active::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-btn-primary::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tt-import-btn::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tt-preview-ok::after {
+  opacity: 1;
+}
+html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMotion"]) .tm-sidebar-item.active::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMotion"])
+  .tm-sidebar-sub-item.active::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMotion"]) .tm-segmented-item.active::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMotion"]) .tm-btn-primary::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMotion"]) .tt-import-btn::after,
+html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMotion"]) .tt-preview-ok::after {
+  animation: fx-star-spin calc(3.4s * var(--fx-scale, 1)) linear infinite;
+}
+
+@keyframes fx-star-spin {
+  to {
+    --fx-angle: 360deg;
+  }
+}
+
+/* ────────────────────────────────────────────────
+   2. Shiny Text 扫光文字（Shiny Text"）
+   一道高光周期性扫过标题文字。
+   #80 渐变裁剪常驻，仅用 color: transparent ↔ ink 过渡控制显隐，
+   开关特效模式时扫光标题平滑交叉淡化。
+   ──────────────────────────────────────────────── */
+.tm-titlebar-title {
+  /* 收窄渐变盒到文字实际宽度：background-clip:text 的重绘面积从整条
+     标题栏缩到词组本身，把常驻扫光的 paint 成本降一个数量级。 */
+  width: max-content;
+  max-width: 100%;
+  background: linear-gradient(110deg, var(--ink) 40%, var(--fx-shine, #ffffff) 50%, var(--ink) 60%);
+  background-size: 220% 100%;
+  background-position: 130% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: var(--ink);
+  transition: color var(--dur-spatial-fast, 0.35s) var(--ease-fx, ease);
+}
+
+/* 扫光是逐帧 background-position 重绘的常驻 paint 循环，额外受 ambientMotion
+   氛围总闸门控——闸关时标题回退纯色（基规则的 color: var(--ink)）。 */
+html[data-fx="1"]:not([data-fx-off~="shinyText"]):not([data-fx-off~="ambientMotion"]) .tm-titlebar-title {
+  color: transparent;
+  animation: fx-shiny calc(3.2s * var(--fx-scale, 1)) linear infinite;
+}
+
+@keyframes fx-shiny {
+  0% {
+    background-position: 130% 0;
+  }
+  100% {
+    background-position: -130% 0;
+  }
+}
+
+/* ────────────────────────────────────────────────
+   3. 逐字入场（Blur Text" / "Letter Pullup"）
+   由 fx.tsx 的 <FxText> 生成逐字 span，这里负责两种入场。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="textFx"]) .fx-word {
+  display: inline;
+}
+
+html[data-fx="1"]:not([data-fx-off~="textFx"]) .fx-word span {
+  display: inline-block;
+  opacity: 0;
+  animation: fx-char-blur calc(0.6s * var(--fx-scale, 1)) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 34ms * var(--fx-scale, 1));
+}
+
+html[data-fx="1"]:not([data-fx-off~="textFx"]) .fx-word.fx-blur span {
+  filter: blur(8px);
+  transform: translateY(6px);
+}
+
+html[data-fx="1"]:not([data-fx-off~="textFx"]) .fx-word.fx-pullup span {
+  transform: translateY(16px) scale(1.2);
+  animation-name: fx-char-pullup;
+  animation-timing-function: var(--ease-spring);
+}
+
+@keyframes fx-char-blur {
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: none;
+  }
+}
+
+@keyframes fx-char-pullup {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ────────────────────────────────────────────────
+   4. 悬浮卡片流光描边（替代原「眩光划过」）
+   悬浮窗卡片不加扫光动画，改用更克制的高级感：悬停时双色
+   渐变描边缓缓点亮 + 边缘微光，静止时零动画零开销。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="cardHover"]) .widget-card {
+  /* transform 一并纳入过渡：增强模式下悬停放大（下方 :hover 规则）平滑展开，
+     离开后回弹归位；标准模式的 transform 过渡定义在 widget.css 基类里。 */
+  transition:
+    border-color var(--dur-spatial-fast, 0.35s) var(--ease-out),
+    box-shadow var(--dur-spatial-fast, 0.35s) var(--ease-out),
+    transform var(--dur-fx-slow, 0.3s) var(--ease-out);
+}
+
+html[data-fx="1"]:not([data-fx-off~="cardHover"]) .widget-card:hover:not(.editing):not(.dragging) {
+  /* 增强模式专属放大：比标准的 1.03 更明显，配合双色描边与边缘微光形成「聚焦」感；
+     编辑 / 拖拽态不缩放，避免与拖拽位移叠加。
+     P3 三轮评估（::after opacity 范式不适用，留决策记录）：卡片 overflow:hidden
+     会裁掉伪元素外扩光晕，外层 bloom（0 0 18px）无法搬到 ::after；box-shadow
+     过渡只在 hover 进出各插值 0.35s、稳态零逐帧重绘，与 tt-course 稳态光晕
+     （§9，呼吸循环已删）同属可接受终态。heat-cell / cpPulse 的伪元素范式
+     适用对象是「常驻循环阴影」，与此处的一次性 hover 过渡不同型。 */
+  transform: translateY(-2px) scale(1.045);
+  border-color: color-mix(in srgb, var(--fx-star-1) 55%, var(--line, rgba(255, 255, 255, 0.1)));
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.28),
+    0 0 0 1px color-mix(in srgb, var(--fx-star-1) 25%, transparent),
+    0 0 18px color-mix(in srgb, var(--fx-star-2) 14%, transparent);
+}
+
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .widget-gallery-card,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tt-course,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-preset-card {
+  position: relative;
+}
+
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .widget-gallery-card::after,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tt-course::after,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-preset-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 40%, var(--fx-shine) 50%, transparent 60%);
+  background-size: 250% 100%;
+  background-position: 135% 0;
+  opacity: 0;
+  transition: opacity var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+
+/* hoverGlow 增强档：课程块 hover 反馈由元素稳态光晕 + 本扫光伪元素接管，
+   widget.css 基础档注入 .tt-course::after 的描边阴影在此关闭，避免叠加。 */
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tt-course::after {
+  box-shadow: none;
+}
+
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .widget-gallery-card:hover::after,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tt-course:hover::after,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-preset-card:hover::after {
+  opacity: 0.5;
+  animation: fx-glare calc(0.9s * var(--fx-scale, 1)) ease;
+}
+
+@keyframes fx-glare {
+  from {
+    background-position: 135% 0;
+  }
+  to {
+    background-position: -35% 0;
+  }
+}
+
+/* ────────────────────────────────────────────────
+   5. Aurora 极光 + Dot Grid 点阵背景 —— 已移除
+   全屏柔光 + blur(30px) 会在设置内容后面留一层主色调的
+   「灰蒙蒙玻璃膜」，用户明确反馈要去掉；设置窗口保持纯色底。
+   ──────────────────────────────────────────────── */
+
+/* ────────────────────────────────────────────────
+   6. Spotlight 聚光跟随（Spotlight Card"）
+   --mx/--my 由 fx.tsx 的 FxController 写入。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="pointerFollow"]) .tm-section {
+  position: relative;
+}
+
+html[data-fx="1"]:not([data-fx-off~="pointerFollow"]) .tm-section::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    230px circle at var(--mx, 50%) var(--my, 40%),
+    color-mix(in srgb, var(--ink) 8%, transparent),
+    transparent 68%
+  );
+  opacity: 0;
+  transition: opacity var(--dur-spatial-fast, 0.35s) var(--ease-fx, ease);
+}
+
+html[data-fx="1"]:not([data-fx-off~="pointerFollow"]) .tm-section:hover::before {
+  opacity: 1;
+}
+
+/* ────────────────────────────────────────────────
+   7. Animated List 弹性错落（设置行 / 侧栏项 / 菜单项）
+   ──────────────────────────────────────────────── */
+/* fill 用 backwards 而非 both：both 会把关键帧末帧的 filter: blur(0) 永久
+   留在行上，非 none 的 filter 创建层叠上下文，下拉菜单（绝对定位 z-index）
+   会被 DOM 顺序在后的行盖住——点击落到下面的行，菜单即被 outside 关闭，
+   表现为「下拉选不上」。backwards 结束后回归自然样式，上下文随之消失。 */
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-setting-row,
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-sidebar-item,
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-sidebar-sub-item,
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) .ctx-item {
+  animation: fx-list-in calc(0.5s * var(--fx-scale, 1)) var(--ease-out) backwards;
+}
+
+/* stagger 封顶 ≤.24s（anime.js 节奏红线：第 11 行起等 .42s 才入场属用户等待）：
+   前 5 项阶梯错落（40ms 步进），其余合并到同一档，整体在 .24s 内全部启动。
+   L3 收敛：两条容器阶梯（设置行/侧栏项）合并为 :is() 共享一组 nth-child
+   规则（侧栏起始档从 0.04s 对齐到 0.02s，节奏差不可感知）；delay 同步挂
+   --fx-scale，「动画时长微调」从此也控制错落节奏。新容器加进 :is() 即可。 */
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) :is(.tm-setting-row, .tm-sidebar-item):nth-child(1) {
+  animation-delay: calc(0.02s * var(--fx-scale, 1));
+}
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) :is(.tm-setting-row, .tm-sidebar-item):nth-child(2) {
+  animation-delay: calc(0.06s * var(--fx-scale, 1));
+}
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) :is(.tm-setting-row, .tm-sidebar-item):nth-child(3) {
+  animation-delay: calc(0.1s * var(--fx-scale, 1));
+}
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) :is(.tm-setting-row, .tm-sidebar-item):nth-child(4) {
+  animation-delay: calc(0.14s * var(--fx-scale, 1));
+}
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) :is(.tm-setting-row, .tm-sidebar-item):nth-child(5) {
+  animation-delay: calc(0.18s * var(--fx-scale, 1));
+}
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) :is(.tm-setting-row, .tm-sidebar-item):nth-child(n + 6) {
+  animation-delay: calc(0.22s * var(--fx-scale, 1));
+}
+
+@keyframes fx-list-in {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 动效模式/特效开关翻转时（applySettings 挂 .fx-switching 1s）抑制入场动画
+   重播：否则 data-fx 0→1 会让全部设置行/侧栏项重新错落滑入，表现为整页
+   "闪一下"。首次水合不挂该类，页面首载入场不受影响。 */
+html.fx-switching .tm-setting-row,
+html.fx-switching .tm-sidebar-item,
+html.fx-switching .tm-sidebar-sub-item,
+html.fx-switching .ctx-item {
+  animation: none !important;
+}
+
+/* ────────────────────────────────────────────────
+   8. Circular Text 环形旋转文字（LicensePage 装饰）
+   与粒子文字同属许可证页装饰，统一受 particleText 开关控制。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="particleText"]) .fx-circ {
+  width: 92px;
+  height: 92px;
+  margin: 4px auto 14px;
+  opacity: 0.8;
+}
+
+html[data-fx="1"]:not([data-fx-off~="particleText"]) .fx-circ svg {
+  width: 100%;
+  height: 100%;
+  animation: fx-circ-spin calc(16s * var(--fx-scale, 1)) linear infinite;
+}
+
+html[data-fx="1"]:not([data-fx-off~="particleText"]) .fx-circ text {
+  font-size: var(--fs-9-5);
+  font-weight: 600;
+  letter-spacing: 2.4px;
+  fill: var(--muted, rgba(255, 255, 255, 0.6));
+}
+
+@keyframes fx-circ-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* ────────────────────────────────────────────────
+   9. 课程块 hover 光晕（稳态）+ 磁性按钮回弹过渡
+   光晕不再无限呼吸：hover 期间 box-shadow infinite 循环会持续逐帧重绘，
+   鼠标停在哪张卡哪张卡就一直重绘。改为随基础 transition（.tt-course 自带
+   box-shadow 0.14s）淡入的稳态光晕；一次性 glare 扫光（::after）保留。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tt-course:hover {
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--fx-star-1) 45%, transparent),
+    0 4px 16px color-mix(in srgb, var(--fx-star-1) 22%, transparent),
+    0 2px 8px rgba(0, 0, 0, 0.16);
+}
+
+/* Magnet：JS 直接写 transform，这里只负责回弹的弹性过渡 */
+html[data-fx="1"]:not([data-fx-off~="pointerFollow"]) .tm-btn-primary,
+html[data-fx="1"]:not([data-fx-off~="pointerFollow"]) .tt-import-btn,
+html[data-fx="1"]:not([data-fx-off~="pointerFollow"]) .tt-preview-ok {
+  transition:
+    transform var(--dur-fx, 0.2s) var(--ease-spring),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+
+/* ────────────────────────────────────────────────
+   10. 输入聚焦光环 + 侧栏图标入场微动
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-content input:focus,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-content select:focus,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-content textarea:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fx-star-1) 26%, transparent);
+}
+/* select 没有其它基规则，光环淡入的过渡跟着门控走（input/textarea 各自有基规则）。 */
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-content select {
+  transition: box-shadow var(--dur-fx) var(--ease-fx);
+}
+
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-sidebar-item svg {
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-spring);
+}
+
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-sidebar-item:hover svg {
+  transform: scale(1.18) rotate(-6deg);
+}
+
+/* ────────────────────────────────────────────────
+   11. 侧边栏激活项：活力光带 + 顶部高光（Breathing Bar 变体）
+   静态渐变底 + 一道高光在激活项内缓慢横移，比纯色块更精致。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-sidebar-item.active,
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-sidebar-sub-item.active {
+  overflow: hidden;
+}
+
+/* 活力光带改为伪元素高光扫过：background-position 逐帧重绘 →
+   transform 平移（合成器友好），静态底保持纯色胶囊。
+   四.2：伪元素创建同样提升到非 .active 选择器（opacity 0 常驻），
+   动画仍只在激活项开启。 */
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-sidebar-item::before,
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-sidebar-sub-item::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in srgb, var(--fx-star-2, #8b7cf8) 45%, transparent) 50%,
+    transparent 80%
+  );
+  opacity: 0;
+  transform: translateX(-101%);
+}
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-sidebar-item.active::before,
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-sidebar-sub-item.active::before {
+  opacity: 1;
+  transition: opacity var(--dur-spatial-fast, 0.35s) var(--ease-fx, ease);
+  animation: fx-active-sheen calc(4.5s * var(--fx-scale, 1)) ease-in-out infinite;
+}
+
+@keyframes fx-active-sheen {
+  0%,
+  100% {
+    transform: translateX(-101%);
+  }
+  50% {
+    transform: translateX(101%);
+  }
+}
+
+/* ────────────────────────────────────────────────
+   12. 章节标题：下划线光带生长
+   悬停章节时标题下方一条渐变光带从左向右展开。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-section-title {
+  position: relative;
+  display: inline-block;
+}
+
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-section-title::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 2px;
+  border-radius: var(--rad-2);
+  background: linear-gradient(90deg, var(--fx-star-1), var(--fx-star-2), transparent);
+  transform: scaleX(0);
+  transform-origin: left;
+  /* 时长乘 --fx-scale（fx 族约定）：跟随速度三档与时长微调，此前 0.4s 完全游离在两套缩放之外。 */
+  transition: transform calc(0.4s * var(--fx-scale, 1)) var(--ease-out);
+}
+
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-section:hover .tm-section-title::after {
+  transform: scaleX(1);
+}
+
+/* ────────────────────────────────────────────────
+   13. 次级按钮涟漪光环（Ribbed Button）
+   悬停时外圈光晕扩散，按下时快速收拢，反馈感更强。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-btn-secondary,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-btn-ghost {
+  transition:
+    box-shadow var(--anim-dur, 0.25s) var(--ease-out),
+    transform var(--dur-fx, 0.2s) var(--ease-spring),
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    color var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-btn-secondary:hover {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--fx-star-1) 40%, transparent),
+    0 0 14px color-mix(in srgb, var(--fx-star-1) 22%, transparent);
+}
+
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-btn-secondary:active,
+html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-btn-ghost:active {
+  transform: scale(0.96);
+}
+
+/* ────────────────────────────────────────────────
+   14. Liquid Divider 液态分隔线
+   分隔线上一粒高光缓慢左右往返，打破静态灰线。
+   ──────────────────────────────────────────────── */
+/* #80 液态分隔线光斑常驻（opacity:0），data-fx=1 时点亮渐显 */
+.tm-divider {
+  position: relative;
+  overflow: hidden;
+}
+
+.tm-divider::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  /* 审计：位移由 transform 完成（原 keyframes 动画 left 触发逐帧 layout），
+     静态起点 -20%，translateX 百分比相对元素自宽（122% 父宽 ≈ 680%）。 */
+  left: -20%;
+  width: 18%;
+  border-radius: var(--rad-2);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--fx-star-1, transparent) 60%, transparent),
+    transparent
+  );
+  opacity: 0;
+  transition: opacity var(--dur-spatial-fast, 0.35s) var(--ease-fx, ease);
+}
+
+html[data-fx="1"]:not([data-fx-off~="ambientGlow"]) .tm-divider::after {
+  opacity: 1;
+  animation: fx-divider-flow calc(6s * var(--fx-scale, 1)) ease-in-out infinite alternate;
+}
+
+@keyframes fx-divider-flow {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(680%);
+  }
+}
+
+/* ────────────────────────────────────────────────
+   15. 分段选择器激活段微光呼吸 + 滑入光斑
+   ────────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-segmented-item {
+  transition:
+    color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background var(--anim-dur, 0.25s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-segmented-item:not(.active):hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-segmented-pill-b {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #fff 22%, transparent),
+    0 2px 10px color-mix(in srgb, var(--fx-star-1) 24%, transparent);
+}
+
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-segmented-item.active {
+  animation: fx-seg-pop calc(0.35s * var(--fx-scale, 1)) var(--ease-spring);
+}
+
+@keyframes fx-seg-pop {
+  from {
+    transform: scale(0.9);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+/* 15b. Rubber Segment 胶囊橡胶拉伸（Rubber Segment"）
+   每次胶囊位移（shared.tsx 注入 --seg-dir 方向 / --seg-stretch 随距离 0.15–0.5）：
+   可见气泡沿移动方向拉伸（squash & stretch，transform-origin 锚在拖尾侧 =
+   朝目标方向变长），落位时弹性收拢；慢层过渡换带过冲的弹簧曲线，双层并集
+   在移动中拉出橡胶拖尾。动画只作用在内层气泡上，几何定位仍是布局值。 */
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-segmented-pill.is-rubber .tm-segmented-pill-b {
+  transform-origin: calc(50% - var(--seg-dir, 1) * 50%) 50%;
+  animation: fx-seg-rubber calc(0.34s * var(--fx-scale, 1)) var(--ease-spring);
+}
+/* 慢层换弹簧曲线：到位时略微越过目标再回弹（橡胶落位的「顿」感）。
+   过冲收敛到 1.2（旧 1.36 叠加上层拉伸，大跨度跳转时「橡皮筋乱飞」）。 */
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-segmented-pill.pill-slow {
+  /* ease: ok 分段滑块慢层专用调参曲线——过冲幅度刻意低于 --ease-spring（1.56），
+     与快层 rubber 拉伸叠加后的净过冲才是设计值；升格 token 反而诱导复用。 */
+  transition: transform 260ms cubic-bezier(0.3, 1.2, 0.46, 1);
+}
+@keyframes fx-seg-rubber {
+  0% {
+    /* 拉伸：沿移动方向变长，垂直方向等体积压扁。
+       拉伸系数收敛（旧版 1.5/0.4 在最大跨度时 scaleX 1.75，橡皮筋感过烈）。 */
+    transform: scaleX(calc(1 + 0.9 * var(--seg-stretch, 0.3))) scaleY(calc(1 - 0.25 * var(--seg-stretch, 0.3)));
+  }
+  55% {
+    /* 回弹过冲：反方向轻微压扁再鼓起 */
+    transform: scaleX(calc(1 - 0.2 * var(--seg-stretch, 0.3))) scaleY(calc(1 + 0.12 * var(--seg-stretch, 0.3)));
+  }
+  100% {
+    transform: scaleX(1) scaleY(1);
+  }
+}
+
+/* ────────────────────────────────────────────────
+   16. 开关弹性（Elastic Toggle）
+   切换拨杆用 spring 曲线滑动，拨杆上带一道微型高光。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-toggle,
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-toggle-knob {
+  transition:
+    background var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
+    transform calc(0.32s * var(--fx-scale, 1)) var(--ease-spring),
+    box-shadow var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+  /* 拨杆位移走 transform（.on → translateX(20px)），left 恒 2px 不参与过渡；
+     弹簧段时长乘 --fx-scale（fx 族约定），跟随速度三档与时长微调。 */
+}
+
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-toggle-wrap:active .tm-toggle-knob {
+  transform: scale(var(--toggle-press-scale));
+}
+
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-toggle-wrap:active .tm-toggle.on .tm-toggle-knob {
+  transform: translateX(var(--toggle-travel)) scale(var(--toggle-press-scale));
+}
+
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .tm-toggle.on .tm-toggle-knob {
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--fx-star-1) 45%, transparent);
+}
+
+/* ────────────────────────────────────────────────
+   18. 右键菜单 / 弹层：弹性缩放入场
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="elastic"]) .ctx-menu {
+  animation: fx-pop-in calc(0.26s * var(--fx-scale, 1)) var(--ease-spring) both;
+  transform-origin: top left;
+}
+
+@keyframes fx-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ────────────────────────────────────────────────
+   19. 设置内容区：精致滚动条
+   细渐变 thumb，悬停加宽发亮。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"] .tm-content::-webkit-scrollbar,
+html[data-fx="1"] .tm-sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+
+html[data-fx="1"] .tm-content::-webkit-scrollbar-thumb,
+html[data-fx="1"] .tm-sidebar::-webkit-scrollbar-thumb {
+  border-radius: var(--radius-ctl);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fx-star-1) 45%, transparent),
+    color-mix(in srgb, var(--fx-star-2) 45%, transparent)
+  );
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  /* layout-anim: ok 滚动条伪元素 hover 微加宽，无合成器等价 */
+  transition:
+    width var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background var(--dur-fx) var(--ease-fx);
+}
+
+html[data-fx="1"] .tm-content::-webkit-scrollbar-thumb:hover,
+html[data-fx="1"] .tm-sidebar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fx-star-1) 70%, transparent),
+    color-mix(in srgb, var(--fx-star-2) 70%, transparent)
+  );
+  background-clip: padding-box;
+}
+
+/* ────────────────────────────────────────────────
+   20. 折叠诊断条目 / details 展开韵律
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-crashlog-item {
+  transition:
+    border-color var(--anim-dur, 0.25s) var(--ease-fx, ease),
+    background var(--anim-dur, 0.25s) var(--ease-fx, ease);
+}
+
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-crashlog-item[open] {
+  animation: fx-details-in calc(0.3s * var(--fx-scale, 1)) var(--ease-out);
+}
+
+/* fx 模式下抑制子层 w-fade-slide-in（widget-anim.css 的标准模式兜底）：
+   此前父子两层 opacity/transform 同时插值，展开瞬间二次淡入叠加（P3 三轮）。
+   特异性更高，无论 import 序都生效。 */
+html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-crashlog-item[open] > pre {
+  animation: none;
+}
+
+@keyframes fx-details-in {
+  from {
+    opacity: 0.4;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 展开韵律下沉标准档（M3）：内容展开属基础反馈而非装饰——只给增强档的
+   话，标准模式下 <details> 瞬开与同屏其它过渡形成断层。基础版更收敛
+   （0.18s / ease-out）；增强档选择器特异度更高，增强档自动胜出。 */
+.tm-crashlog-item[open] {
+  animation: fx-details-in var(--dur-fx, 0.2s) var(--ease-out, ease-out);
+}
+
+/* ────────────────────────────────────────────────
+   21. 兜底：减少动态（系统偏好 / 应用内开关）时全部停用
+   全局 [data-reduce-motion] 已把 animation-duration 压到 0.001s
+   （global.css，含 *,*::before,*::after 伪元素覆盖）。
+   这里对特效作用域再显式 animation:none 关掉常驻循环（比压时长
+   更彻底），不再逐条枚举——审计修复：原裸 * 漏掉 ::after，
+   枚举清单则与全局块重复维护易漏。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"][data-reduce-motion="1"] *,
+html[data-fx="1"][data-reduce-motion="1"] *::before,
+html[data-fx="1"][data-reduce-motion="1"] *::after {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-fx="1"] *,
+  html[data-fx="1"] *::before,
+  html[data-fx="1"] *::after {
+    animation: none !important;
+  }
+}
+
+/* ────────────────────────────────────────────────
+   22. Glow Cursor 辉光拖尾光标 —— 已移除（指针跟随只保留聚光光斑）
+   ──────────────────────────────────────────────── */
+
+/* ────────────────────────────────────────────────
+   23. 弹簧勾选（Spring Check" 自绘版）
+   待办完成的增强反馈：填充层弹簧胀入（过冲回稳）+ 按钮整体 swell
+   （比基线 check-pop 更强的过冲）+ 对勾描边滞后画出 + 删除线滞后划入。
+   基线（非 fx 档）的填充/描边见 global.css .check-button 区。
+   ──────────────────────────────────────────────── */
+html[data-fx="1"]:not([data-fx-off~="springCheck"]) .check-fill {
+  display: block;
+  position: absolute;
+  inset: 1px;
+  border-radius: inherit;
+  background: var(--accent);
+  transform: scale(0);
+  transform-origin: center;
+}
+
+html[data-fx="1"]:not([data-fx-off~="springCheck"]) .task-row.done .check-fill {
+  animation: fx-spring-check-fill calc(0.32s * var(--fx-scale, 1)) var(--ease-spring);
+}
+
+@keyframes fx-spring-check-fill {
+  0% {
+    transform: scale(0.2);
+    opacity: 0.6;
+  }
+  55% {
+    transform: scale(1.16);
+    opacity: 1;
+  }
+  78% {
+    transform: scale(0.95);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+html[data-fx="1"]:not([data-fx-off~="springCheck"]) .task-row.done .check-button {
+  animation: fx-spring-check-pop calc(0.34s * var(--fx-scale, 1)) var(--ease-spring);
+}
+
+@keyframes fx-spring-check-pop {
+  0% {
+    transform: scale(0.55);
+  }
+  50% {
+    transform: scale(1.22);
+  }
+  72% {
+    transform: scale(0.94);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+html[data-fx="1"]:not([data-fx-off~="springCheck"]) .check-mark path {
+  transition: stroke-dashoffset calc(0.28s * var(--fx-scale, 1)) var(--ease-out) 0.1s;
+}
+
+/* 删除线滞后划入（strikeLag）：等填充与对勾落定再划；取消勾选方向
+   沿用基线无 delay，立即收回。 */
+html[data-fx="1"]:not([data-fx-off~="springCheck"]) .task-row.done > span::after {
+  transition-delay: 0.18s;
+}

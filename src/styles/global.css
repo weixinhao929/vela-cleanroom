@@ -1,0 +1,3236 @@
+﻿/* === z-index 阶梯（单窗口内的层叠几何，数值间距留白便于插层）===
+   小组件内弹出 < 浮层菜单带 < 组件菜单 < 组件 tooltip < 模态遮罩 <
+   模态对话框 < 右键菜单 < 配置 popover < 命令面板 < 全局 toast <
+   沉浸层（画布 z 上限 2_000_000 之上，见 widget-store MAX_Z）。
+   全部 fixed 浮层消费这里的令牌，禁止新增裸魔数；组件内部的小叠放
+   （1/2/5…）是局部上下文，不入阶梯。 */
+:root {
+  --z-pop: 9000; /* 小组件内自绘弹出（下拉/日期面板），低于一切 fixed 浮层 */
+  --z-float-menu: 9999;
+  --z-widget-menu: 10000;
+  --z-widget-tooltip: 10001;
+  --z-modal-scrim: 10020; /* 全屏模态遮罩，低于其承载的对话框 */
+  --z-dialog: 10050;
+  --z-ctx: 10100;
+  --z-config-pop: 10110; /* 组件/磁贴配置 popover：高于右键菜单（弹层开着时菜单已被外点关闭） */
+  --z-cmd: 10150;
+  --z-toast: 10200; /* toast 必须浮于一切对话框之上（此前 ctx-menu 99999 / cmd-palette 2147483000 越阶级压住 toast，违反本约定） */
+  --z-immersive: 2100000;
+  --z-immersive-ghost: 2100001;
+  --z-tooltip: 2100002; /* 主题化 tooltip（ThemeTooltip）：高于沉浸层 */
+  /* === 字号/圆角数值令牌（全量令牌化）===
+     --fs-* 字号、--rad-* 圆角：精确值有语义令牌（--radius-sm/md/lg/xl、
+     --radius 24、--radius-pill 999）的直接复用，其余按像素值命名（小数用
+     连字符：12.5 → --fs-12-5）。定义只在这里一份（主题不变量，不随
+     [data-theme] 变）；新样式需要新数值时先补到这里再引用，禁止样式内裸
+     px 字号/圆角（门禁：scripts/check-size-tokens.mjs）。 */
+  --rad-1: 1px;
+  --rad-2: 2px;
+  --rad-2-5: 2.5px;
+  --rad-3: 3px;
+  --rad-4: 4px;
+  --rad-5: 5px;
+  --rad-6: 6px;
+  --rad-7: 7px;
+  --rad-8: 8px;
+  --rad-9: 9px;
+  --rad-10: 10px;
+  --rad-11: 11px;
+  --rad-12: 12px;
+  --rad-13: 13px;
+  --rad-14: 14px;
+  --rad-16: 16px;
+  --rad-18: 18px;
+  --rad-19: 19px;
+  --rad-20: 20px;
+  --rad-22: 22px;
+  --rad-28: 28px;
+  /* 滚动条令牌（主题不变量：引用 var(--ink) 在消费点按当前主题求值）。
+     全部 ::-webkit-scrollbar-thumb 与 scrollbar-color 消费这两个值。 */
+  --sb-thumb: color-mix(in srgb, var(--ink) 22%, transparent);
+  --sb-thumb-hover: color-mix(in srgb, var(--ink) 36%, transparent);
+  --fs-4-4: 4.4px;
+  --fs-5: 5px;
+  --fs-5-4: 5.4px;
+  --fs-7-5: 7.5px;
+  --fs-8: 8px;
+  --fs-8-5: 8.5px;
+  --fs-9: 9px;
+  --fs-9-5: 9.5px;
+  --fs-10: 10px;
+  --fs-10-5: 10.5px;
+  --fs-11: 11px;
+  --fs-11-5: 11.5px;
+  --fs-12: 12px;
+  --fs-12-5: 12.5px;
+  --fs-13: 13px;
+  --fs-13-5: 13.5px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-16: 16px;
+  --fs-17: 17px;
+  --fs-18: 18px;
+  --fs-19: 19px;
+  --fs-20: 20px;
+  --fs-22: 22px;
+  --fs-23: 23px;
+  --fs-26: 26px;
+  --fs-28: 28px;
+  --fs-30: 30px;
+  --fs-32: 32px;
+  --fs-34: 34px;
+  --fs-40: 40px;
+  /* 下方 font-family 读 --ui-font（字体设置经 applySettings 写入）；未设置时回退到系统字体栈 */
+  font-family: var(
+    --ui-font,
+    "Segoe UI",
+    "Microsoft YaHei",
+    -apple-system,
+    BlinkMacSystemFont,
+    "PingFang SC",
+    sans-serif
+  );
+  color: #292820;
+  background: #eee9df;
+  font-synthesis: none;
+  color-scheme: light;
+
+  /* ── A2 字体角色：四款内置字体（Geist / Geist Mono / Manrope / Outfit）映射
+     到语义角色，窗口与组件不再各自硬编码字体名。body 跟随用户字体设置
+     （--ui-font，applySettings 写入），Geist 为内置缺省；label 专用于大写
+     等宽小节标签（原设置窗 Geist Mono 硬编码的收敛位）。 ── */
+  --font-display: "Outfit", "Manrope", var(--ui-font, "Segoe UI"), sans-serif;
+  --font-title: "Manrope", var(--ui-font, "Segoe UI"), sans-serif;
+  --font-body: var(--ui-font, "Segoe UI", "Microsoft YaHei", sans-serif);
+  --font-label: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-numeric: "Geist Mono", ui-monospace, monospace;
+
+  /* ── A2 语义前景色：图像/深色媒介上的内容色与危险实底上的内容色
+     （明暗两档恒定：图上永远浅字、危险实底永远亮字），widget 层硬编码
+     #fff 的收敛位。 ── */
+  --on-image: rgba(255, 255, 255, 0.96);
+  --on-danger: #ffffff;
+  --bg: #eee9df;
+  --bg-glow: #fff7e8;
+  --ink: #292820; /* A10 对比度修复：--muted 旧值 #817d70 在暖纸底上仅 3.4:1（WCAG AA 需 4.5），
+     加深到 ≥4.7:1；--muted-2 为弱化层级（装饰/次要提示），同步加深一档。 */
+  --muted: #6b6659;
+  --muted-2: #8a8578;
+  --muted-3: #6d685d;
+  --paper: rgba(250, 248, 242, 0.9);
+  --paper-solid: #fffdf8;
+  --paper-soft: rgba(250, 248, 242, 0.55);
+  --line: #ded8ca;
+  --line-soft: #ebe5da;
+  --line-strong: #d7d0c1;
+  --accent: #d16f45;
+  --accent-2: #d98d63;
+  --surface-soft: #e9e3d7;
+  --surface-active: #e8e1d3;
+  --surface-hover: #f4efe5;
+  --track: #e5dfd3;
+  --check-border: #c7beac;
+  --danger: #b65839;
+  --danger-soft: #f2d8cd;
+  --danger-ink: #a84f30;
+  --success: #2f9e44;
+  --success-soft: #d9efdd;
+  --amber: #c98a1b;
+  --priority-1: #4f7cf0;
+  --priority-2: #e6912e;
+  --priority-3: var(--danger);
+  --accent-ink: #a04e27;
+  --btn-bg: #292820;
+  --btn-fg: #ffffff;
+  --brand-bg: #292820;
+  --brand-fg: #ffffff;
+  --shadow: 0 14px 35px rgba(67, 55, 35, 0.055);
+  --glass-blur: 0px;
+  /* 语义圆角统一别名到 --rad-N 数值刻度（圆角双家族收口）：两套名字一处取值，
+     消费端一律不带回退值（token 恒定义，回退只会各自漂移）。--radius-ctl 由
+     applySettings 按 cornerRadius 派生内联覆盖（24→8px，手感不变）。 */
+  --radius: 24px;
+  --radius-sm: var(--rad-12);
+  --radius-md: var(--rad-16);
+  --radius-lg: var(--rad-20);
+  --radius-xl: var(--rad-28);
+  --radius-ctl: var(--rad-8);
+  --radius-pill: 999px;
+  /* 等宽字体栈（此前 5 处 var(--mono, ui-monospace, monospace) 引用从未有
+     定义，token 恒定义、消费端不带回退——与 --radius 家族同口径）。 */
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+
+  --scrim: rgba(0, 0, 0, 0.32);
+  /* F10：深一档遮罩（0.45）。给确需更浓压暗的浮层（设置内嵌遮罩、截图暗幕、
+     全屏提示）与色板 hex 标签条共用——不再各写 rgba，浓度档位全库单点。 */
+  --scrim-strong: rgba(0, 0, 0, 0.45);
+  /* 浮层阴影色（明暗分档的收口）：浅色档带暖棕（同 --widget-rest-shadow 家族，
+     纯黑在米白纸上偏重），深色档回归纯黑。消费端用
+     color-mix(in srgb, var(--shadow-tint) N%, transparent) 调浓度。 */
+  --shadow-tint: rgba(67, 55, 35, 0.4);
+  --spacing: 16px;
+
+  --space-1: calc(var(--spacing, 16px) * 0.25); /*  4px */
+  --space-2: calc(var(--spacing, 16px) * 0.5); /*   8px */
+  --space-3: calc(var(--spacing, 16px) * 0.75); /* 12px */
+  --space-4: var(--spacing, 16px); /*               16px */
+  --space-5: calc(var(--spacing, 16px) * 1.25); /* 20px */
+  --space-6: calc(var(--spacing, 16px) * 1.5); /*  24px */
+  --space-8: calc(var(--spacing, 16px) * 2); /*    32px */
+  --space-10: calc(var(--spacing, 16px) * 2.5); /* 40px */
+  --blur: 0px;
+  --widget-rest-shadow: rgba(67, 55, 35, 0.1);
+  --widget-hover-shadow: rgba(0, 0, 0, 0.1);
+  --widget-drag-shadow: rgba(0, 0, 0, 0.16);
+}
+
+[data-theme="glass"] {
+  color-scheme: dark;
+  --bg: #0a0a0a;
+  --bg-glow: #1a1a1a;
+  --ink: #ffffff;
+  --muted: rgba(255, 255, 255, 0.6);
+  --muted-2: rgba(255, 255, 255, 0.52);
+  --muted-3: rgba(255, 255, 255, 0.85);
+  --paper: rgba(255, 255, 255, 0.08);
+  --paper-solid: rgba(255, 255, 255, 0.11);
+  --paper-soft: rgba(255, 255, 255, 0.05);
+  --line: rgba(255, 255, 255, 0.15);
+  --line-soft: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.2);
+  --accent: #81d4fa;
+  --accent-2: #4fc3f7;
+  --surface-soft: rgba(255, 255, 255, 0.08);
+  --surface-active: rgba(129, 212, 250, 0.18);
+  --surface-hover: rgba(255, 255, 255, 0.12);
+  --track: rgba(255, 255, 255, 0.12);
+  --check-border: rgba(255, 255, 255, 0.3);
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.18);
+  --danger-ink: #f87171;
+  --success: #4ade80;
+  --success-soft: rgba(74, 222, 128, 0.16);
+  --amber: #f59e0b;
+  --priority-1: #6b93f5;
+  --priority-2: #f0a644;
+  --priority-3: var(--danger);
+  --accent-ink: #abe0fc;
+  --btn-bg: #81d4fa;
+  --btn-fg: #0a0a0a;
+  --brand-bg: #81d4fa;
+  --brand-fg: #0a0a0a;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --glass-blur: 32px;
+  /* 语义圆角（--radius-*）是主题不变量，只在 :root 定义（别名 --rad-N），
+     此处不再重复——此前双份定义靠人肉保持一致。 */
+  --spacing: 16px;
+  --blur: 32px;
+  --widget-rest-shadow: rgba(0, 0, 0, 0.38);
+  --widget-hover-shadow: rgba(0, 0, 0, 0.35);
+  --widget-drag-shadow: rgba(0, 0, 0, 0.45);
+  --shadow-tint: rgba(0, 0, 0, 0.5);
+  /* 引擎恒写、此处静态兜底的剩余 token：纯 CSS 直开（无 JS 引擎）时保持
+     弹层 / A1 层阶 / 语义色可用，取值与暗档同源。运行时引擎内联同名值
+     （style 特异性更高）覆盖，静态值只在纯预览场景生效。 */
+  --paper-opaque: rgba(18, 18, 18, 0.98);
+  --popover-bg: rgba(28, 28, 28, 0.92);
+  --popover-layer: rgba(34, 34, 34, 0.9);
+  --warn: #f59e0b;
+  --warn-soft: rgba(245, 158, 11, 0.16);
+  --amber-ink: #fbbf24;
+  --amber-soft: rgba(251, 191, 36, 0.14);
+  --sky-ink: #38bdf8;
+  --sky-soft: rgba(56, 189, 248, 0.14);
+  --layer0: rgba(255, 255, 255, 0.04);
+  --layer0-solid: #101010;
+  --layer0-on: #ffffff;
+  --layer1: rgba(255, 255, 255, 0.07);
+  --layer1-solid: #171717;
+  --layer1-on: #ffffff;
+  --layer2: rgba(255, 255, 255, 0.1);
+  --layer2-solid: #1e1e1e;
+  --layer2-on: #ffffff;
+  --layer3: rgba(255, 255, 255, 0.13);
+  --layer3-solid: #262626;
+  --layer3-on: #ffffff;
+  --layer4: rgba(255, 255, 255, 0.16);
+  --layer4-solid: #2e2e2e;
+  --layer4-on: #ffffff;
+}
+/* 文字极性联防的消费入口（theme-engine *-wl 镜像族）：小组件层窗口在
+   自定义背景色极性与明暗档相反（暗色档选浅背景等）时整体换用对档文字 /
+   发丝线，杜绝用户可触发的白字白底。设置窗/速记窗不挂 body.tm-widget-layer，
+   保持基准 token（FloatingThemeSync 的独立明暗档不受桌面背景色影响）。 */
+body.tm-widget-layer {
+  --ink: var(--ink-wl);
+  --muted: var(--muted-wl);
+  --line: var(--line-wl);
+  --muted-2: var(--muted-2-wl);
+  --muted-3: var(--muted-3-wl);
+  --line-strong: var(--line-strong-wl);
+  --line-soft: var(--line-soft-wl);
+  --surface-soft: var(--surface-soft-wl);
+  --surface-hover: var(--surface-hover-wl);
+  --track: var(--track-wl);
+  --surface-active: var(--surface-active-wl);
+  --check-border: var(--check-border-wl);
+}
+* {
+  box-sizing: border-box;
+}
+
+/* === 滚动条（--sb-* 令牌收敛：此前 6 种 thumb 配方并存，视觉重量不一）=== */
+::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+  border-radius: var(--rad-3);
+  transition: background var(--anim-dur, 0.25s) var(--ease-fx, ease);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+@supports (scrollbar-width: thin) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--sb-thumb) transparent;
+  }
+  *:hover {
+    scrollbar-color: var(--sb-thumb-hover) transparent;
+  }
+}
+
+html {
+  zoom: var(--ui-zoom, 1);
+}
+/* 主色 token 可过渡（theme-engine 主色平滑）：注册为 <color> 类型后，
+   .theme-crossfade-accent 挂载期间 --accent / --accent-2 的值变化走插值——
+   非 ink 路径（跨窗同步、外部事件改主色）不再是瞬跳；完整主题/明暗切换
+   仍即时呈现（水墨只管点击路径），此处仅收敛「只动主色」的场景。 */
+@property --accent {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #d16f45;
+}
+@property --accent-2 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #e08a5f;
+}
+html.theme-crossfade-accent {
+  transition:
+    --accent var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
+    --accent-2 var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+/* P2-4（纸墨族可插值）：注册核心纸/墨 token 为 <color> 类型。这是能力开放
+   而非行为变更——全局主题/明暗切换仍是即时呈现（水墨只管设置窗的点击路径，
+   跨窗口统一换肤淡化的完整方案待 Rust 侧截屏交叉淡化，见审查报告 P2-4）；
+   注册后任何局部消费者都可以在自己的 transition 里点名这些 token（含渐变
+   内的 var() 插值——未注册时渐变色标只会瞬跳），widget 卡片局部的主题过渡
+   即可按需启用。initial-value 取暖纸/暖墨标准档，首帧即有定义。 */
+@property --paper {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: rgba(250, 248, 242, 0.9);
+}
+@property --paper-solid {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #fffdf8;
+}
+@property --ink {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #292820;
+}
+@property --muted {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #6b6659;
+}
+html.taskbar-net {
+  zoom: 1;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: radial-gradient(circle at 80% -10%, var(--bg-glow) 0, transparent 35%), var(--bg);
+  color: var(--ink);
+  font-size: calc(14px * var(--font-scale, 1));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  transition:
+    background var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
+    color var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+
+html.tm-widget-layer,
+body.tm-widget-layer {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+html.layer-vanishing body {
+  opacity: 0;
+  transition: opacity var(--dur-fx, 0.2s) var(--ease-in);
+}
+html.layer-revealing body {
+  animation: layer-reveal var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+@keyframes layer-reveal {
+  from {
+    opacity: 0;
+  }
+}
+button,
+input {
+  font: inherit;
+}
+button {
+  color: inherit;
+}
+
+button {
+  transition:
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+  border-radius: var(--rad-6);
+  /* 焦点环浮现过渡：offset 0→2px + 颜色淡入让 Tab 聚焦「长出来」而非瞬现。
+     双向过渡需在全部元素上常驻 transition，代价不可接受——聚焦侧过渡 +
+     失焦瞬跳是标准折中。 */
+  transition:
+    outline-offset var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    outline-color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+button:active {
+  transform: scale(0.97);
+}
+
+.boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-float-menu);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.boot-splash-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.boot-splash-logo {
+  font-size: var(--fs-28);
+  animation: boot-breathe 1.6s ease-in-out infinite;
+}
+@keyframes boot-breathe {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.boot-splash-dots {
+  display: flex;
+  gap: 6px;
+}
+.boot-splash-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: boot-dot 1.2s ease-in-out infinite;
+}
+.boot-splash-dots i:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.boot-splash-dots i:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes boot-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+.boot-splash.is-out {
+  animation: boot-splash-out var(--dur-fx, 0.2s) var(--ease-out, ease-out) forwards;
+  pointer-events: none;
+}
+@keyframes boot-splash-out {
+  to {
+    opacity: 0;
+  }
+}
+[data-reduce-motion="1"] .boot-splash-logo,
+[data-reduce-motion="1"] .boot-splash-dots i {
+  animation: none;
+}
+
+.session-count,
+.progress-copy {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.panel-header span {
+  margin: 0 0 8px;
+  font-size: var(--fs-10);
+  letter-spacing: 0.18em;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+.panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  padding: 24px;
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  transition:
+    background var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
+    border-color var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  margin-bottom: 22px;
+}
+.panel-header h2 {
+  font:
+    600 23px/1 Outfit,
+    sans-serif;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+.pomodoro-panel {
+  grid-row: span 2;
+  min-height: 590px;
+  display: flex;
+  flex-direction: column;
+}
+
+.focus-timer {
+  width: 248px;
+  aspect-ratio: 1;
+  margin: 10px auto 0;
+  position: relative;
+}
+.focus-timer-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+  filter: drop-shadow(0 8px 18px color-mix(in srgb, var(--ink) 8%, transparent));
+}
+.focus-timer-glow {
+  transition: opacity var(--dur-clock-hand, 0.4s) var(--ease-fx, ease);
+}
+.focus-timer:hover .focus-timer-glow {
+  opacity: 0.92;
+}
+.focus-timer-ticks line {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+.focus-timer-ticks line.major {
+  stroke: var(--muted);
+  stroke-width: 1.6;
+  opacity: 0.8;
+}
+.focus-timer-track {
+  fill: var(--paper-soft);
+  stroke: var(--line);
+  stroke-width: 2;
+}
+.focus-timer-disc {
+  transition: opacity var(--dur-clock-hand, 0.4s) var(--ease-fx, ease);
+}
+.focus-timer-progress {
+  fill: none;
+  stroke-width: 7;
+  stroke-linecap: round;
+  /* D6：倒计时每秒 tick 推进用 linear——ease-out 会造成「动-停」阶梯感。
+     时长统一走 --dur-tick-fill 语义 token（三.7，≥ tick 周期覆盖漂移间隙）。 */
+  transition: stroke-dashoffset var(--dur-tick-fill, 1.05s) linear;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 32%, transparent));
+}
+
+.focus-timer-guide {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 7;
+  opacity: 0;
+  transform: rotate(-90deg);
+  transform-origin: 100px 100px;
+  transition: opacity var(--dur-spatial, 0.5s) var(--ease-fx, ease);
+}
+.focus-timer:not(.running) .focus-timer-guide {
+  opacity: 0.5;
+}
+.focus-timer-tip {
+  fill: var(--accent);
+  stroke: var(--paper-solid);
+  stroke-width: 2;
+  /* 与进度弧同一 tick 节拍（1s 数据步进），时长对齐见 .focus-timer-progress。
+     layout-anim: ok D6 刻意设计（P3 三轮补正式注记）：cx/cy 是 SVG 几何属性，
+     过渡逐 tick 触发 SVG layout+paint；改 transform 驱动会与 ft-tip-pulse 的
+     transform 缩放动画互斥（animation 覆盖 transform），故保留 cx/cy——
+     代价限定为运行期每秒一次的小面积 SVG 重排。 */
+  transition:
+    cx var(--dur-tick-fill, 1.05s) linear,
+    cy var(--dur-tick-fill, 1.05s) linear;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 60%, transparent));
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.focus-timer.running .focus-timer-tip {
+  animation: ft-tip-pulse var(--dur-ft-breathe, 2.6s) ease-in-out infinite;
+}
+.focus-timer.running .focus-timer-glow {
+  animation: ft-glow-pulse var(--dur-ft-breathe, 2.6s) ease-in-out infinite;
+}
+
+.focus-timer.spin-ticks .focus-timer-ticks {
+  animation: ft-ticks-spin 36s linear infinite;
+  /* prettier-ignore（单行规则：keep-will-change 豁免注释与声明同行供审计脚本识别） */
+  will-change: transform; /* keep-will-change: 36s 常驻旋转仅运行态挂——此前无条件常驻，空闲期合成层白占 */
+}
+/* ft-progress-pulse 已移除：drop-shadow filter 逐帧动画会迫使整条进度环每帧
+   重新光栅化（专注全程常驻），静态辉光由基础 filter 提供，呼吸感交给
+   ft-glow-pulse / ft-disc-breathe 两条 opacity 动画（合成器友好）。 */
+@keyframes ft-tip-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 0.78;
+  }
+}
+@keyframes ft-glow-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+@keyframes ft-ticks-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.focus-timer-ticks {
+  transform-origin: 100px 100px;
+  transform-box: view-box;
+  /* will-change 已随 ft-ticks-spin 移入 .spin-ticks 运行态：空闲期不再常驻合成层。 */
+}
+.focus-timer.running .focus-timer-disc {
+  animation: ft-disc-breathe var(--dur-ft-breathe, 2.6s) ease-in-out infinite;
+}
+@keyframes ft-disc-breathe {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.focus-timer-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  pointer-events: none;
+}
+.focus-timer-kicker {
+  font-size: var(--fs-10);
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.focus-timer.running .focus-timer-kicker {
+  color: var(--accent-ink);
+}
+.focus-timer-time {
+  font:
+    600 42px/1 Outfit,
+    sans-serif;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.focus-timer-time {
+  animation: ft-time-slide var(--dur-clock-hand, 0.4s) var(--ease-out) both;
+}
+@keyframes ft-time-slide {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+.focus-timer-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+  letter-spacing: 0.03em;
+}
+.focus-timer-target b {
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--accent-ink);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+}
+.focus-timer-target b.phase-break {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  border-color: color-mix(in srgb, var(--success) 26%, transparent);
+}
+
+.focus-timer-sessions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  height: 8px;
+}
+.focus-timer-sessions i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.focus-timer-sessions i.first {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.focus-timer-sessions em {
+  font-style: normal;
+  font-size: var(--fs-9);
+  color: var(--muted);
+  font-weight: 700;
+}
+.timer-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: auto;
+}
+.pomodoro-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.pomodoro-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 4px;
+  border-radius: var(--radius-md);
+  background: var(--paper-solid);
+  border: 1px solid var(--line-soft);
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.pomodoro-stat:hover {
+  transform: translateY(-2px);
+  border-color: var(--line);
+  background: var(--surface-hover);
+}
+.pomodoro-stat-label {
+  font-size: var(--fs-10);
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.pomodoro-stat strong {
+  font:
+    600 20px/1 Outfit,
+    sans-serif;
+  letter-spacing: -0.02em;
+}
+.pomodoro-stat strong em {
+  font-style: normal;
+  font-size: var(--fs-10);
+  color: var(--muted);
+  margin-left: 2px;
+}
+
+.current-task {
+  text-align: center;
+  margin-bottom: 4px;
+}
+.current-task strong {
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--ink);
+}
+.current-task-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 auto 10px;
+  padding: 5px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  font-size: var(--fs-12);
+  color: var(--ink);
+  animation: current-task-in var(--anim-dur, 0.25s) var(--ease-out) both;
+}
+@keyframes current-task-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 呼吸辉光改为 ::after opacity 动画（合成器路径）：dot 只要设置了专注事件
+   就常驻，box-shadow 逐帧插值 = 持续重绘。 */
+.current-task-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+/* 呼吸光斑同为氛围动效：受 ambientMotion 逐效开关门控，关闭时整层不渲染。 */
+html:not([data-fx-off~="ambientMotion"]) .current-task-dot::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 60%, transparent) 0%, transparent 70%);
+  animation: current-dot-pulse 2s ease-in-out infinite;
+}
+@keyframes current-dot-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* 番茄钟：未选专注事件警告 */
+.pomodoro-no-event-warning {
+  text-align: center;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  border-radius: var(--rad-10);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  animation: pom-warn-in var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+@keyframes pom-warn-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.pomodoro-config {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+}
+.pomodoro-config-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-11);
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  padding: 8px 8px;
+  margin: 0 -8px;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.pomodoro-config-title:hover {
+  color: var(--ink);
+  background: var(--surface-soft);
+}
+.pomodoro-config-title svg {
+  color: var(--accent);
+}
+.pomodoro-config-toggle {
+  margin-left: auto;
+  font-size: var(--fs-10);
+  font-weight: 600;
+  color: var(--muted-2);
+}
+.pomodoro-config-body {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  padding-top: 8px;
+  animation: pom-config-in var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+@keyframes pom-config-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pomodoro-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-11);
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+}
+.pomodoro-config-label {
+  font-weight: 600;
+}
+.pomodoro-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.pomodoro-stepper-btn {
+  border: 1px solid var(--line);
+  background: var(--paper-soft);
+  color: var(--ink);
+  border-radius: var(--radius-ctl);
+  width: 30px;
+  height: 32px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.pomodoro-stepper-btn:hover {
+  background: var(--surface-soft);
+  border-color: var(--line-strong);
+}
+.pomodoro-stepper-btn:active {
+  transform: scale(0.94);
+}
+.pomodoro-stepper-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--paper-soft);
+  height: 32px;
+  flex: 1;
+  min-width: 0;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.pomodoro-stepper-input-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.pomodoro-stepper-input-wrap input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: center;
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--ink);
+  outline: none;
+  font-variant-numeric: tabular-nums;
+}
+.pomodoro-stepper-input-wrap input::-webkit-outer-spin-button,
+.pomodoro-stepper-input-wrap input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.pomodoro-stepper-unit {
+  font-size: var(--fs-10);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pomodoro-config-apply {
+  border: 0;
+  background: var(--accent);
+  color: var(--btn-fg);
+  border-radius: var(--radius-ctl);
+  padding: 8px 16px;
+  font-size: var(--fs-12);
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.pomodoro-config-apply:hover {
+  filter: brightness(1.08);
+}
+.pomodoro-config-apply:active {
+  transform: scale(0.96);
+}
+
+.required-mark {
+  color: var(--danger);
+  font-size: var(--fs-10);
+  margin-left: 2px;
+}
+.pomodoro-event-select {
+  position: relative;
+  margin-top: 12px;
+}
+.pomodoro-event-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: var(--fs-12);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.pomodoro-event-select-btn:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+.pomodoro-event-select-btn.has {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-soft));
+}
+.pomodoro-event-select-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.pomodoro-event-select-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  flex: none;
+  transition:
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.pomodoro-event-select-btn.has .pomodoro-event-select-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.pomodoro-event-select-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.pomodoro-event-select-caret {
+  color: var(--muted);
+  flex: none;
+  transition: transform var(--dur-fx, 0.2s) var(--ease-out);
+}
+.pomodoro-event-select-caret.open {
+  transform: rotate(180deg);
+}
+.pomodoro-event-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  background: var(--popover-layer, var(--popover-bg, var(--paper-solid)));
+  border: 1px solid var(--line);
+  border-radius: var(--rad-14);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  z-index: 30;
+  overflow: hidden;
+  animation: pom-drop-in var(--dur-fx, 0.2s) var(--ease-out) both;
+  transform-origin: top center;
+}
+
+.pomodoro-event-dropdown.is-closing {
+  animation: pom-drop-out var(--dur-fx-xfast, 0.12s) var(--ease-in) forwards;
+  pointer-events: none;
+}
+@keyframes pom-drop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+@keyframes pom-drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pomodoro-event-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+.pomodoro-event-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: 0;
+  color: var(--ink);
+  font-size: var(--fs-12);
+}
+.pomodoro-event-search input::placeholder {
+  color: var(--muted-2);
+}
+.pomodoro-event-list {
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.pomodoro-event-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.pomodoro-event-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--rad-9);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-12);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.pomodoro-event-item:hover {
+  background: var(--surface-hover);
+}
+.pomodoro-event-item.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 600;
+}
+.pomodoro-event-item-check {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  color: var(--accent);
+  /* 四.2：active 勾选圆改 color 补过渡（原缺 color 项）。 */
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.pomodoro-event-item.active .pomodoro-event-item-check {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--btn-fg);
+}
+.pomodoro-event-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pomodoro-chip-x {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  border-radius: 50%;
+  padding: 2px;
+  flex: none;
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.pomodoro-chip-x:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.pomodoro-event-empty {
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+  padding: 10px 8px;
+  text-align: center;
+}
+.pomodoro-event-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+.pomodoro-event-add input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: 0;
+  color: var(--ink);
+  font-size: var(--fs-12);
+}
+.pomodoro-event-add input::placeholder {
+  color: var(--muted-2);
+}
+.pomodoro-event-add button {
+  border: 0;
+  background: var(--accent);
+  color: var(--btn-fg);
+  border-radius: var(--radius-pill);
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex: none;
+  transition:
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.pomodoro-event-add button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.pomodoro-event-add button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.pomodoro-event-add button:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.interrupt-popover {
+  position: absolute;
+  left: 50%;
+  bottom: 148px;
+  transform: translateX(-50%);
+  width: 250px;
+  background: var(--popover-layer, var(--popover-bg, var(--paper-solid)));
+  border: 1px solid var(--line);
+  border-radius: var(--rad-18);
+  padding: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+
+  animation: interrupt-in var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+
+.pomodoro-panel .interrupt-popover {
+  bottom: 150px;
+}
+@keyframes interrupt-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+.interrupt-popover-title {
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.interrupt-popover-title::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex: none;
+}
+.interrupt-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.interrupt-option {
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--ink);
+  border-radius: var(--rad-11);
+  padding: 8px 0;
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.interrupt-option:hover {
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border-color: transparent;
+  transform: translateY(-1px);
+}
+.interrupt-option:active {
+  transform: scale(0.95);
+}
+.interrupt-dismiss {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  cursor: pointer;
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.interrupt-dismiss:hover {
+  color: var(--ink);
+}
+.primary-button,
+.icon-button,
+/* 仅表单直接子按钮（提交钮）：弹层日历（.tm-dp-pop）在 DOM 上也是表单后代，
+   宽泛的 button 后代选择器会把日期格染成按钮底色（用户截图：日历整片圆点）。 */
+.deadline-form > button {
+  border: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+/* 根错误边界兜底页：此前只有淡入动画、无任何布局，strong/span/code/button
+   直接内联堆在一起。居中竖排 + 可读的信息层级 + 并排操作按钮。 */
+.error-boundary {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  text-align: center;
+  color: var(--ink);
+}
+.error-boundary strong {
+  font-size: var(--fs-18);
+}
+.error-boundary span {
+  max-width: 520px;
+  color: var(--muted);
+  word-break: break-word;
+}
+.error-boundary code {
+  font-size: var(--fs-12);
+  color: var(--muted-3, var(--muted));
+}
+.error-boundary-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+.primary-button {
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border-radius: var(--radius-md);
+  padding: 13px 22px;
+  font-weight: 700;
+  min-width: 155px;
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+}
+.primary-button:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+}
+.primary-button:active {
+  transform: scale(0.97);
+}
+.icon-button {
+  width: 46px;
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+  color: var(--ink);
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.icon-button:hover {
+  background: var(--surface-active);
+  color: var(--accent);
+}
+.icon-button:active {
+  transform: scale(0.94);
+}
+.quick-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: var(--radius-pill);
+  padding: 4px 4px 4px 16px;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.quick-add:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.quick-add input,
+.deadline-form input {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: 0;
+  color: var(--ink);
+}
+.quick-add input {
+  flex: 1;
+  font-size: var(--fs-12);
+}
+.quick-add button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--btn-fg);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+  flex: none;
+}
+.quick-add button:hover {
+  filter: brightness(1.08);
+}
+.quick-add button:active {
+  transform: scale(0.9);
+}
+.progress-track {
+  height: 3px;
+  background: var(--track);
+  margin: 14px 0;
+  border-radius: var(--rad-9);
+  overflow: hidden;
+}
+.progress-track span {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+
+  transform-origin: left center;
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-out);
+  border-radius: var(--rad-9);
+}
+
+.task-filter {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  width: fit-content;
+  margin: 0 0 8px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: transparent;
+}
+.task-filter button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 11px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.task-filter button:hover {
+  color: var(--ink);
+  background: var(--surface-soft);
+}
+.task-filter button.active {
+  /* 选中态用主色淡染 + 主色文字（此前是 paper-solid 实底块，观感笨重）。 */
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  box-shadow: none;
+}
+.task-filter button em {
+  font-style: normal;
+  font-size: var(--fs-9);
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: var(--radius-pill);
+  padding: 1px 5px;
+  /* 四.2：计数徽标 color 随 tab 选中变化走过渡（父级 button 的过渡管不到子元素）。 */
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.task-filter button.active em {
+  color: var(--ink);
+}
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 230px;
+  overflow: auto;
+}
+
+.task-list {
+  animation: task-list-in var(--dur-fx-slow, 0.3s) var(--ease-out) both;
+}
+@keyframes task-list-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.task-filter button {
+  transition:
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.task-filter button:active {
+  transform: scale(0.94);
+}
+.tasks-panel-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tasks-panel-action .clear-completed {
+  opacity: 0.5;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--rad-7);
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tasks-panel-action .clear-completed:hover {
+  opacity: 1;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.task-row {
+  display: grid;
+  grid-template-columns: 26px 1fr 30px 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--rad-10);
+  font-size: var(--fs-13);
+  cursor: pointer;
+  animation: task-row-in var(--anim-dur, 0.25s) var(--ease-out) both;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    opacity var(--anim-dur, 0.25s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.task-row.editing {
+  cursor: default;
+}
+.task-row:hover {
+  background: var(--surface-hover);
+}
+/* 拖起提升：被拖行本体半透明 + 投影（HTML5 DnD 拖影由浏览器快照承担，
+   本体弱化表示「已拿起」），补齐拖拽三段反馈的第一段。 */
+.task-row.is-dragging {
+  opacity: 0.45;
+  background: var(--surface-hover);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 22%, transparent);
+  cursor: grabbing;
+}
+@keyframes task-row-in {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.task-list .task-row:nth-child(1) {
+  animation-delay: 0s;
+}
+.task-list .task-row:nth-child(2) {
+  animation-delay: 0.04s;
+}
+.task-list .task-row:nth-child(3) {
+  animation-delay: 0.08s;
+}
+.task-list .task-row:nth-child(n + 4) {
+  animation-delay: 0.12s;
+}
+
+.task-row > span {
+  position: relative;
+  color: var(--ink);
+  transition: color var(--anim-dur, 0.25s) var(--ease-fx, ease);
+}
+.task-row > span::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 56%;
+  width: 100%;
+  height: 1px;
+  background: var(--muted-2);
+
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-out);
+}
+.task-row.done > span {
+  color: var(--muted-2);
+}
+.task-row.done > span::after {
+  transform: scaleX(1);
+}
+.task-row.done {
+  opacity: 0.72;
+}
+.task-row.confirm {
+  background: var(--danger-soft);
+}
+.deadline-row.confirm {
+  background: var(--danger-soft);
+}
+.ghost-button.danger {
+  color: var(--danger);
+  opacity: 1;
+}
+
+.task-row.manual {
+  grid-template-columns: 18px 26px 1fr 30px 30px;
+}
+.task-drag-handle {
+  color: var(--muted-2);
+  cursor: grab;
+  display: grid;
+  place-items: center;
+}
+.task-drag-handle:active {
+  cursor: grabbing;
+}
+.task-row.drag-over {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.task-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.task-cell-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-row.done .task-cell-title {
+  overflow: visible;
+}
+.task-due {
+  font-style: normal;
+  font-size: var(--fs-10);
+  font-weight: 700;
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-hover);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.task-due.today {
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+.task-due.overdue {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.task-tag {
+  font-style: normal;
+  font-size: var(--fs-9-5);
+  flex: none;
+  padding: 1px 5px;
+  border-radius: var(--rad-5);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+/* W-043 优先级点：仅靠颜色区分不满足 WCAG 1.4.1，内嵌高/中/低字符（白字 8px +
+   轻描边保证浅色档位上的可读性）。 */
+.task-pri-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  font-style: normal;
+  font-size: var(--fs-8);
+  line-height: 1;
+  /* 点内序号用深墨（原白字在 amber #e6912e 上 ≈2.6:1、p1 蓝上 ≈3.0:1）：
+     三档优先级底色都是中亮度，深墨对比 4.5:1+，也免掉 text-shadow 补丁。 */
+  color: #0a0e1a;
+}
+.task-pri-dot.p1 {
+  background: var(--priority-1);
+}
+.task-pri-dot.p2 {
+  background: var(--priority-2);
+}
+.task-pri-dot.p3 {
+  background: var(--priority-3);
+}
+.task-natural-preview {
+  font-size: var(--fs-10-5);
+  color: var(--muted);
+  margin: -6px 0 8px;
+}
+.task-natural-preview b {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.task-group {
+  display: flex;
+  flex-direction: column;
+}
+.task-group + .task-group {
+  margin-top: 6px;
+}
+.task-group-label {
+  font-size: var(--fs-10-5);
+  font-weight: 700;
+  color: var(--muted);
+  margin: 4px 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.task-group-label em {
+  font-style: normal;
+  font-size: var(--fs-9);
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  border-radius: var(--radius-pill);
+  padding: 0 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.habit-today-list {
+  display: flex;
+  flex-direction: column;
+}
+.task-row.habit-today-row {
+  grid-template-columns: 26px 1fr;
+  cursor: pointer;
+}
+.task-sort-hint {
+  font-size: var(--fs-10);
+  color: var(--muted-2);
+  margin-top: 6px;
+  text-align: center;
+}
+.task-row.editing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  cursor: default;
+}
+.task-edit-title,
+.task-edit-tags {
+  transition: border-color var(--dur-fx) var(--ease-fx);
+  border: 1px solid var(--line);
+  background: var(--paper-solid);
+  color: var(--ink);
+  border-radius: var(--radius-ctl);
+  padding: 5px 8px;
+  font-size: var(--fs-12-5);
+  width: 100%;
+}
+.task-edit-title:focus,
+.task-edit-tags:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.task-edit-tags {
+  transition: border-color var(--dur-fx) var(--ease-fx);
+  width: 130px;
+  flex: 1;
+}
+.task-edit-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.task-pri-chips {
+  display: flex;
+  gap: 3px;
+}
+.task-pri-chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+  padding: 2px 9px;
+  font-size: var(--fs-10-5);
+  font-weight: 600;
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.task-pri-chip.on.p1 {
+  color: var(--priority-1);
+  border-color: var(--priority-1);
+  background: color-mix(in srgb, var(--priority-1) 10%, transparent);
+}
+.task-pri-chip.on.p2 {
+  color: var(--priority-2);
+  border-color: var(--priority-2);
+  background: color-mix(in srgb, var(--priority-2) 10%, transparent);
+}
+.task-pri-chip.on.p3 {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.task-pri-chip:hover:not(.on) {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+.task-edit-save {
+  transition:
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.task-edit-save:hover {
+  filter: brightness(1.08);
+}
+.task-edit-save:active {
+  transform: scale(0.96);
+}
+
+.task-pri-chip.on.p0 {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+.task-edit-save {
+  border: 0;
+  border-radius: var(--radius-ctl);
+  padding: 5px 12px;
+  font-size: var(--fs-11-5);
+  font-weight: 700;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--btn-fg);
+}
+
+.deadline-form-extra {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -4px 0 10px;
+  flex-wrap: wrap;
+}
+.deadline-repeat-chips {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+.deadline-repeat-chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+  padding: 2px 9px;
+  font-size: var(--fs-10-5);
+  font-weight: 600;
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.deadline-repeat-chip:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+.deadline-repeat-chip.on {
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.deadline-natural-preview {
+  font-size: var(--fs-10-5);
+  color: var(--muted);
+}
+.deadline-natural-preview b {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.deadline-repeat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-9-5);
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: var(--radius-pill);
+  padding: 1px 7px;
+}
+.deadline-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--rad-10);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.deadline-edit-title {
+  transition: border-color var(--dur-fx) var(--ease-fx);
+  border: 1px solid var(--line);
+  background: var(--paper-solid);
+  color: var(--ink);
+  border-radius: var(--radius-ctl);
+  padding: 5px 8px;
+  font-size: var(--fs-12-5);
+  width: 100%;
+}
+.deadline-edit-title:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.deadline-edit-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.deadline-edit-ctrl input[type="datetime-local"] {
+  border: 1px solid var(--line);
+  background: var(--paper-solid);
+  color: var(--ink);
+  border-radius: var(--radius-ctl);
+  padding: 4px 6px;
+  font-size: var(--fs-11-5);
+}
+.deadline-edit-save {
+  border: 0;
+  border-radius: var(--radius-ctl);
+  padding: 5px 12px;
+  font-size: var(--fs-11-5);
+  font-weight: 700;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: var(--btn-fg);
+}
+.check-button {
+  position: relative;
+  overflow: hidden;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--check-border);
+  border-radius: 50%;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition:
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
+  flex: none;
+}
+/* SpringCheck 填充层：仅 fx 增强档（feature-fx.css §23）显示并做弹簧胀入。 */
+.check-fill {
+  display: none;
+}
+/* 对勾自绘 path：未完成时整段藏在 dash 区间外，完成时描边画出（delay 让
+   填充先落，勾随后画出；取消勾选时立即沿原路收回）。 */
+.check-mark {
+  width: 14px;
+  height: 14px;
+}
+.check-mark path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 20;
+  stroke-dashoffset: 20;
+  transition: stroke-dashoffset var(--dur-fx, 0.2s) var(--ease-out);
+}
+.task-row.done .check-mark path {
+  stroke-dashoffset: 0;
+  transition-delay: 0.08s;
+}
+.check-button:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.check-button:active {
+  transform: scale(0.85);
+}
+.task-row.done .check-button {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--btn-fg);
+  animation: check-pop var(--anim-dur, 0.25s) var(--ease-spring);
+}
+@keyframes check-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.ghost-button {
+  border: 0;
+  background: transparent;
+  color: var(--muted-2);
+  opacity: 0.45;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.ghost-button:focus-visible {
+  opacity: 1;
+  color: var(--ink);
+}
+.task-row:hover .ghost-button,
+.deadline-row:hover .ghost-button {
+  opacity: 1;
+}
+.empty-state {
+  min-height: 145px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: var(--muted-2);
+  text-align: center;
+  gap: 6px;
+}
+.empty-state strong {
+  color: var(--muted-3);
+  font-size: var(--fs-13);
+}
+.empty-state span {
+  font-size: var(--fs-11);
+}
+.empty-state.compact {
+  min-height: 110px;
+}
+.deadline-panel {
+  min-height: 288px;
+}
+.deadline-form {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr auto;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.deadline-form input {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 9px 14px;
+  background: var(--paper-solid);
+  font-size: var(--fs-11);
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.deadline-form input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.deadline-form input[type="datetime-local"] {
+  border-radius: var(--radius-sm);
+}
+:root[data-theme="glass"] .deadline-form input[type="datetime-local"] {
+  color-scheme: dark;
+}
+:root[data-theme="light"] .deadline-form input[type="datetime-local"] {
+  color-scheme: light;
+}
+.deadline-form input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.55;
+  border-radius: var(--rad-6);
+  padding: 3px;
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.deadline-form input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background: var(--surface-soft);
+}
+.deadline-form input[type="datetime-local"]::-webkit-datetime-edit {
+  border-radius: var(--rad-6);
+}
+
+/* docs/issues-2026-09-09-multimonitor-and-ddl.md B：date/datetime-local 的
+   UA 内部编辑段与日历按钮在 color-scheme 下被涂成不透明黑底，作者级
+   background 管不到这些伪元素——逐层恢复透明，控件本体给一个比普通输入框
+   （--paper-solid，glass 下 0.11）略实的半透明底，融入亚克力面板。 */
+.widget-card input[type="date"]::-webkit-datetime-edit,
+.widget-card input[type="date"]::-webkit-datetime-edit-fields-wrapper,
+.widget-card input[type="date"]::-webkit-datetime-edit-year-field,
+.widget-card input[type="date"]::-webkit-datetime-edit-month-field,
+.widget-card input[type="date"]::-webkit-datetime-edit-day-field,
+.widget-card input[type="date"]::-webkit-datetime-edit-hour-field,
+.widget-card input[type="date"]::-webkit-datetime-edit-minute-field,
+.widget-card input[type="date"]::-webkit-datetime-edit-ampm-field,
+.widget-card input[type="date"]::-webkit-calendar-picker-indicator,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit-fields-wrapper,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit-year-field,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit-month-field,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit-day-field,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit-hour-field,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit-minute-field,
+.widget-card input[type="datetime-local"]::-webkit-datetime-edit-ampm-field,
+.widget-card input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  background: transparent;
+}
+[data-theme="glass"] .widget-card input[type="date"],
+[data-theme="glass"] .widget-card input[type="datetime-local"] {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* 同类问题推广（用户截图：DDL 文本输入框、课表「默认课表」下拉框、倒计时
+/* 同类问题推广（用户截图：DDL 文本输入框、课表「默认课表」下拉框、倒计时
+   日期框、习惯/今日概览输入框等仍呈不透明色块）：这些控件的底色沿用
+   --paper-solid——widgetBackground 的 85% 不透明版，深色壁纸下视觉等于
+   纯色块（像素实测 #12181B，无透底）。深色主题下一律改为半透明白（比卡片
+   玻璃 0.08–0.11 略实一档，与上方日期框一致，即「比正常高一点」）；
+   浅色主题保持原样。排除 checkbox/radio/range/color 等自绘控件；UA 默认
+   黑底的裸 <select>（课程编辑对话框 .tt-field select）一并覆盖。 */
+日期框、习惯/今日概览输入框等呈不透明色块；后续用户进一步要求「输入条
+   不要底色，就正常的就行」）：小组件层所有文本输入一律透明底，靠边框提供
+   边界（不限于 glass 主题，浅色主题同样生效）。排除 checkbox/radio/range/
+   color 等自绘控件；UA 默认样式的裸 <select>（课程编辑对话框 .tt-field
+   select）一并覆盖。 */
+/* 同类问题推广（用户截图：DDL 文本输入框、课表「默认课表」下拉框、倒计时
+   日期框、习惯/今日概览输入框等呈不透明色块；后续用户进一步要求「输入条
+   不要底色，就正常的就行」）：小组件层所有文本输入一律透明底，靠边框提供
+   边界（不限于 glass 主题，浅色主题同样生效）。排除 checkbox/radio/range/
+   color 等自绘控件；UA 默认样式的裸 <select>（课程编辑对话框 .tt-field
+   select）一并覆盖。 */
+.widget-card input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.widget-card select,
+.widget-card textarea,
+.widget-card input[type="search"],
+.tt-field select {
+  background: transparent;
+}
+.deadline-form > button {
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  border-radius: var(--radius-sm);
+  padding: 0 12px;
+  font-size: var(--fs-11);
+  transition:
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.deadline-form > button:hover {
+  filter: brightness(1.1);
+}
+.deadline-form > button:active {
+  transform: scale(0.97);
+}
+.deadline-error {
+  grid-column: 1 / -1;
+  font-size: var(--fs-11);
+  color: var(--danger);
+  animation: rb-shake var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+/* 面板头逾期计数：danger 配色（此前 .deadline-count 无任何样式，danger 类空挂）。 */
+.deadline-count.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.deadline-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 3px;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  animation: task-row-in var(--anim-dur, 0.25s) var(--ease-out) both;
+
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    opacity var(--dur-fx, 0.2s) var(--ease-fx, ease);
+  position: relative;
+}
+.deadline-row:hover {
+  background: var(--surface-hover);
+}
+
+.deadline-row.is-closing {
+  animation: w-item-out var(--dur-fx, 0.2s) var(--ease-out) forwards;
+  pointer-events: none;
+}
+.deadline-group .deadline-row:nth-child(1),
+.deadline-groups > .deadline-row:nth-child(1) {
+  animation-delay: 0s;
+}
+.deadline-group .deadline-row:nth-child(2),
+.deadline-groups > .deadline-row:nth-child(2) {
+  animation-delay: 0.04s;
+}
+.deadline-group .deadline-row:nth-child(3),
+.deadline-groups > .deadline-row:nth-child(3) {
+  animation-delay: 0.08s;
+}
+.deadline-group .deadline-row:nth-child(n + 4),
+.deadline-groups > .deadline-row:nth-child(n + 4) {
+  animation-delay: 0.12s;
+}
+.deadline-row .ghost-button {
+  flex: none;
+  white-space: nowrap;
+}
+/* 复制/删除确认的图标交叉淡切（Check/Copy/Trash 互换时重挂载重播）。 */
+.deadline-row .ghost-button svg {
+  animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-out);
+}
+.date-tile {
+  background: var(--surface-soft);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  padding: 5px 0;
+}
+.date-tile strong {
+  display: block;
+  font:
+    600 17px/1 Outfit,
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.date-tile span {
+  font-size: var(--fs-9);
+  color: var(--muted);
+}
+.deadline-copy strong {
+  display: block;
+  font-size: var(--fs-12);
+}
+.deadline-copy span {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: var(--fs-10);
+}
+
+.deadline-copy .deadline-exact {
+  display: none;
+}
+.deadline-row.overdue .date-tile {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+.deadline-row.overdue .deadline-copy span {
+  color: var(--danger);
+}
+
+.deadline-row.urgency-imminent::before,
+.deadline-row.urgency-soon::before,
+.deadline-row.urgency-overdue::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  border-radius: var(--radius-pill);
+}
+.deadline-row.urgency-imminent::before {
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 60%, transparent);
+  /* 临期(<1h)低频呼吸提醒：播 3 次后停（常驻会变成噪音）。
+     改走 opacity/brightness 合成层脉冲，替代 box-shadow 重绘。 */
+  animation: an-urgent-breathe 1.6s ease-in-out 3;
+}
+@keyframes an-urgent-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.55;
+    filter: brightness(1.35);
+  }
+}
+.deadline-row.urgency-soon::before {
+  background: var(--amber);
+}
+.deadline-row.urgency-overdue::before {
+  background: var(--danger);
+}
+.deadline-row.done {
+  opacity: 0.5;
+}
+.deadline-row.done .deadline-copy strong {
+  text-decoration: line-through;
+}
+
+.deadline-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.deadline-group {
+  display: flex;
+  flex-direction: column;
+}
+.deadline-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-10);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+  padding: 2px 3px 6px;
+}
+.deadline-group-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft);
+}
+.deadline-group-label em {
+  font-style: normal;
+  font-size: var(--fs-9);
+  color: var(--muted-2);
+  font-weight: 600;
+}
+.deadline-group:first-of-type .deadline-group-label {
+  color: var(--accent);
+}
+footer {
+  padding: 28px 2px 0;
+  text-align: right;
+  color: var(--muted-2);
+  font-size: var(--fs-10);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.analytics-panel {
+  min-height: 288px;
+}
+
+.analytics-group + .analytics-group {
+  margin-top: 20px;
+}
+.analytics-hint {
+  margin: 18px 0 0;
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+.analytics-empty {
+  padding: 14px 16px;
+  font-size: var(--fs-11);
+}
+
+.dist-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+
+  gap: 8px;
+}
+.pie-svg {
+  width: min(100%, 430px);
+  height: auto;
+  display: block;
+  overflow: visible;
+
+  filter: drop-shadow(0 10px 24px color-mix(in srgb, var(--ink) 16%, transparent));
+}
+.pie-slice {
+  transition:
+    transform var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    opacity var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    filter var(--dur-fx, 0.2s) var(--ease-fx, ease);
+  cursor: pointer;
+}
+.pie-slice:hover {
+  filter: brightness(1.06) saturate(1.04);
+}
+.pie-label {
+  font-size: var(--fs-5);
+  fill: var(--ink);
+  font-weight: 500;
+}
+.pie-label-inner {
+  font-size: var(--fs-5-4);
+  fill: var(--ink);
+  font-weight: 600;
+}
+.pie-leader {
+  stroke: var(--muted);
+  stroke-width: 0.55;
+  fill: none;
+  opacity: 0.85;
+}
+
+.pie-center {
+  transform-origin: 50px 50px;
+  animation: an-pie-center-in var(--dur-fx, 0.2s) var(--ease-out);
+}
+@keyframes an-pie-center-in {
+  from {
+    opacity: 0;
+    transform: scale(0.93);
+  }
+}
+.pie-center-cap {
+  font-size: var(--fs-4-4);
+  fill: var(--muted);
+  font-weight: 600;
+}
+.pie-center-value {
+  font-size: var(--fs-8);
+  fill: var(--ink);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.pie-center-sub {
+  font-size: var(--fs-4-4);
+  fill: var(--muted);
+  font-weight: 550;
+}
+.dist-wrap .dist-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+
+  align-content: start;
+  gap: 4px 18px;
+  width: 100%;
+}
+
+.dist-wrap .dist-item {
+  animation: an-rise-in 0.36s var(--ease-out) backwards;
+}
+.dist-wrap .dist-item:nth-child(2) {
+  animation-delay: 0.05s;
+}
+.dist-wrap .dist-item:nth-child(3) {
+  animation-delay: 0.1s;
+}
+.dist-wrap .dist-item:nth-child(n + 4) {
+  animation-delay: 0.15s;
+}
+.dist-item {
+  display: grid;
+
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 4px 10px;
+  border-radius: var(--rad-10);
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+}
+.dist-item.is-hover {
+  background: var(--surface-hover);
+  transform: translateX(2px);
+}
+.dist-item .dist-color {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+.dist-item .dist-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: var(--fs-11-5);
+  color: var(--ink);
+  line-height: 1.5;
+}
+.dist-item .dist-pct {
+  font-size: var(--fs-11);
+  color: var(--ink);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.dist-item .dist-dur {
+  font-size: var(--fs-10);
+  color: var(--muted);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.heat-wrap {
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+}
+.heat-wrap::-webkit-scrollbar {
+  height: 6px;
+}
+.heat-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.heat-wrap::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+  border-radius: var(--rad-3);
+}
+.heat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.month-heatmap {
+  display: flex;
+  align-items: stretch;
+}
+.month-heatmap-grid {
+  display: grid;
+  gap: 3px;
+  grid-template-columns: repeat(7, 11px);
+  grid-auto-rows: 11px;
+}
+.heat-weekday {
+  font-size: var(--fs-9);
+  color: var(--muted);
+  height: 11px;
+  line-height: 11px;
+  text-align: center;
+}
+.heat-cell {
+  width: 11px;
+  height: 11px;
+  border-radius: var(--rad-3);
+  background: var(--track);
+  min-width: 0;
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    outline-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.heat-cell:hover {
+  transform: scale(1.4);
+  filter: brightness(1.2);
+  z-index: 1;
+  position: relative;
+}
+.heat-cell.void {
+  background: transparent;
+}
+.heat-cell.lvl-1 {
+  background: var(--accent-2);
+  opacity: 0.5;
+}
+.heat-cell.lvl-2 {
+  background: var(--accent);
+  opacity: 0.75;
+}
+.heat-cell.lvl-3 {
+  background: var(--accent);
+}
+.heat-cell.today {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+.heat-legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: var(--fs-10);
+  color: var(--muted-2);
+}
+.heat-legend .heat-cell {
+  width: 10px;
+  height: 10px;
+  aspect-ratio: auto;
+}
+.heat-total {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.year-heatmap {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.year-heatmap-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+}
+.year-heatmap-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: max-content;
+}
+
+.year-month-labels {
+  position: relative;
+  height: 12px;
+  margin-left: 19px;
+}
+.year-month-label {
+  position: absolute;
+  top: 0;
+  height: 12px;
+  line-height: 12px;
+  font-size: var(--fs-9);
+  color: var(--muted-2);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.year-grid-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.year-weekday-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 11px;
+  flex-shrink: 0;
+}
+.year-cells {
+  display: grid;
+  gap: 3px;
+  grid-auto-rows: 11px;
+}
+.year-heatmap-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--line);
+  padding-left: 10px;
+}
+
+.widget-card .heat-wrap {
+  scrollbar-width: thin;
+}
+.widget-card .heat-wrap::-webkit-scrollbar {
+  display: block;
+  height: 6px;
+  width: 6px;
+}
+.widget-card .heat-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.widget-card .heat-wrap::-webkit-scrollbar-thumb {
+  transition: background var(--dur-fx) var(--ease-fx);
+  background: var(--sb-thumb);
+  border-radius: var(--rad-3);
+}
+.widget-card .heat-wrap::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover);
+}
+.widget-card .year-heatmap-scroll {
+  scrollbar-width: thin;
+}
+.widget-card .year-heatmap-scroll::-webkit-scrollbar {
+  display: block;
+  height: 6px;
+  width: 6px;
+}
+.widget-card .year-heatmap-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.widget-card .year-heatmap-scroll::-webkit-scrollbar-thumb {
+  transition: background var(--dur-fx) var(--ease-fx);
+  background: var(--sb-thumb);
+  border-radius: var(--rad-3);
+}
+.widget-card .year-heatmap-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover);
+}
+.year-nav {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--muted);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.year-nav:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+.year-nav:active {
+  transform: scale(0.94);
+}
+.year-value {
+  font-size: var(--fs-12);
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.heat-tooltip {
+  position: fixed;
+  z-index: var(--z-float-menu);
+  transform: translate(-50%, calc(-100% - 8px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: var(--radius-ctl);
+  background: var(--popover-layer, var(--popover-bg, var(--paper-solid)));
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 30%, transparent);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.heat-tooltip strong {
+  font-size: var(--fs-11);
+  color: var(--ink);
+}
+.heat-tooltip span {
+  font-size: var(--fs-10);
+  color: var(--muted);
+}
+
+.interrupt-list {
+  gap: 6px;
+}
+
+.data-panel {
+  grid-column: 1 / -1;
+}
+.data-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  font-size: var(--fs-11);
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-weight: 700;
+}
+.data-section + .data-section {
+  margin-top: 16px;
+}
+.data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.data-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--paper-solid);
+  color: var(--ink);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.data-button:hover {
+  background: var(--surface-hover);
+}
+.data-message {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 0;
+  font-size: var(--fs-12);
+  /* 成功态用语义 success（此前借用 accent，与主题色混淆）。 */
+  color: var(--success);
+  font-weight: 600;
+}
+
+.data-message.fail {
+  color: var(--danger);
+  animation: rb-shake var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+.data-backup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+.data-backup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.data-backup-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+.data-hint {
+  margin: 6px 0 10px;
+  font-size: var(--fs-11-5);
+  color: var(--muted);
+  line-height: 1.5;
+}
+@media (max-width: 800px) {
+  .pomodoro-panel {
+    grid-row: auto;
+    min-height: 570px;
+  }
+  .deadline-form {
+    grid-template-columns: 1fr 1fr;
+  }
+  .deadline-form > button {
+    grid-column: span 2;
+    padding: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    /* 与应用内 [data-reduce-motion="1] 路径同一语义：压到 0.001s 而非
+       transition: none 全灭——保留状态层（hover/active 底色）的即时反馈，
+       仅让位移动画不可感知。此前 OS 路径全灭、应用路径 0.001s，同一开关
+       两种行为。 */
+    transition-duration: 0.001s !important;
+    transition-delay: 0s !important;
+    animation-duration: 0.001s !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+/* P3 窗口隐藏挂起：遮挡/最小化时 data-app-hidden（lib/anim.ts
+   installAppVisibilityGate 写入）把全部动画置 paused——跨平台合成器节流
+   不一致，显式暂停兜底，常驻装饰循环（光晕/跑马/呼吸）隐藏期间不再空转。
+   useDelayedUnmount 走 setTimeout 卸载、无 animationend 依赖，恢复可见不残留。 */
+html[data-app-hidden] *,
+html[data-app-hidden] *::before,
+html[data-app-hidden] *::after {
+  animation-play-state: paused !important;
+}
+
+[data-reduce-motion="1"],
+:root[data-reduce-motion="1"] *,
+:root[data-reduce-motion="1"] *::before,
+:root[data-reduce-motion="1"] *::after {
+  scroll-behavior: auto;
+  animation-duration: 0.001s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001s !important;
+  /* 与 OS 媒体查询路径对齐：延迟一并清零（待办勾选描边 0.08s、
+     springCheck 删除线 0.18s 等滞后在应用内减动效档下不应保留）。 */
+  transition-delay: 0s !important;
+}
+/* 主题切换过渡由 lib/theme-ink.ts 水墨晕开接管（点击发起的主题切换由墨层
+   延迟上色，覆盖满整窗后回放 applySettings 换肤）。原 #77 交叉淡化
+   .theme-transitioning（350ms 全窗颜色过渡）已移除，全窗不再挂主题过渡类。 */
+
+/* ═══ 统一空状态（components/ui/EmptyState.tsx）═══
+   图标 + 主文案 + 行动提示三段式；新空态一律用它，存量 bespoke 空态类
+   （.bm-empty / .widget-empty / .analytics-empty…）渐进迁移。 */
+.fd-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 22px 14px;
+  text-align: center;
+  color: var(--muted-2);
+  font-size: var(--fs-12);
+  /* 空态出现过渡：清空列表时插画与文案不再是瞬现（回收站/待办空态同语言）。 */
+  animation: fd-empty-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+@keyframes fd-empty-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+.fd-empty-ico {
+  opacity: 0.55;
+}
+.fd-empty-hint {
+  font-size: var(--fs-10-5);
+  opacity: 0.8;
+}
+.fd-empty-compact {
+  gap: 4px;
+  padding: 12px 10px;
+}
+
+/* ═══ 主题化 tooltip（title= 全局接管，见 components/ThemeTooltip.tsx）═══
+   WebView2 原生 title 提示是系统白框：不跟随主题、~1s 延迟、无法定制。
+   本浮层全令牌驱动（明暗/圆角/字号/动效三档自动跟随）；pointer-events:none
+   永不拦截指针（桌面层点击穿透语义不变）；z 高于对话框（fd-prompt 2100000）。 */
+.fd-tip {
+  position: fixed;
+  z-index: var(--z-tooltip);
+  max-width: 320px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  background: var(--popover-layer, var(--popover-bg, var(--paper-solid, var(--paper))));
+  color: var(--ink);
+  font-size: var(--fs-11);
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transform: translateY(2px);
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-out),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+  pointer-events: none;
+  white-space: pre-line;
+  word-break: break-word;
+}
+.fd-tip.fd-tip-on {
+  opacity: 1;
+  transform: none;
+}
+
+.fd-prompt-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  background: var(--scrim-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  animation: tm-overlay-in var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+.fd-prompt {
+  width: min(420px, 100%);
+  background: var(--paper-solid);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 20px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  animation: tm-window-in var(--dur-fx, 0.2s) var(--ease-spring) both;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.fd-prompt-overlay.is-closing {
+  /* #57 退场：关闭路径由 PromptDialogHost 挂 .is-closing 并等待同长再卸载。
+     时长/曲线与 JS 侧 animDurations().fxFastMs（--dur-fx-fast）对齐。 */
+  animation: fd-prompt-overlay-out var(--dur-fx-fast, 0.15s) var(--ease-in) both;
+  pointer-events: none;
+}
+.fd-prompt.is-closing {
+  animation: fd-prompt-out var(--dur-fx-fast, 0.15s) var(--ease-in) both;
+}
+@keyframes fd-prompt-overlay-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes fd-prompt-out {
+  to {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+}
+
+.fd-prompt-title {
+  /* E13：多行标题防孤字。 */
+  text-wrap: balance;
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.fd-prompt-message {
+  font-size: var(--fs-13);
+  line-height: 1.6;
+  color: var(--muted-2);
+  white-space: pre-line;
+}
+.fd-prompt-input {
+  width: 100%;
+  padding: 9px 12px;
+  font-size: var(--fs-13);
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  outline: none;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.fd-prompt-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.fd-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.fd-prompt-btn {
+  padding: 7px 16px;
+  font-size: var(--fs-13);
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.fd-prompt-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--line-strong);
+}
+.fd-prompt-btn.primary {
+  color: var(--btn-fg);
+  background: var(--accent);
+  border-color: transparent;
+  font-weight: 600;
+}
+.fd-prompt-btn.primary:hover {
+  filter: brightness(1.08);
+}
+.fd-prompt-btn.primary.danger {
+  background: var(--danger);
+  color: #fff;
+}
+.fd-prompt-btn.primary.danger:hover {
+  filter: brightness(1.05);
+}
+@keyframes tm-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes tm-window-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+html[data-no-glass="1"] *,
+html[data-no-glass="1"] *::before,
+html[data-no-glass="1"] *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html[data-no-glass="1"] .launcher-menu {
+  background: var(--paper-solid) !important;
+}

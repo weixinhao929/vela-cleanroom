@@ -1,0 +1,398 @@
+/* ────────────────────────────────────────────────────────────── *
+ * 剪贴板历史（CLIP / §4.10）
+ *  - clipw-*：小组件壳（标题行 + 计数 / 搜索框 / 关闭提示 / 列表 / 底栏）；
+ *  - clip-row：单条目（文本摘要或图片缩略图 + 元信息 + 「已复制」浮层）。
+ * 全部颜色 / 圆角 / 时长取全局 token；hover 只改底色与边框（不动 transform /
+ * opacity，动效门禁无需基线过渡）；「已复制」浮层 opacity 由类名驱动并在基类
+ * 声明过渡；动效时长被全局 [data-reduce-motion="1"] 压缩，无需逐条适配。
+ * ────────────────────────────────────────────────────────────── */
+
+.clipw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+}
+
+.clipw-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px;
+}
+
+.clipw-ico {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.clipw-title {
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.clipw-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--rad-9);
+  font-size: var(--fs-10-5);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-ink);
+}
+
+/* ---- 搜索框 ---- */
+
+.clipw-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--rad-10);
+  background: color-mix(in srgb, var(--surface-soft) 70%, transparent);
+  color: var(--muted);
+  transition:
+    border-color var(--dur-fx) var(--ease-out),
+    background-color var(--dur-fx) var(--ease-out);
+}
+
+.clipw-search:focus-within {
+  border-color: var(--accent);
+  background: var(--surface-soft);
+}
+
+.clipw-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-12);
+  font-family: inherit;
+}
+
+.clipw-search input::placeholder {
+  color: var(--muted-2);
+}
+
+.clipw-search-clear {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--rad-10);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+
+.clipw-search-clear:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+/* ---- 总开关关闭提示 ---- */
+
+.clipw-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: var(--rad-8);
+  font-size: var(--fs-11);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-soft) 60%, transparent);
+  border: 1px dashed var(--line-soft);
+}
+
+/* ---- 列表 ---- */
+
+.clipw-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px;
+}
+
+.clip-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px 7px 8px;
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-hover) 55%, transparent);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  outline: 0;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    border-color var(--dur-fx) var(--ease-out);
+}
+
+.clip-row:hover {
+  background: var(--surface-hover);
+  border-color: var(--line);
+}
+
+.clip-row:focus-visible {
+  border-color: var(--accent);
+}
+
+.clip-row.is-pinned {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-soft));
+}
+
+.clip-row.is-copied {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+/* 新到达入场（refresh diff 驱动，ClipboardHistoryWidget ENTERING_MS 同源）：
+   只动 transform/opacity，与待办 task-row-in / 邮件到达同一语言。 */
+.clip-row.is-entering {
+  animation: clip-row-in var(--dur-spatial-fast, 0.35s) var(--ease-out) backwards;
+}
+@keyframes clip-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* 删除收拢退场（w-item-out 语言，对齐便签/书签；上限盖住 120px 图片行）。 */
+.clip-row.is-closing {
+  --out-h: 140px;
+  animation: w-item-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
+  pointer-events: none;
+}
+
+.clip-row-ico {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: var(--rad-7);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.clip-row.is-pinned .clip-row-ico {
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+.clip-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.clip-row-text {
+  font-size: var(--fs-12-5);
+  line-height: 1.35;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 摘要是首行压缩空白后的单行；长串按字符截断而非单词。 */
+  word-break: break-all;
+}
+
+.clip-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-10-5);
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.clip-row-meta > span {
+  white-space: nowrap;
+}
+
+.clip-row-pin {
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.clip-row-src {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+/* 图片缩略图：真实宽高比撑占位，最高 120px，缩略图到达前显示图标。 */
+.clip-thumb {
+  display: grid;
+  place-items: center;
+  max-width: 100%;
+  max-height: 120px;
+  min-height: 34px;
+  overflow: hidden;
+  border-radius: var(--rad-8);
+  border: 1px solid var(--line-soft);
+  background: repeating-conic-gradient(color-mix(in srgb, var(--ink) 8%, transparent) 0% 25%, transparent 0% 50%) 0 0 /
+    12px 12px;
+  color: var(--muted);
+}
+
+.clip-thumb img {
+  display: block;
+  max-width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+}
+
+/* 「已复制」反馈：右侧浮现，占位不改行高。 */
+.clip-row-copied {
+  position: absolute;
+  right: 8px;
+  top: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--rad-9);
+  font-size: var(--fs-10-5);
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fx) var(--ease-out);
+}
+
+.clip-row.is-copied .clip-row-copied {
+  opacity: 1;
+}
+
+/* ---- 空状态（与通知中心同语言） ---- */
+
+.clipw-empty {
+  margin: 14px 4px;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-12);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--rad-14);
+  background: color-mix(in srgb, var(--surface-soft) 55%, transparent);
+  animation: clipw-empty-in var(--dur-fx-slow) var(--ease-out) backwards;
+}
+
+@keyframes clipw-empty-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.clipw-empty-sub {
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+}
+
+/* ---- 底栏 ---- */
+
+.clipw-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.clipw-foot-hint {
+  font-size: var(--fs-10-5);
+  color: var(--muted-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clipw-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  margin-left: auto;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-13);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    border-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+
+.clipw-clear:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.clipw-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.clipw-clear.is-confirming {
+  border-color: var(--danger);
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+}
+
+.clipw-more {
+  display: block;
+  width: 100%;
+  margin: 4px 0 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--rad-8);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+.clipw-more:hover {
+  background: var(--layer2, rgba(127, 127, 127, 0.12));
+}

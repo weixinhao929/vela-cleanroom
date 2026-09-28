@@ -1,0 +1,125 @@
+/* === 统一右键菜单（Fluent/Win11 风格） ================================
+   A2 统一后：桌面层与设置窗共用同一族 token——菜单 Portal 在 body 上，直接
+   继承 <html> 上由主题引擎写入的明暗双档变量（设置窗不再局部重定义同名
+   token，此前「继承不到窗口内变量」的分歧已消失）。背景接 A1 求解的
+   L3 弹层色（--popover-bg，随小组件不透明度联动、α 下限 0.85）。 */
+
+.ctx-menu {
+  position: fixed;
+  /* 阶梯内插层（global.css --z-ctx）：高于对话框、低于 toast。 */
+  z-index: var(--z-ctx, 10100);
+  min-width: 190px;
+  max-width: 300px;
+  padding: 5px;
+  background: var(--popover-layer, var(--popover-bg, color-mix(in srgb, var(--paper-solid) 90%, transparent)));
+  -webkit-backdrop-filter: blur(28px) saturate(1.7);
+  backdrop-filter: blur(28px) saturate(1.7);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: var(--rad-10);
+  box-shadow:
+    0 2px 6px color-mix(in srgb, var(--shadow-tint) 28%, transparent),
+    0 12px 36px color-mix(in srgb, var(--shadow-tint) 52%, transparent);
+  color: var(--ink);
+  font-family: var(--font-body, var(--ui-font, "Segoe UI", "Microsoft YaHei", sans-serif));
+  font-size: var(--fs-13);
+  line-height: 1;
+  outline: none;
+  animation: ctx-in var(--dur-fx-xfast, 0.12s) var(--ease-out) both;
+}
+@keyframes ctx-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+:root[data-reduce-motion="1"] .ctx-menu {
+  animation: none;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  /* A4 状态层：hover .08 / pressed .12 叠 On 色，danger 项叠危险色，
+     替代原手调 hover 底色（kb-active 与 hover 同视觉）。 */
+  position: relative;
+  isolation: isolate;
+  --state-layer: 0;
+}
+.ctx-item::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--ink);
+  opacity: var(--state-layer);
+  pointer-events: none;
+  transition: opacity var(--dur-fx-fast, 150ms) var(--ease-fx, ease);
+}
+.ctx-item:hover,
+.ctx-item.kb-active {
+  --state-layer: var(--state-layer-hover, 0.08);
+}
+.ctx-item:active {
+  --state-layer: var(--state-layer-pressed, 0.12);
+}
+
+.ctx-item-icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  flex: none;
+  color: var(--muted);
+}
+.ctx-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-shortcut {
+  flex: none;
+  margin-left: 18px;
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-item.danger,
+.ctx-item.danger .ctx-item-icon {
+  color: var(--danger);
+}
+.ctx-item.danger::after {
+  background: var(--danger);
+}
+
+.ctx-item.disabled {
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--line-soft, rgba(255, 255, 255, 0.08));
+}
+
+/* 设置窗内菜单：.ctx-in-settings / .ctx-theme-dark / .ctx-theme-light 仍由
+   ContextMenu.tsx 挂载（保留作行为钩子与将来密度微调位），但不再携带第三套
+   固定色板——色值全部来自 <html> 同族 token。 */

@@ -1,0 +1,240 @@
+/* =====================================================================
+   简约日历选择器（components/DatePicker）——全应用共用的日期 / 日期时间弹层。
+   独立于 settings.css：桌面层窗口不加载 settings.css，但 DDL / 倒计时等
+   桌面小组件也用本组件；全部取主题 token，深浅色自适应。
+   ===================================================================== */
+.tm-dp {
+  position: relative;
+  flex-shrink: 0;
+  min-width: 0;
+}
+/* 字段文本恒一行：窄容器（DDL 添加行等）下省略而非换行折高。 */
+.tm-dp-field > span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tm-dp-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 5px 12px;
+  font-size: var(--fs-12-5);
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-dp-field:hover,
+.tm-dp-field.is-open {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+.tm-dp-field.is-open {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.tm-dp-field .is-placeholder {
+  color: var(--muted-2);
+}
+.tm-dp-field svg {
+  color: var(--muted-2);
+}
+.tm-dp-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--z-pop);
+  width: 238px;
+  padding: 10px;
+  background: var(--popover-layer, var(--popover-bg, var(--paper-solid, var(--paper))));
+  border: 1px solid var(--line);
+  border-radius: var(--rad-14);
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--shadow-tint) 80%, transparent);
+  animation: tm-dp-in var(--dur-fx-fast, 0.15s) var(--ease-spring, ease) both;
+}
+@keyframes tm-dp-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 退场（useDelayedUnmount 关闭窗口内播放，播完卸载）：入场反向缩一档。 */
+.tm-dp-pop.is-closing {
+  animation: tm-dp-out var(--dur-fx-xfast, 0.12s) var(--ease-in, ease-in) forwards;
+}
+@keyframes tm-dp-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+}
+/* 翻月方向性滑入（容器按「年-月」重挂驱动重播；方向由 data-dir 给出）。 */
+.tm-dp-grid[data-dir] {
+  animation: tm-dp-flip var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out);
+}
+.tm-dp-grid[data-dir="-1"] {
+  --tm-dp-flip-from: -8px; /* 上个月：从左进来 */
+}
+.tm-dp-grid[data-dir="1"] {
+  --tm-dp-flip-from: 8px; /* 下个月：从右进来 */
+}
+@keyframes tm-dp-flip {
+  from {
+    opacity: 0;
+    transform: translateX(var(--tm-dp-flip-from, 0px));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.tm-dp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.tm-dp-month {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.tm-dp-nav {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--rad-8);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-dp-nav:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.tm-dp-week,
+.tm-dp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+.tm-dp-week span {
+  padding: 4px 0;
+  font-size: var(--fs-10-5);
+  text-align: center;
+  color: var(--muted-2);
+}
+.tm-dp-day {
+  display: grid;
+  place-items: center;
+  height: 30px;
+  margin: 1px 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--rad-8);
+  background: none;
+  font-size: var(--fs-12);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.tm-dp-day:hover {
+  background: var(--surface-hover);
+}
+.tm-dp-day.is-out {
+  color: var(--muted-2);
+  opacity: 0.55;
+}
+.tm-dp-day.is-today:not(.is-selected) {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.tm-dp-day.is-selected {
+  background: var(--accent);
+  color: var(--btn-fg, #fff);
+  font-weight: 600;
+}
+/* DateTimePicker：弹层内嵌时间行（原生 time 输入，样式对齐字段）。 */
+.tm-dp-time {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.tm-dp-time-label {
+  font-size: var(--fs-12);
+  color: var(--muted-2);
+}
+.tm-dtp-time {
+  padding: 4px 8px;
+  font-size: var(--fs-12-5);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--rad-7);
+  outline: none;
+  color-scheme: dark;
+  transition: border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-dtp-time:hover {
+  border-color: var(--line-strong);
+}
+.tm-dtp-time:focus {
+  border-color: var(--accent);
+}
+html[data-theme="light"] .tm-dtp-time,
+.tm-settings-window[data-theme="light"] .tm-dtp-time {
+  color-scheme: light;
+}
+.tm-dp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.tm-dp-act {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--rad-7);
+  background: none;
+  font-size: var(--fs-12);
+  font-family: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-dp-act:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}

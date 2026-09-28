@@ -1,0 +1,608 @@
+/* ────────────────────────────────────────────────────────────── *
+ * 通知中心（DOCK / 方案 D）
+ *  - ncw-*：小组件壳（标题行 + 角标）；
+ *  - nc-*：列表主体（小组件与 dock 通知面板共用）；
+ *  - 滑动删除：拖动行 .is-dragging 禁过渡跟手；松手后由基类 transition
+ *    接管（弹回 --ease-spring-soft / 滑出加速）；邻卡跟随走同一 transform。
+ * 全部颜色/圆角/时长取全局 token；动效时长被全局 [data-reduce-motion="1"]
+ * 压缩，无需逐条适配。
+ * ────────────────────────────────────────────────────────────── */
+
+.ncw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+}
+
+.ncw-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px;
+}
+
+.ncw-ico {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.ncw-title {
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.ncw-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--rad-9);
+  font-size: var(--fs-10-5);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-ink);
+}
+
+/* ---- 列表主体 ---- */
+
+.nc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.nc.is-compact {
+  gap: 6px;
+}
+
+.nc-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px;
+}
+
+/* ---- 分组卡 / 滑动行（折叠组整卡、展开组逐条共用 .nc-row） ---- */
+
+.nc-row {
+  /* 松手后的弹回 / 滑出过渡；拖动期间由 .is-dragging 关闭。 */
+  transition:
+    transform var(--dur-spatial-fast) var(--ease-spring-soft),
+    opacity var(--dur-fx) var(--ease-out);
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.nc-row.is-dragging {
+  transition: none;
+  cursor: grabbing;
+}
+
+.nc-row.is-leaving-left {
+  transform: translate3d(calc(-100% - 48px), 0, 0);
+  opacity: 0;
+}
+
+.nc-row.is-leaving-right {
+  transform: translate3d(calc(100% + 48px), 0, 0);
+  opacity: 0;
+}
+
+.nc-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+.nc-row.nc-group {
+  cursor: grab;
+}
+
+.nc-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nc-group-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--rad-6);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-ink);
+  flex-shrink: 0;
+}
+
+.nc-group-name {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nc-group-time {
+  font-size: var(--fs-10-5);
+  color: var(--muted-2);
+  margin-left: auto;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.nc-group-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out),
+    transform var(--dur-fx-fast) var(--ease-spring);
+}
+
+.nc-group-expand:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.nc-group-expand:active {
+  transform: scale(0.94);
+}
+
+.nc-group-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--rad-8);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--ink);
+  /* 新通知并入已有组：徽标由 key=count 重挂而弹跳（w-num-pop）。 */
+  animation: w-num-pop var(--dur-fx) var(--ease-spring) backwards;
+}
+
+/* 新通知到达入场（NotificationCenterList arrivingIds 驱动，ARRIVE_MS 同源）：
+   新组挂载即播；已有组追加记录时短暂挂 .is-arriving 重播。只动合成器属性。 */
+.nc-row.is-arriving {
+  animation: nc-arrive var(--dur-spatial-fast) var(--ease-out) backwards;
+}
+@keyframes nc-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* 批量退场（清除全部 / 整组移除，massLeave 驱动）：逐组右滑淡出，
+   --sti 错落（cap 4 档 × 40ms，与 JS MASS_LEAVE_MS 总窗口对齐）。 */
+.nc-group.is-leaving {
+  animation: nc-mass-leave var(--dur-fx, 0.2s) var(--ease-in, ease-in) both;
+  animation-delay: calc(min(var(--sti, 0), 4) * 40ms);
+  pointer-events: none;
+}
+@keyframes nc-mass-leave {
+  to {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+}
+
+/* 组展开 / 收起（expanded 两形态互切重挂）：展开面与收起行淡入 + 方向性位移。
+   一.10：位移量走 --nc-swap-y（组根内联注入）——展开向下生长（-4px 落下），
+   收起向上收拢（6px 折回），不再两方向共用同一条「从上落下」。 */
+.nc-group.is-expanded {
+  animation: nc-swap-in var(--dur-fx, 0.2s) var(--ease-out, ease-out);
+}
+.nc-group-items {
+  animation: nc-swap-in var(--dur-fx, 0.2s) var(--ease-out, ease-out) backwards;
+}
+@keyframes nc-swap-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--nc-swap-y, -4px));
+  }
+}
+
+.nc-group-expand svg {
+  transition: transform var(--dur-fx) var(--ease-out);
+}
+
+.nc-group-expand.is-open svg {
+  transform: rotate(180deg);
+}
+
+/* ---- 单条通知 ---- */
+
+.nc-more {
+  display: block;
+  width: 100%;
+  margin: 4px 0 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--rad-8);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+.nc-more:hover {
+  background: var(--layer2, rgba(127, 127, 127, 0.12));
+}
+
+/* 组头「定位来源组件」按钮：视觉对齐 .nc-group-expand（颜色/背景走
+   --dur-fx 过渡，同文件 .nc-more 语言）。 */
+.nc-group-locate {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+.nc-group-locate:hover {
+  background: var(--layer2, rgba(127, 127, 127, 0.12));
+  color: var(--ink);
+}
+
+.nc-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nc-item {
+  display: flex;
+  gap: 7px;
+  padding: 5px 7px 5px 8px;
+  border-radius: var(--rad-7);
+  min-width: 0;
+}
+
+.nc-row .nc-item {
+  background: color-mix(in srgb, var(--surface-hover) 55%, transparent);
+  border: 1px solid var(--line-soft);
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    border-color var(--dur-fx) var(--ease-out);
+}
+
+.nc-row:hover .nc-item {
+  background: var(--surface-hover);
+  border-color: var(--line);
+}
+
+.nc-item.is-dim {
+  opacity: 0.5;
+}
+
+/* 未读小圆点打在时间前；看到即已读后消失（opacity 过渡归 .nc-item-bar 同行）。 */
+.nc-item.is-unread .nc-item-title::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+/* kind 色条（与 toast 的 kind 配色一致：番茄钟=accent / 待办=success / 其余=muted）。 */
+.nc-item-bar {
+  width: 3px;
+  border-radius: var(--rad-2);
+  flex-shrink: 0;
+  background: var(--muted);
+  opacity: 0.55;
+}
+
+.nc-item[data-kind="pomodoro"] .nc-item-bar {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.nc-item[data-kind="todo"] .nc-item-bar {
+  background: var(--success);
+  opacity: 1;
+}
+
+.nc-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nc-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.nc-item-title {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nc-item-time {
+  margin-left: auto;
+  font-size: var(--fs-10);
+  color: var(--muted-2);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.nc-item-body {
+  font-size: var(--fs-11);
+  color: var(--muted);
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.nc-item.is-expanded .nc-item-body {
+  -webkit-line-clamp: 3;
+  white-space: pre-line;
+}
+
+/* ---- 恢复条（undo） ---- */
+
+.nc-undo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: var(--radius-ctl);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: var(--fs-11-5);
+  color: var(--ink);
+  animation: nc-undo-in var(--dur-fx) var(--ease-out) backwards;
+}
+
+@keyframes nc-undo-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.nc-undo-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nc-undo-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--rad-6);
+  background: var(--accent);
+  color: var(--btn-fg, #fff);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    transform var(--dur-fx-fast) var(--ease-spring),
+    background-color var(--dur-fx) var(--ease-out);
+}
+
+.nc-undo-btn:hover {
+  background: var(--accent-2);
+}
+
+.nc-undo-btn:active {
+  transform: scale(0.94);
+}
+
+.nc-undo-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+
+.nc-undo-close:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+/* ---- 底部：免打扰 + 清除 ---- */
+
+.nc-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.nc-dnd {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-13);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    border-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+
+.nc-dnd:hover {
+  background: var(--surface-hover);
+}
+
+.nc-dnd.is-on {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-ink);
+}
+
+.nc-dnd-track {
+  width: 22px;
+  height: 12px;
+  border-radius: var(--rad-6);
+  background: color-mix(in srgb, var(--muted) 25%, transparent);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 1.5px;
+  flex-shrink: 0;
+  /* 四.2：is-on 开启态轨道变 accent 走过渡。 */
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+
+.nc-dnd-thumb {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition:
+    transform var(--dur-fx) var(--ease-out),
+    background-color var(--dur-fx) var(--ease-out);
+}
+
+.nc-dnd.is-on .nc-dnd-track {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.nc-dnd.is-on .nc-dnd-thumb {
+  transform: translateX(10px);
+  background: #fff;
+}
+
+.nc-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-13);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    border-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+
+.nc-clear:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.nc-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.nc-clear.is-confirming {
+  border-color: var(--danger);
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+}
+
+/* ---- 空状态 ---- */
+
+.nc-empty {
+  margin: 14px 4px;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-12);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--rad-14);
+  background: color-mix(in srgb, var(--surface-soft) 55%, transparent);
+  animation: nc-empty-in var(--dur-fx-slow) var(--ease-out) backwards;
+}
+
+@keyframes nc-empty-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.nc-empty-sub {
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+}

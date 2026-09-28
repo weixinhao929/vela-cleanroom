@@ -1,0 +1,2796 @@
+/* ────────────────────────────────────────────────────────────── *
+ * 灵动岛（C2 → 2.0，Vela 版 Keystone）
+ *  区段标记与 src/widget/dock/ 组件一一对应，后续并行会话只在各自区段内改：
+ *  ══ POLISH ══   （跨区段）      焦点环 / 投影 token 单源、48px 命中区、reduce-motion 兜底
+ *  ══ SHELL ══    DockShell        岛本体几何 / 玻璃条 / 编辑态描边 / 层叠放 / bangs 外形
+ *  ══ TILES ══    DockTiles        磁贴层（排布 / 接管期隐藏 / FLIP 排序）
+ *  ══ TILE ══     DockTile         单磁贴（富 / 通用 / 打开态 / 加载占位）
+ *  ══ DROP ══     DockDropZone     画布卡片拖入的命中高亮与插入位预览
+ *  ══ PANEL ══    DockTile / DockPanel  展开面板内容（外壳由 WidgetExpandOverlay 提供）
+ *  ══ TAKEOVER ══ DockTakeover     接管层（与磁贴层常驻叠放，只切 opacity/transform）
+ *  ══ CONFIG ══   DockConfigPanel  编辑模式配置面板（落点对齐 .widget-template-panel）
+ *  ══ MINI ══     widgets/mini/*   迷你形态内部样式（时钟 / 番茄钟环 / 通知角标）
+ *
+ * 动效规范（F-9，ISLAND-POLISH 统一，详见 docs/ui-guidelines.md §4）：
+ *  · 几何落位（FLIP / 吸附 / 换边 / 磁贴弹入 / 岛宽 spring）→ Spatial 过冲族：
+ *    --ease-spatial-fast 350 / --ease-spatial 500 / --ease-island-expand 500（基准样条）
+ *  · 收回 / 退场 → --ease-in（磁贴移除 160 / 接管收回 360）
+ *  · 状态 / 颜色 / 透明度 / hover 微涨 → --ease-fx（150 / 200 / 300 / 360）
+ *  · 弹层入场 keyframes → --ease-out；按压 → --ease-spring；指针跟随指示 → --ease-out 150
+ *  · 曲线只引用 token，本文件无裸 cubic-bezier；颜色只引用 token（豁免：mask 渐变的
+ *    不透明停靠点 #000、音乐跑马 linear 匀速）；reduce-motion 由全局门控 + 文末兜底块压缩。
+ * ────────────────────────────────────────────────────────────── */
+
+/* ══ POLISH ══ */
+
+/* 跨区段单源 token（ISLAND-POLISH 是唯一可跨区段改本文件的会话）：
+   · --ring：焦点环。小组件窗口没有设置窗 .tm-settings-window 的 --ring，岛的
+     所有表面（含 Portal 到 body 的弹层 / 幽灵）统一用 accent——对纸底非文本
+     对比 ≥3:1，明暗两档均达标（settings-motion-color-audit #5 同口径）。
+   · --dock-shadow：投影色 = --widget-hover-shadow（global.css 明暗双档 .10 / .35），
+     本文件不再写 rgba 黑；几何（偏移 / 模糊）各处保留。 */
+.dock,
+.dock-drag-ghost,
+.dock-picker,
+.dock-drop,
+.dock-cfg,
+.dock-panel,
+.dock-tile-cfg {
+  --ring: var(--accent);
+  --dock-shadow: var(--widget-hover-shadow);
+}
+
+/* F-12 焦点环：全部可聚焦控件同一副环，只在键盘来源（:focus-visible）显示。
+   backdrop-filter 表面上 outline 不参与合成层重建，可安全使用。 */
+.dock-tile:focus-visible,
+.dock-tile-add:focus-visible,
+.dock-handle:focus-visible,
+.dock-view-arrow:focus-visible,
+.dock-takeover:focus-visible,
+.dock-picker-item:focus-visible,
+.dock-picker-close:focus-visible,
+.dock-panel-btn:focus-visible,
+.dp-iconbtn:focus-visible,
+.dp-dot:focus-visible,
+.dp-card-title:focus-visible,
+.dock-cfg-switch:focus-visible,
+.dock-cfg-seg-item:focus-visible,
+.dock-cfg-chip:focus-visible,
+.dock-cfg-chip-btn:focus-visible,
+.dock-cfg-add-item:focus-visible,
+.dock-mini-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* F-12 触控命中 ≥48px（ui-guidelines §2）：视觉尺寸不变，用伪元素外扩命中区。
+   · 桌面层：岛本体 .dock（data-interactive）整块上报命中矩形，岛内 3px padding 带
+     由外扩覆盖——整条岛无死角；超出岛包围盒的上下各 8px 在 Tauri 非 overlay 态
+     仍穿透到桌面（指到空处 = 穿透，不构成「看得见点不中」），浏览器 / 触屏 /
+     编辑模式（整窗可交互）下完整生效。要让 48px 在桌面层也成为真实盒子，走
+     F-6 密度 48 档（CFG 持有，尚未消费）。
+   · 弹层 / 面板：整窗或整层已上报，外扩完整生效。
+   · 相邻控件的外扩在间隙中点相接，不互相覆盖。 */
+.dock-tile,
+.dock-tile-add,
+.dock-handle,
+.dock-view-arrow,
+.dock-takeover,
+.dock-picker-close,
+.dock-panel-btn,
+.dp-iconbtn,
+.dp-dot,
+.dock-cfg-switch,
+.dock-cfg-seg-item,
+.dock-cfg-chip,
+.dock-cfg-chip-btn {
+  position: relative;
+}
+
+.dock-tile::after,
+.dock-tile-add::after,
+.dock-handle::after,
+.dock-takeover::after,
+.dock-picker-close::after,
+.dock-panel-btn::after,
+.dp-iconbtn::after,
+.dp-dot::before,
+.dock-cfg-switch::after,
+.dock-cfg-seg-item::after,
+.dock-cfg-chip::after,
+.dock-cfg-chip-btn::after {
+  content: "";
+  position: absolute;
+  /* 磁贴 32 高 → 48：上下各 8；水平到 4px 间隙中点。 */
+  inset: -8px -2px;
+}
+
+.dock-tile-add::after {
+  inset: -8px; /* 32×32 → 48×48 */
+}
+
+.dock-handle::after {
+  inset: -13px -14px; /* 16×22 → 44×48 */
+}
+
+.dock-takeover::after {
+  inset: -8px 0; /* 32 高 → 48，宽度本就 ≥ 内容 */
+}
+
+.dock-picker-close::after {
+  inset: -11px; /* 22 → 44 */
+}
+
+.dp-iconbtn::after {
+  inset: -7px; /* 30 → 44 */
+}
+
+.dock-panel-btn::after {
+  inset: -8px 0; /* 32 高 → 48 */
+}
+
+.dp-dot::before {
+  inset: -14px -3px; /* 22×16 → 28×44：横向到 6px 间隙中点，纵向 44 */
+}
+
+.dock-cfg-switch::after {
+  inset: -14px -7px; /* 34×20 → 48×48 */
+}
+
+.dock-cfg-seg-item::after {
+  inset: -12px 0; /* 24 高 → 48 */
+}
+
+.dock-cfg-chip::after {
+  inset: -11px 0; /* 26 高 → 48 */
+}
+
+.dock-cfg-chip-btn::after {
+  inset: -13px -1.5px; /* 18 → 21×44：↑↓× 三钮 3px 间隙中点相接 */
+}
+
+/* ══ SHELL ══ */
+
+.dock {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  /* 磁贴层与接管层叠在同一格，谁可见由 opacity 决定，容器宽随可见层走。
+     两侧 prev / next 列给「‹ ›」视图切换按钮（dock.viewArrows），不渲染时列宽为 0。 */
+  grid-template-columns: auto auto auto;
+  grid-template-areas: "prev stack next";
+  align-items: center;
+  min-height: 38px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  /* 玻璃（底色 + backdrop-filter）不在本元素上，而在下方 ::before 一整块上——见
+     「玻璃面」注释。本元素只负责边线 / 投影 / 布局；圆角 = 玻璃圆角 --dock-r + 1px
+     边线，与半高（38 → 19）相等即完整胶囊。不用 --radius-pill（999px）：切到 bangs
+     时上圆角要过渡到 0，999→0 的插值绝大部分时间被钳在半高，视觉上是「静止再突变」。 */
+  --dock-r: 18px;
+  border-radius: var(--rad-19);
+  color: var(--layer2-on, var(--ink));
+  box-shadow:
+    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
+    inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent),
+    0 2px 10px var(--dock-shadow);
+  z-index: var(--z-float-menu);
+  /* padding / border-radius 服务 F-9 hover 微涨（is-peak，--dur-spatial-fast fx 曲线，
+     标准档 350ms 与历史硬编码 360ms 手感一致，随「设置→动效」速度档缩放）；
+     translate 服务 QQ 式自动隐藏（is-tucked）——二.7 起与吸附 FLIP / 接管宽度
+     共用 dockQ 弹簧（--ease-dock-spring，NPS 统一曲线思想：所有几何 morph
+     同一条带过冲曲线，手感一致）。
+     几何位移不在此列：拖动期由 TSX 内联 transition:none 直写 transform，松手 FLIP
+     再内联挂 transform 过渡（吸附 450ms --ease-dock-spring）。
+     top 是例外：胶囊 ↔ 贴边刘海切换时岛从 topInset 上移到 0（或回落），这一步
+     不经 FLIP，靠这里的过渡与玻璃面轮廓形变同步；FLIP 期间内联 transition
+     整体覆盖此列表，互不干扰。岛宽随内容 spring 见下方 @supports (interpolate-size) 块。 */
+  /* layout-anim: ok padding/top 为有意的离散形变（F-9 hover 涨距、胶囊↔贴边刘海切换，不经 FLIP），与玻璃轮廓同步 */
+  transition:
+    border-color var(--dur-fx) var(--ease-fx),
+    box-shadow var(--dur-fx) var(--ease-fx),
+    padding var(--dur-spatial-fast) var(--ease-fx),
+    border-radius var(--dur-spatial-fast) var(--ease-fx),
+    top var(--dur-spatial-fast) var(--ease-spatial-fast),
+    translate var(--dur-dock-spring) var(--ease-dock-spring),
+    opacity var(--dur-fx) var(--ease-fx);
+
+  /* ---- 玻璃面轮廓（clip-path 多边形，坐标系 = 下方 ::before 的盒：岛边框盒向左右各
+     外扩 8px，即边框盒占 x∈[8px, 100%-8px]、y∈[0, 100%]）----
+     两种外形顶点数与顺序完全一致（左上 → 右上 → 右下 → 左下，每角 9 点 / 8 段），
+     切换时浏览器逐点插值，胶囊「长出」两翼变成刘海是一次连贯形变。每角 8 段折线对
+     18px 圆弧的最大偏差 0.09px，肉眼不可辨。
+     · 胶囊：边框盒内缩 1px（留出 1px 边线），四角圆弧半径 --dock-r。
+     · 刘海：铺满边框盒，上两角换成 8×14 过渡翼（附边过渡翼：along 8 /
+       depth 14，贝塞尔 (8,14)→(8,8.12)→(3.36,0)→(0,0) 取 9 个采样点），翼把岛的竖直
+       侧边平滑接到屏幕上边缘；下两角圆弧 --dock-r。 */
+  --dock-shape-pill: polygon(
+    9px calc(1px + var(--dock-r)),
+    calc(9px + var(--dock-r) * 0.0192) calc(1px + var(--dock-r) * 0.8049),
+    calc(9px + var(--dock-r) * 0.0761) calc(1px + var(--dock-r) * 0.6173),
+    calc(9px + var(--dock-r) * 0.1685) calc(1px + var(--dock-r) * 0.4444),
+    calc(9px + var(--dock-r) * 0.2929) calc(1px + var(--dock-r) * 0.2929),
+    calc(9px + var(--dock-r) * 0.4444) calc(1px + var(--dock-r) * 0.1685),
+    calc(9px + var(--dock-r) * 0.6173) calc(1px + var(--dock-r) * 0.0761),
+    calc(9px + var(--dock-r) * 0.8049) calc(1px + var(--dock-r) * 0.0192),
+    calc(9px + var(--dock-r)) 1px,
+    calc(100% - 9px - var(--dock-r)) 1px,
+    calc(100% - 9px - var(--dock-r) * 0.8049) calc(1px + var(--dock-r) * 0.0192),
+    calc(100% - 9px - var(--dock-r) * 0.6173) calc(1px + var(--dock-r) * 0.0761),
+    calc(100% - 9px - var(--dock-r) * 0.4444) calc(1px + var(--dock-r) * 0.1685),
+    calc(100% - 9px - var(--dock-r) * 0.2929) calc(1px + var(--dock-r) * 0.2929),
+    calc(100% - 9px - var(--dock-r) * 0.1685) calc(1px + var(--dock-r) * 0.4444),
+    calc(100% - 9px - var(--dock-r) * 0.0761) calc(1px + var(--dock-r) * 0.6173),
+    calc(100% - 9px - var(--dock-r) * 0.0192) calc(1px + var(--dock-r) * 0.8049),
+    calc(100% - 9px) calc(1px + var(--dock-r)),
+    calc(100% - 9px) calc(100% - 1px - var(--dock-r)),
+    calc(100% - 9px - var(--dock-r) * 0.0192) calc(100% - 1px - var(--dock-r) * 0.8049),
+    calc(100% - 9px - var(--dock-r) * 0.0761) calc(100% - 1px - var(--dock-r) * 0.6173),
+    calc(100% - 9px - var(--dock-r) * 0.1685) calc(100% - 1px - var(--dock-r) * 0.4444),
+    calc(100% - 9px - var(--dock-r) * 0.2929) calc(100% - 1px - var(--dock-r) * 0.2929),
+    calc(100% - 9px - var(--dock-r) * 0.4444) calc(100% - 1px - var(--dock-r) * 0.1685),
+    calc(100% - 9px - var(--dock-r) * 0.6173) calc(100% - 1px - var(--dock-r) * 0.0761),
+    calc(100% - 9px - var(--dock-r) * 0.8049) calc(100% - 1px - var(--dock-r) * 0.0192),
+    calc(100% - 9px - var(--dock-r)) calc(100% - 1px),
+    calc(9px + var(--dock-r)) calc(100% - 1px),
+    calc(9px + var(--dock-r) * 0.8049) calc(100% - 1px - var(--dock-r) * 0.0192),
+    calc(9px + var(--dock-r) * 0.6173) calc(100% - 1px - var(--dock-r) * 0.0761),
+    calc(9px + var(--dock-r) * 0.4444) calc(100% - 1px - var(--dock-r) * 0.1685),
+    calc(9px + var(--dock-r) * 0.2929) calc(100% - 1px - var(--dock-r) * 0.2929),
+    calc(9px + var(--dock-r) * 0.1685) calc(100% - 1px - var(--dock-r) * 0.4444),
+    calc(9px + var(--dock-r) * 0.0761) calc(100% - 1px - var(--dock-r) * 0.6173),
+    calc(9px + var(--dock-r) * 0.0192) calc(100% - 1px - var(--dock-r) * 0.8049),
+    9px calc(100% - 1px - var(--dock-r))
+  );
+  --dock-shape-bangs: polygon(
+    8px 14px,
+    7.79px 11.71px,
+    7.22px 9.33px,
+    6.36px 6.99px,
+    5.26px 4.8px,
+    4.01px 2.88px,
+    2.67px 1.36px,
+    1.31px 0.36px,
+    0 0,
+    100% 0,
+    calc(100% - 1.31px) 0.36px,
+    calc(100% - 2.67px) 1.36px,
+    calc(100% - 4.01px) 2.88px,
+    calc(100% - 5.26px) 4.8px,
+    calc(100% - 6.36px) 6.99px,
+    calc(100% - 7.22px) 9.33px,
+    calc(100% - 7.79px) 11.71px,
+    calc(100% - 8px) 14px,
+    calc(100% - 8px) calc(100% - var(--dock-r)),
+    calc(100% - 8px - var(--dock-r) * 0.0192) calc(100% - var(--dock-r) * 0.8049),
+    calc(100% - 8px - var(--dock-r) * 0.0761) calc(100% - var(--dock-r) * 0.6173),
+    calc(100% - 8px - var(--dock-r) * 0.1685) calc(100% - var(--dock-r) * 0.4444),
+    calc(100% - 8px - var(--dock-r) * 0.2929) calc(100% - var(--dock-r) * 0.2929),
+    calc(100% - 8px - var(--dock-r) * 0.4444) calc(100% - var(--dock-r) * 0.1685),
+    calc(100% - 8px - var(--dock-r) * 0.6173) calc(100% - var(--dock-r) * 0.0761),
+    calc(100% - 8px - var(--dock-r) * 0.8049) calc(100% - var(--dock-r) * 0.0192),
+    calc(100% - 8px - var(--dock-r)) 100%,
+    calc(8px + var(--dock-r)) 100%,
+    calc(8px + var(--dock-r) * 0.8049) calc(100% - var(--dock-r) * 0.0192),
+    calc(8px + var(--dock-r) * 0.6173) calc(100% - var(--dock-r) * 0.0761),
+    calc(8px + var(--dock-r) * 0.4444) calc(100% - var(--dock-r) * 0.1685),
+    calc(8px + var(--dock-r) * 0.2929) calc(100% - var(--dock-r) * 0.2929),
+    calc(8px + var(--dock-r) * 0.1685) calc(100% - var(--dock-r) * 0.4444),
+    calc(8px + var(--dock-r) * 0.0761) calc(100% - var(--dock-r) * 0.6173),
+    calc(8px + var(--dock-r) * 0.0192) calc(100% - var(--dock-r) * 0.8049),
+    8px calc(100% - var(--dock-r))
+  );
+}
+
+/* 玻璃面：一整块 ::before 承担岛的底色与 backdrop-filter，盒子 = 边框盒向左右各外扩 8px
+   （给刘海的两翼留位），再按上面的多边形裁出外形。
+   为什么不像早先那样「岛体自己是玻璃 + 两枚伪元素翼各自做玻璃」：backdrop-filter 的
+   模糊按元素边界镜像采样，三块玻璃在接缝两侧算出的颜色不一样，用户看到的就是两角
+   与岛体「颜色不是一体的、中间一道曲线」。同一块玻璃内部没有接缝可言。
+   F-10 主题：底色 = A1 层级求解的 L2（弹层层，随不透明度滑条与壁纸 token 联动），
+   theme-engine 写入前回退纸色。z-index:-1 落在 .dock 的层叠上下文里：在本元素的边线 /
+   投影之上、磁贴与按钮之下。 */
+.dock::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: -9px;
+  right: -9px;
+  z-index: -1;
+  background: var(--layer2, var(--paper));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
+  clip-path: var(--dock-shape-pill);
+  pointer-events: none;
+  transition:
+    clip-path var(--dur-spatial-fast) var(--ease-fx),
+    background var(--dur-fx) var(--ease-fx);
+}
+
+.dock.is-editing {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 2px 10px var(--dock-shadow);
+  /* 左端给拖动柄让位（柄绝对定位悬浮，不占格；否则会盖住首枚磁贴）。 */
+  padding-left: 24px;
+}
+
+/* start / end 吸附点：left / right 已是贴边像素留白，不再做 -50% 居中平移。
+   拖动 / FLIP 期间内联 transform 覆盖此处；结束清掉内联后由本规则接管。 */
+.dock[data-snap="start"],
+.dock[data-snap="end"] {
+  transform: none;
+}
+
+.dock.is-dragging {
+  cursor: grabbing;
+}
+
+/* F-9 hover 微涨（dock.mouse.hover = peak，折叠态）：宽 +16 / 高 +6 / 圆角 +3，
+   走 padding 过渡（任务口径：transform scale 或 padding 均可）。
+   --dock-r 同步 +3：玻璃多边形圆角与边线（22 = 21 + 1）一起涨，44px 高仍 ≥ 半高。 */
+.dock.is-peak {
+  padding: 6px 11px;
+  --dock-r: 21px;
+  border-radius: var(--rad-22);
+}
+
+/* QQ 式自动隐藏（dock.autoHide，DockShell 挂 is-tucked）：整条收进屏幕上缘只留 6px
+   一条感应带（贴边刘海那种「完全贴没」，胶囊外形由 --dock-inset 补偿 topInset——
+   否则 -100% 平移后还会留着 inset 那截），指针碰到那一条即整体滑出。用独立 translate
+   属性而不是 transform：与静止 / 拖动 / FLIP 的 transform 基线互不覆盖，动画走合成器；
+   过渡在 .dock 基础规则的清单里（360ms --ease-spatial）。收合期不关 pointer-events——
+   留在屏内的那一条正是「靠近就弹出」的感应区。 */
+.dock.is-tucked {
+  translate: 0 calc(6px - 100% - var(--dock-inset, 0px));
+}
+
+/* F-4 拖动柄：六点纹（两列 × 三点）。两列合画在 ::before 的两层 radial-gradient
+   上（各自 background-position 定列位），把 ::after 让给 POLISH 的 44×48 命中区。 */
+.dock-handle {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    color var(--dur-fx) var(--ease-fx);
+}
+
+.dock-handle::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 3px;
+  width: 10px;
+  height: 15px;
+  background-image:
+    radial-gradient(circle, currentColor 1.3px, transparent 1.5px),
+    radial-gradient(circle, currentColor 1.3px, transparent 1.5px);
+  background-size: 4px 5px;
+  background-repeat: repeat-y;
+  background-position:
+    0 0,
+    6px 0;
+}
+
+.dock-handle:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.dock.is-dragging .dock-handle {
+  cursor: grabbing;
+  color: var(--accent-ink, var(--ink));
+}
+
+/* F-9 接管：磁贴层与接管层常驻叠放，切换只是 200ms 交叉淡化（fx 族）。 */
+.dock-tiles,
+.dock-takeover {
+  grid-area: stack;
+  transition:
+    opacity var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx) var(--ease-fx);
+}
+
+/* 五.11 岛启停出入场：启用/挂载时从上缘外弹入（dockQ 弹簧，backwards 起
+   始帧防闪现）；关闭时 TSX 保持挂载、is-leaving 收出后再卸载——此前开关
+   岛都是瞬现瞬失。translate 属性归 autoHide 收合专用，与本条 transform
+   互不覆盖。 */
+@keyframes dock-boot-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-100% - var(--dock-inset, 0px)));
+  }
+}
+.dock {
+  animation: dock-boot-in var(--dur-dock-spring) var(--ease-dock-spring) backwards;
+}
+.dock.is-leaving {
+  opacity: 0;
+  /* layout-anim: ok 岛关闭一次性收出（与 autoHide 收合同语言，离散事件） */
+  transform: translateY(calc(-100% - var(--dock-inset, 0px)));
+  transition:
+    opacity var(--dur-fx) var(--ease-in),
+    transform var(--dur-fx) var(--ease-in);
+}
+
+/* ---- F-9「岛宽随内容 spring」（ISLAND-POLISH，渐进增强） ----
+   两层叠在同一格，格宽 = 两层里较宽者。让接管层隐藏时 width 归零、可见时取
+   max-content，并用 interpolate-size 让 0 ↔ max-content 可插值：接管进场
+   500ms --ease-island-expand（过冲样条，基准峰值 1.035）撑开，岛宽随之 spring
+   到接管条的内容宽（比磁贴层宽时可见）；回落 360ms --ease-in 收回。两层在格内
+   居中，岛围绕中心对称变形（start / end 吸附点锚在边上则单侧变形）。
+   只动接管层不动磁贴层：磁贴层若也参与宽度动画就得 overflow:hidden，会把磁贴
+   的 48px 命中外扩与焦点环一并裁掉；代价是接管期岛不会比磁贴层更窄（与既有
+   表现一致）。引擎不支持 interpolate-size 时整块不生效，回到「宽度瞬跳」。
+   宽度是布局属性——只在接管进出这一离散事件上动画，不做常驻。 */
+@supports (interpolate-size: allow-keywords) {
+  .dock {
+    interpolate-size: allow-keywords;
+    justify-items: center;
+  }
+
+  /* 隐藏态：宽 0 + 裁切，收回过程中文字随框一起收进去。 */
+  .dock-takeover {
+    width: 0;
+    overflow: hidden;
+    /* layout-anim: ok interpolate-size 门控 0↔max-content 文字收展，无合成器等价 */
+    transition:
+      opacity var(--dur-fx) var(--ease-fx),
+      transform var(--dur-fx) var(--ease-fx),
+      width var(--dur-spatial-fast) var(--ease-in);
+  }
+
+  /* 可见态：不裁切（保住 48px 命中外扩与焦点环），标题 / 副标自身 ellipsis 自裁。
+     二.7：撑开曲线换成 dockQ 弹簧（与收合位移 / 吸附 FLIP 同一条带过冲曲线，
+     NPS 统一手感），时长随曲线 450ms；回落仍走 --ease-in（退场减速，见文件头）。 */
+  .dock.has-takeover .dock-takeover {
+    width: max-content;
+    overflow: visible;
+    /* layout-anim: ok interpolate-size 门控 0↔max-content 文字收展，无合成器等价 */
+    transition:
+      opacity var(--dur-fx) var(--ease-fx),
+      transform var(--dur-fx) var(--ease-fx),
+      width var(--dur-dock-spring) var(--ease-dock-spring);
+  }
+}
+
+/* ---- F-11 bangs 外形（D5 · ISLAND-POLISH 实现，仅顶边）----
+   贴屏幕上边缘的「刘海」：玻璃面轮廓换 --dock-shape-bangs（上两角是 8×14 过渡翼的
+   贝塞尔采样折线，下两角圆弧 --dock-r），岛从 topInset 上移到贴屏（top 过渡 360ms），
+   边线整圈隐去——翼与岛体在同一块玻璃里，颜色天然一体。底边 / 竖边不支持（保持
+   pill）。is-bangs 由 DockShell 按 dock.style === "bangs" 挂类；设置页「贴边刘海」
+   选项启用后即可见。已知代价：编辑模式吸附 FLIP 的起始补偿按 topInset 计算，会多出
+   10px 纵向偏移（岛从边缘「探出」360ms 归位），换边落点不受影响。 */
+.dock.is-bangs:not(.dock-edge-bottom) {
+  top: 0 !important;
+  border-color: transparent;
+  border-radius: 0 0 var(--dock-r) var(--dock-r);
+  box-shadow: 0 2px 10px var(--dock-shadow);
+}
+
+.dock.is-bangs.is-editing:not(.dock-edge-bottom) {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 2px 10px var(--dock-shadow);
+}
+
+.dock.is-bangs:not(.dock-edge-bottom)::before {
+  clip-path: var(--dock-shape-bangs);
+}
+
+/* 「‹ ›」视图切换按钮（dock.viewArrows）：岛两端各一枚，占 prev / next 列，与磁贴
+   同高（32）但只有 16 宽——存在感低于磁贴，也不把岛撑长。开关（dock.viewArrows）
+   与接管期都只是收合 + 淡出：max-width / margin 收到 0，岛的宽度随网格列自然过渡，
+   不跳变。overflow:hidden 裁的是收合中的图标；顺带不再做负 inset 的命中区外扩——
+   按钮贴着岛缘，岛外本就穿透到桌面。 */
+.dock-view-arrow {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  width: 16px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--rad-8);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  /* layout-anim: ok 视图箭头离散收展（16×32 微件），scale 会压扁箭形 */
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    color var(--dur-fx) var(--ease-fx),
+    opacity var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-fast) var(--ease-spring),
+    max-width var(--dur-spatial-fast) var(--ease-spatial-fast),
+    margin var(--dur-spatial-fast) var(--ease-spatial-fast);
+}
+
+.dock-view-arrow.is-prev {
+  grid-area: prev;
+  margin-right: 2px;
+}
+
+.dock-view-arrow.is-next {
+  grid-area: next;
+  margin-left: 2px;
+}
+
+.dock-view-arrow:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.dock-view-arrow:active {
+  transform: scale(0.9);
+}
+
+/* 关闭（dock.viewArrows=false）与接管期：收合到 0 宽（列宽随收 0，岛宽不跳），
+   淡出且不可交互；aria-hidden / tabIndex 由 TSX 同步。 */
+.dock-view-arrow.is-off,
+.dock.has-takeover .dock-view-arrow {
+  max-width: 0;
+  margin-left: 0;
+  margin-right: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ══ TILES ══ */
+
+.dock-tiles {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dock.has-takeover .dock-tiles {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+/* ---- 岛内拖动排序（ISLAND-SORT，F-3；幽灵芯片 + 插入位预览） ---- */
+
+/* 拖动进行中：整层抓手光标；其余磁贴的让位 translate 由 JS 内联写入
+   （transition 按 pickSpatialEase 选档同样内联），松手 flipReorder 回弹后清空。 */
+.dock-tiles.is-sorting,
+.dock-tiles.is-sorting .dock-tile {
+  cursor: grabbing;
+}
+
+/* 被拖磁贴本体留在原槽透明占位（不动布局），跟手的是 body 下的幽灵芯片。 */
+.dock-tiles .dock-tile.is-drag-source {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 幽灵芯片：cloneNode 的磁贴副本，fixed 到原矩形，每帧只写 transform
+   （translate3d 跟手 + scale 1.04）；>8 枚横向可滚时不受 overflow 裁切。
+   Portal 在 body 下拿不到 .dock 的 L2 On 色，这里显式接上。 */
+.dock-drag-ghost {
+  position: fixed;
+  z-index: var(--z-toast);
+  display: grid;
+  pointer-events: none;
+  color: var(--layer2-on, var(--ink));
+  transform: scale(1.04);
+  transition: opacity var(--dur-fx) var(--ease-fx);
+}
+
+.dock-drag-ghost > .dock-tile {
+  width: 100%;
+  height: 100%;
+  background: var(--surface-hover);
+  box-shadow: 0 6px 18px var(--dock-shadow);
+  cursor: grabbing;
+}
+
+/* 指针离岛 ≥48px：拟移除，幽灵半透明提示松手即删。 */
+.dock-drag-ghost.is-removing {
+  opacity: 0.55;
+}
+
+/* 拖出松手：幽灵原地缩到 .8 并淡出（F-9「删除 160ms 收缩」，退场走 --ease-in）。 */
+.dock-drag-ghost.is-exiting {
+  animation: dock-ghost-out var(--dur-fx-fast, 0.15s) var(--ease-in) both;
+}
+
+@keyframes dock-ghost-out {
+  to {
+    opacity: 0;
+    scale: 0.8;
+  }
+}
+
+/* 插入位预览：2px 竖条，落位空槽中心（岛内排序）或两枚间隙中点（画布卡片拖入）。
+   位置由 JS 写 transform，槽位切换时滑过去。 */
+.dock-insert-bar {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 0;
+  width: 2px;
+  border-radius: var(--rad-1);
+  background: var(--accent);
+  pointer-events: none;
+  transition: transform var(--dur-fx-fast) var(--ease-out);
+}
+
+/* 新磁贴（「+」添加 / 撤销恢复）入场：先以 0 宽 + 透明 + scale .8 挂进去（.is-entering，
+   绘制前由 DockTiles 挂上），下一帧摘掉后 max-width 0 → max-content（interpolate-size
+   渐进增强）、margin-left -4 → 0 吃掉磁贴间隙、opacity / scale 一起过渡——岛随之平滑
+   变宽，而不是宽度瞬跳后再让磁贴弹入。过渡与 overflow:hidden 都挂在 .is-growing 上
+   （过渡期整段保留，ENTER_MS 后摘除；overflow 会裁掉磁贴的 48px 命中区外扩，不能常驻），
+   挂在类上而非 .dock-tile 基础规则，避免拖动排序期的 transform 内联被 max-width 干扰。
+   不支持 interpolate-size 的引擎只有淡入 + 缩放（宽度瞬跳，与旧表现一致）。 */
+.dock-tiles .dock-tile.is-growing {
+  overflow: hidden;
+  interpolate-size: allow-keywords;
+  max-width: max-content;
+  /* layout-anim: ok interpolate-size 门控新磁贴生长（0→max-content + 吃掉磁贴间隙）；二.7 起生长与收合/吸附同走 dockQ 弹簧 */
+  transition:
+    max-width var(--dur-dock-spring) var(--ease-dock-spring),
+    margin-left var(--dur-dock-spring) var(--ease-dock-spring),
+    opacity var(--dur-fx) var(--ease-fx),
+    transform var(--dur-dock-spring) var(--ease-dock-spring);
+}
+
+.dock-tiles .dock-tile.is-entering {
+  max-width: 0;
+  margin-left: -4px;
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+/* ---- 「+」磁贴（F-2 入口 b，编辑模式显示于末尾） ---- */
+
+.dock-tile-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--accent-ink, var(--accent));
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    border-color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-fast) var(--ease-spring);
+}
+
+.dock-tile-add:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--accent);
+}
+
+.dock-tile-add:active {
+  transform: scale(0.94);
+}
+
+/* ---- 磁贴 >8 枚：横向可滚（滚轮竖滚转横滚），两端按可滚方向渐隐，不换行不撑破屏宽 ---- */
+
+.dock-tiles.is-overflow {
+  --dock-fade-l: 0px;
+  --dock-fade-r: 0px;
+  max-width: min(720px, 72vw);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--dock-fade-l),
+    #000 calc(100% - var(--dock-fade-r)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--dock-fade-l),
+    #000 calc(100% - var(--dock-fade-r)),
+    transparent 100%
+  );
+}
+
+.dock-tiles.is-overflow::-webkit-scrollbar {
+  display: none;
+}
+
+.dock-tiles.is-overflow > * {
+  flex-shrink: 0;
+}
+
+.dock-tiles.is-overflow.can-scroll-left {
+  --dock-fade-l: 18px;
+}
+
+.dock-tiles.is-overflow.can-scroll-right {
+  --dock-fade-r: 18px;
+}
+
+/* ---- 类型选择器（DockTypePicker）：锚定「+」的玻璃弹层，定位 / 退场同 wcfg-popover ---- */
+
+.dock-picker {
+  position: fixed;
+  width: 264px;
+  max-height: min(400px, 70vh);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--paper-solid);
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(180%);
+  backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(180%);
+  box-shadow:
+    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
+    inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent),
+    0 14px 44px var(--dock-shadow);
+  color: var(--ink);
+  z-index: var(--z-dialog);
+  outline: none;
+  animation: dock-picker-in var(--dur-fx) var(--ease-out) both;
+}
+
+.dock-picker.is-closing {
+  animation: dock-picker-out var(--dur-fx-fast, 0.15s) var(--ease-in) both;
+  pointer-events: none;
+}
+
+@keyframes dock-picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes dock-picker-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+.dock-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 8px 6px 14px;
+  flex: none;
+}
+
+.dock-picker-title {
+  font-size: var(--fs-12);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.dock-picker-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    color var(--dur-fx) var(--ease-fx);
+}
+
+.dock-picker-close:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+
+.dock-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 6px;
+  padding: 0 9px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-9);
+  background: var(--surface-soft);
+  color: var(--muted);
+  transition: border-color var(--dur-fx) var(--ease-fx);
+}
+
+.dock-picker-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.dock-picker-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-12);
+  outline: none;
+}
+
+.dock-picker-input::placeholder {
+  color: var(--muted);
+}
+
+.dock-picker-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 10px;
+  scrollbar-width: thin;
+}
+
+.dock-picker-group-name {
+  padding: 8px 8px 3px;
+  font-size: var(--fs-10-5);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dock-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--rad-8);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-12-5);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fx) var(--ease-fx);
+}
+
+.dock-picker-item:hover,
+.dock-picker-item:focus-visible {
+  background: var(--surface-hover);
+}
+
+/* 已在岛上的类型（入岛去重）：淡化、不可点，徽标改显「已在灵动岛」。 */
+.dock-picker-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.dock-picker-item:disabled:hover {
+  background: transparent;
+}
+
+.dock-picker-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 有迷你形态（富磁贴）的类型标记。 */
+.dock-picker-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-10);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-ink, var(--accent));
+}
+
+.dock-picker-empty {
+  padding: 18px 8px;
+  text-align: center;
+  font-size: var(--fs-12);
+  color: var(--muted);
+}
+
+/* ══ TILE ══ */
+
+.dock-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 32px;
+  min-width: 40px;
+  padding: 0 11px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  /* 按钮 UA 默认 color 不继承：显式接 .dock 的 L2 On 色（幽灵克隆时由 .dock-drag-ghost 供色）。 */
+  color: inherit;
+  font-size: var(--fs-12-5);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-fast) var(--ease-spring);
+}
+
+.dock-tile:hover {
+  background: var(--surface-hover);
+}
+
+.dock-tile:active {
+  transform: scale(0.94);
+}
+
+/* == 磁贴级联放大（macOS dock 手感）==
+   hover 磁贴 1.08，前后紧邻 1.04：:has() 双向取邻，零 JS 测距。只在没有
+   编辑/排序语义时生效——拖动排序的内联 transform 与磁贴生长动画都不宜被
+   叠加缩放干扰。基类 transform 过渡（spring 快档）已就绪，无需新增。
+   长按就位（is-armed）/按压（:active）的 0.94 缩小必须压过级联（同特异性
+   靠后声明胜出），否则被 hover 的磁贴长按时失去「可以松手了」的缩小提示。 */
+.dock-edge-top .dock-tile {
+  transform-origin: 50% 0;
+}
+.dock-edge-bottom .dock-tile {
+  transform-origin: 50% 100%;
+}
+.dock:not(.is-editing) .dock-tiles:not(.is-sorting) .dock-tile:hover:not(.is-armed) {
+  transform: scale(1.08);
+}
+.dock:not(.is-editing) .dock-tiles:not(.is-sorting) .dock-tile:hover:not(.is-armed) + .dock-tile,
+.dock:not(.is-editing) .dock-tiles:not(.is-sorting) .dock-tile:has(+ :hover:not(.is-armed)) {
+  transform: scale(1.04);
+}
+.dock:not(.is-editing) .dock-tiles:not(.is-sorting) .dock-tile:active,
+.dock:not(.is-editing) .dock-tiles:not(.is-sorting) .dock-tile.is-armed {
+  transform: scale(0.94);
+}
+
+.dock-tile.is-open {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-ink);
+}
+
+/* 长按 600ms 就位（松手即弹菜单，F-7 · CFG）：与 :active 同档缩放提示「可以松手了」。 */
+.dock-tile.is-armed {
+  transform: scale(0.94);
+}
+
+/* 五.3 长按过程反馈：按下即开始渐进压下（→0.97，线性节奏）。时长消费
+   --dock-press-dur（DockShell 根上由 TILE_MENU_LONG_PRESS_MS 注入，真单点化；
+   600ms 仅为变量缺失时的首帧兜底），就位时上面的 is-armed 0.94 接管（弹簧快档
+   小步收拢），全程有连续的按下手感——此前按住 0–600ms 零反馈、缩放提示
+   在触发那一刻才出现。滑动取消（>6px）由组件摘类，磁贴沿基类过渡弹回。
+   注意：勿与 DockTiles 的拖动长按 TILE_DRAG_LONG_PRESS_MS = 300 混淆。 */
+.dock:not(.is-editing) .dock-tiles:not(.is-sorting) .dock-tile.is-pressing:not(.is-armed) {
+  transform: scale(0.97);
+  transition: transform var(--dock-press-dur, 600ms) linear;
+}
+
+/* 通用磁贴（无富形态的类型）：图标 + 名称（+ 一行摘要）。 */
+.dock-tile-generic {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.dock-tile-generic-name {
+  font-weight: 600;
+}
+
+.dock-tile-generic-summary {
+  color: var(--muted);
+  font-size: var(--fs-11-5);
+  font-weight: 500;
+}
+
+/* 迷你形态 chunk 加载中的占位：撑住磁贴最小宽度，不闪文字。 */
+.dock-tile-loading {
+  display: inline-block;
+  width: 18px;
+  height: 1em;
+}
+
+/* ══ DROP ══ */
+
+/* DockDropZone（DROP 会话）：岛命中高亮 / 插入位预览槽 / 幽灵芯片 / 松手回弹 /
+   图库「添加到灵动岛」。预览三件全部 pointer-events:none、Portal 到 body；位置走
+   transform（幽灵跟指针、竖条换槽位），动效只碰 opacity / transform。 */
+
+.dock-drop {
+  position: fixed;
+  inset: 0;
+  /* 压过拖动中的卡片（zIndex 9999 = --z-float-menu），仍低于对话框 / toast。 */
+  z-index: calc(var(--z-float-menu) + 1);
+  pointer-events: none;
+}
+
+/* 岛高亮描边：几何在一次拖动会话内不变，left/top/size 由 JS 挂载时写死，只淡入。 */
+.dock-drop-ring {
+  position: fixed;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 12%, transparent);
+  animation: dock-drop-ring-in var(--dur-fx-fast) var(--ease-out) both;
+}
+
+@keyframes dock-drop-ring-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 插入位 2px 竖条：换槽位时 transform 滑到新位置（首帧即带 transform 挂载，不会从原点滑入）。 */
+.dock-drop-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 2px;
+  border-radius: var(--rad-1);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+  transition: transform var(--dur-fx-fast) var(--ease-out);
+  animation: dock-drop-fade-in var(--dur-fx-fast) var(--ease-out) both;
+}
+
+/* DockTiles（REORDER）的共用 InsertBar 在场时本竖条让位，避免双条；两者各自独立可用。 */
+body:has(.dock-tiles > .dock-insert-bar) .dock-drop-bar {
+  display: none;
+}
+
+/* 指针处幽灵芯片：类型图标 + 名称 + D1 语义提示，scale 1.04（拖动 ghost 芯片）。 */
+.dock-drop-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-pill);
+  background: var(--paper-solid, var(--paper));
+  color: var(--ink);
+  font-size: var(--fs-12-5);
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px -6px var(--dock-shadow);
+  transform-origin: top left;
+  animation: dock-drop-fade-in var(--dur-fx-fast) var(--ease-out) both;
+}
+
+.dock-drop-ghost-hint {
+  color: var(--muted);
+  font-size: var(--fs-11);
+  font-weight: 500;
+}
+
+@keyframes dock-drop-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 松手命中岛后卡片回原位（位移不提交）：160ms 弹性归位，压过 .widget-card 基础
+   transform 0.3s 过渡；WidgetCard 在 220ms 后摘类。颜色 / 阴影项复述基础过渡以免
+   被本条 transition 整体覆盖后丢失，曲线统一走 fx 族。 */
+.widget-card.dock-drop-back {
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx),
+    background-color var(--dur-fx, 0.2s) var(--ease-fx),
+    box-shadow var(--anim-dur, 0.25s) var(--ease-fx),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+
+/* 图库预览头部动作区：「添加到灵动岛」（次级描边样式）与「添加」并排。 */
+.widget-gallery-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.widget-gallery-preview-add.is-dock {
+  background: transparent;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* 已在灵动岛：禁用态；pointer-events:none 一并挡掉基础类的 hover 提亮 / 按压缩放。 */
+.widget-gallery-preview-add.is-dock:disabled {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ══ PANEL ══ */
+
+/* F-10 主题：面板层 = L4。外壳 .wexp-panel 的底色属 EXP（feature-immersive.css）；
+   本文件管内容色 = L4 的 On 色（theme-engine 写入前回退墨色）。 */
+.dock-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 18px 20px 16px;
+  box-sizing: border-box;
+  color: var(--layer4-on, var(--ink));
+}
+
+.dock-panel-clock {
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.dock-panel-clock-time {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: clamp(56px, 12vw, 108px);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.dock-panel-clock-sec {
+  font-size: 0.34em;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.dock-panel-clock-date {
+  font-size: var(--fs-15);
+  color: var(--muted);
+}
+
+.dock-panel-pomo {
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.dock-panel-pomo-ring {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.dock-panel-pomo-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.dock-panel-pomo-time {
+  font-size: var(--fs-28);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.dock-panel-pomo-label {
+  font-size: var(--fs-11-5);
+  color: var(--muted);
+}
+
+.dock-panel-pomo-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dock-panel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: var(--fs-12-5);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    border-color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-fast) var(--ease-spring);
+}
+
+.dock-panel-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.dock-panel-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.dock-panel-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 主按钮文字 = 亮度自适应的 on-accent 前景（浅主色配深字），与全局按钮同源。 */
+.dock-panel-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--btn-fg);
+}
+
+.dock-panel-btn.primary:hover:not(:disabled) {
+  background: var(--accent-2);
+}
+
+.dock-panel-hint {
+  font-size: var(--fs-11-5);
+  color: var(--danger-ink);
+  text-align: center;
+}
+
+.dock-panel-notif {
+  padding: 40px 16px 14px;
+}
+
+/* 通用类型的完整组件装进面板：不加内边距，让组件自己的卡片内边距生效。 */
+.dock-panel-full {
+  padding: 0;
+  overflow: auto;
+}
+
+/* ---- 全岛面板（DockPanel，PANEL 会话）：dp-* ----
+   根 .dock-panel-island 叠在 .dock-panel 的列布局上：头部一行（与遮罩右上角
+   关闭钮 .wexp-close 同行高 30px，右侧留 46px 让位成组）+ 视口 + 圆点。
+   轮播只动 transform：拖动期间 JS 内联 transition:none 跟手，松手恢复本规则
+   的 300ms --ease-spatial-fast settle；网格模式由视口自身滚动。 */
+.dock-panel-island {
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 10px 46px 14px 20px;
+}
+
+.dp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+  min-height: 30px;
+}
+
+.dp-head-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dp-title {
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.dp-sep {
+  color: var(--muted-2);
+}
+
+.dp-cardname {
+  font-size: var(--fs-12-5);
+  font-weight: 600;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 头部图标钮：与 .wexp-close 同尺寸同质感，两钮并列成组。 */
+.dp-iconbtn {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--paper-solid, var(--paper)) 72%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    transform var(--dur-fx-fast) var(--ease-spring),
+    color var(--dur-fx) var(--ease-fx),
+    background-color var(--dur-fx) var(--ease-fx),
+    border-color var(--dur-fx) var(--ease-fx);
+}
+
+.dp-iconbtn:hover {
+  transform: scale(1.08);
+  color: var(--ink);
+  background: var(--paper-solid, var(--paper));
+}
+
+.dp-iconbtn:active {
+  transform: scale(0.94);
+}
+
+.dp-iconbtn[aria-pressed="true"] {
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* 视口：轮播裁切 / 网格滚动。横向手势归轮播，纵向留给卡片内容。 */
+.dp-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: pan-y;
+}
+
+.dp-viewport.is-dragging {
+  cursor: grabbing;
+}
+
+.dp-viewport.is-dragging .dp-strip {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 一.4 视图切换过渡：轮播↔网格是布局语义瞬变（flex+transform ↔ grid，无法
+   逐卡 FLIP），用「透明度浅 dip」软化——class 互换瞬间从 0.25 回升到 1。
+   两条 keyframes 内容相同、名字不同：同名动画在 class 互换时不会重播。
+   初次挂载也播一次（与面板入场同拍，无害）；reduce-motion 全局门控压为瞬跳。 */
+.dp-viewport.is-carousel {
+  animation: dp-view-carousel var(--dur-fx) var(--ease-fx);
+}
+
+.dp-viewport.is-grid {
+  overflow: hidden auto;
+  padding-right: 2px;
+  animation: dp-view-grid var(--dur-fx) var(--ease-fx);
+}
+
+@keyframes dp-view-carousel {
+  from {
+    opacity: 0.25;
+  }
+}
+
+@keyframes dp-view-grid {
+  from {
+    opacity: 0.25;
+  }
+}
+
+/* 卡带：一屏一卡横排；transform 由 JS 驱动（状态位 / 拖动跟手）。 */
+.dp-strip {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-spatial-fast);
+}
+
+.dp-viewport.is-grid .dp-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  align-content: start;
+  gap: 10px;
+  height: auto;
+}
+
+.dp-card {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 100%;
+  min-width: 0;
+  height: 100%;
+  border-radius: var(--radius-md);
+}
+
+.dp-viewport.is-grid .dp-card {
+  height: 200px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  background: color-mix(in srgb, var(--paper-solid, var(--paper)) 45%, transparent);
+}
+
+.dp-card-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.dp-viewport.is-grid .dp-card-body {
+  overflow: hidden;
+}
+
+/* 网格卡标题：点击进入该卡的单磁贴展开。hover 只改颜色。 */
+.dp-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color var(--dur-fx) var(--ease-fx),
+    background-color var(--dur-fx) var(--ease-fx);
+}
+
+.dp-card-title:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.dp-card-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dp-card-title-ico {
+  flex: 0 0 auto;
+  color: var(--muted-2);
+}
+
+/* 完整组件装进卡片：不加内边距，让组件自己的卡片内边距生效（同 .dock-panel-full）。 */
+.dp-card-full {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.dp-card-unknown {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--muted-2);
+  font-size: var(--fs-12);
+}
+
+/* 懒加载骨架：只动透明度。 */
+.dp-card-skeleton {
+  height: 100%;
+  min-height: 120px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  animation: dp-skeleton-pulse 1.4s var(--ease-out) infinite alternate;
+}
+
+@keyframes dp-skeleton-pulse {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 圆点指示器（可点）：状态只动 transform / 颜色。 */
+.dp-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.dp-dot {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: transform var(--dur-fx) var(--ease-spring);
+}
+
+.dp-dot::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 22%, transparent);
+  transition: background-color var(--dur-fx) var(--ease-fx);
+}
+
+.dp-dot:hover {
+  transform: scale(1.2);
+}
+
+.dp-dot:active {
+  transform: scale(0.92);
+}
+
+.dp-dot:hover::after {
+  background: color-mix(in srgb, var(--ink) 42%, transparent);
+}
+
+.dp-dot.is-current::after {
+  background: var(--accent);
+}
+
+/* 空态：岛内无磁贴。 */
+.dp-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: var(--fs-13);
+  text-align: center;
+}
+
+.dp-empty-ico {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+/* reduce-motion 双信号：settle / 圆点 / 按钮过渡与骨架脉动全部压到近零。 */
+html[data-reduce-motion="1"] .dp-strip,
+html[data-reduce-motion="1"] .dp-dot,
+html[data-reduce-motion="1"] .dp-dot::after,
+html[data-reduce-motion="1"] .dp-iconbtn,
+html[data-reduce-motion="1"] .dp-card-title {
+  transition-duration: 0.001s !important;
+}
+
+html[data-reduce-motion="1"] .dp-card-skeleton {
+  animation-duration: 0.001s !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dp-strip,
+  .dp-dot,
+  .dp-dot::after,
+  .dp-iconbtn,
+  .dp-card-title {
+    transition-duration: 0.001s !important;
+  }
+
+  .dp-card-skeleton {
+    animation-duration: 0.001s !important;
+  }
+}
+
+/* ══ TAKEOVER ══ */
+
+/* 接管条：图标 --accent 系（番茄钟 accent / 媒体 accent-2 / 通知 muted-3），文字继承
+   .dock 的 L2 On 色；显隐与宽度 spring 见 SHELL 区段。 */
+.dock-takeover {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  max-width: min(420px, 70vw);
+  padding: 0 12px 0 10px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-12-5);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+}
+
+.dock.has-takeover .dock-takeover {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.dock-takeover-ico {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+/* W-131 媒体接管条的封面缩略图（NextUp 样式）：替代缺省 Music 图标。 */
+.dock-takeover-thumb {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--rad-4);
+  object-fit: cover;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.dock-takeover.is-media .dock-takeover-ico {
+  color: var(--accent-2);
+}
+
+.dock-takeover.is-notification .dock-takeover-ico {
+  color: var(--muted-3);
+}
+
+.dock-takeover-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-takeover-sub {
+  color: var(--muted);
+  font-size: var(--fs-11-5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.dock-takeover-chev {
+  flex-shrink: 0;
+  color: var(--muted-2);
+}
+
+/* 一.3 内容替换交叉淡化：图标/封面/标题/副标带 key，kind 抢占或换文案时 React
+   重挂这三个元素并重播本条淡入（旧内容瞬出、新内容淡入，读作一次软切换而非
+   闪变）；无 key 变化时 React 原地改文字，不重播。只在重挂瞬间动画，非常驻。 */
+.dock-takeover-ico,
+.dock-takeover-thumb,
+.dock-takeover-title,
+.dock-takeover-sub {
+  animation: dock-takeover-swap var(--dur-fx-fast) var(--ease-fx);
+}
+@keyframes dock-takeover-swap {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ══ CONFIG ══ */
+
+.dock-cfg {
+  position: absolute;
+  bottom: 68px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(380px, calc(100vw - 48px));
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  background: var(--popover-bg, var(--paper-solid));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  box-shadow: 0 14px 44px var(--dock-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: var(--z-float-menu);
+  animation: dock-cfg-pop var(--dur-fx-fast) var(--ease-out) both;
+}
+
+@keyframes dock-cfg-pop {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* 退场（useDelayedUnmount 关闭窗口内播放，播完卸载）：入场反向。 */
+.dock-cfg.is-closing {
+  animation: dock-cfg-out var(--dur-fx-fast) var(--ease-in) both;
+}
+
+@keyframes dock-cfg-out {
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px);
+  }
+}
+
+.dock-cfg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dock-cfg-title {
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.dock-cfg-desc {
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+
+.dock-cfg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dock-cfg-row.is-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.dock-cfg-label {
+  font-size: var(--fs-12);
+  color: var(--ink);
+}
+
+.dock-cfg-switch {
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border: none;
+  border-radius: var(--rad-10);
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-xfast) var(--ease-spring);
+}
+
+/* 按压反馈（A4 弹层档，同 .dock-tile:active 缩放先例）。 */
+.dock-cfg-switch:active {
+  transform: scale(0.94);
+}
+
+.dock-cfg-switch.is-on {
+  background: var(--accent);
+}
+
+/* 拇指色与共享 Toggle 同源（--btn-fg，随主色亮度取深 / 浅）。 */
+.dock-cfg-switch-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--btn-fg);
+  box-shadow: 0 1px 2px var(--dock-shadow);
+  transition: transform var(--dur-fx) var(--ease-spring-soft);
+}
+
+.dock-cfg-switch.is-on .dock-cfg-switch-thumb {
+  transform: translateX(14px);
+}
+
+.dock-cfg-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-8);
+  background: var(--surface-soft);
+  /* 滑行药丸的定位参照（Seg 量测 offsetLeft / clientWidth）。 */
+  position: relative;
+}
+
+/* 滑行药丸：背景与阴影承接段激活底，几何只用 transform（位移 + scaleX，
+   药丸无文字缩放不变形，也不触 layout-anim 门禁）；200ms --ease-out
+   （F-9 弹层档，指示不回弹）。挂载即定位，首帧不播过渡。 */
+.dock-cfg-seg-pill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 100%;
+  border-radius: var(--rad-6);
+  background: var(--paper-solid, var(--paper));
+  box-shadow: 0 1px 3px var(--dock-shadow);
+  transform-origin: left center;
+  pointer-events: none;
+  transition: transform var(--dur-fx) var(--ease-out);
+}
+
+.dock-cfg-seg-item {
+  position: relative;
+  z-index: 1;
+  height: 24px;
+  padding: 0 12px;
+  border: none;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-xfast) var(--ease-spring);
+}
+
+.dock-cfg-seg-item:hover {
+  color: var(--ink);
+}
+
+.dock-cfg-seg-item:active {
+  transform: scale(0.96);
+}
+
+/* 段激活底移到滑行药丸上（.active 只留文字强调），滑动期间高亮连续。 */
+.dock-cfg-seg-item.active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* 偏移滑条行：fieldset 外壳只为借用 [disabled] 原生禁用内部 range（非自由位）。 */
+.dock-cfg-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.dock-cfg-fieldset:disabled {
+  opacity: 0.45;
+}
+
+/* 面板 340–380px 宽，M3Slider 默认 230px 轨道略收窄以留出行标题。
+   0-3-0 特异性压过 feature-polish.css 的 .wake-slider.tm-slider-row（0-2-0），
+   不依赖两份 CSS 的注入顺序。 */
+.dock-cfg .wake-slider.tm-slider-row {
+  width: 210px;
+}
+
+/* 接管三开关：一行内并排，标签在左开关在右。 */
+.dock-cfg-takeover {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.dock-cfg-takeover-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+/* 已入岛磁贴芯片行（对标 SortableMultiSelectField）：芯片 = 图标 + 名称 + ↑↓× */
+.dock-cfg-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.dock-cfg-empty {
+  font-size: var(--fs-11-5);
+  color: var(--muted);
+}
+
+.dock-cfg-tile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 26px;
+  padding: 0 3px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-13);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: var(--fs-12);
+  /* 移除收缩退场（§4「移除 160ms --ease-in 收缩」档）；排序 FLIP 由
+     flipReorder 内联接管 transform 过渡，结束后回落到本条。 */
+  transition:
+    opacity var(--dur-fx-fast) var(--ease-in),
+    transform var(--dur-fx-fast) var(--ease-in);
+}
+
+.dock-cfg-tile-chip.is-closing {
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+.dock-cfg-tile-name {
+  max-width: 96px;
+  margin-right: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 已绑定画布实例的磁贴：名称后一枚 accent 小点。 */
+.dock-cfg-tile-bound {
+  width: 5px;
+  height: 5px;
+  margin-right: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.dock-cfg-chip-btn {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-xfast) var(--ease-spring);
+}
+
+.dock-cfg-chip-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.dock-cfg-chip-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+.dock-cfg-chip-btn.is-remove:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+}
+
+.dock-cfg-chip-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.dock-cfg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-13);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    border-color var(--dur-fx) var(--ease-fx),
+    color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-xfast) var(--ease-spring);
+}
+
+.dock-cfg-chip:hover {
+  background: var(--surface-hover);
+}
+
+.dock-cfg-chip:active {
+  transform: scale(0.95);
+}
+
+.dock-cfg-chip.is-on {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-ink);
+}
+
+/* 末尾「+」：圆形芯片 + 简单下拉类型菜单（DockTypePicker 合入后替换）。 */
+.dock-cfg-add {
+  position: relative;
+}
+
+.dock-cfg-add-btn {
+  width: 26px;
+  padding: 0;
+  justify-content: center;
+}
+
+.dock-cfg-add-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 1px;
+  min-width: 168px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-10);
+  background: var(--popover-bg, var(--paper-solid));
+  box-shadow: 0 10px 30px var(--dock-shadow);
+  z-index: 1;
+  animation: dock-cfg-menu-in var(--dur-fx-fast) var(--ease-out) both;
+}
+
+@keyframes dock-cfg-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 退场（useDelayedUnmount 关闭窗口内播放，播完卸载）。 */
+.dock-cfg-add-menu.is-closing {
+  animation: dock-cfg-menu-out var(--dur-fx-xfast) var(--ease-in) both;
+}
+
+@keyframes dock-cfg-menu-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.dock-cfg-add-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-12);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-fx),
+    transform var(--dur-fx-xfast) var(--ease-spring);
+}
+
+.dock-cfg-add-item:hover,
+.dock-cfg-add-item:focus-visible {
+  background: var(--surface-hover);
+}
+
+.dock-cfg-add-item:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* ══ MINI ══ */
+
+.dock-clock {
+  letter-spacing: 0.02em;
+}
+
+.dock-pomo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.dock-pomo.is-running {
+  color: var(--ink);
+}
+
+.dock-pomo-time {
+  font-size: var(--fs-12);
+}
+
+.dock-notif {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted-3);
+}
+
+/* 角标：文字用 on-accent 前景；外圈描边取岛底 L2 同色，把角标从图标上「抠」出来。
+   一.9：出现与数字变化（TSX 侧 key 重挂）都播 pop 弹入（rb-badge-pop 同语言），
+   此前角标硬蹦出现、数字硬跳；只在重挂瞬间动画，非常驻。 */
+.dock-badge {
+  position: absolute;
+  top: -7px;
+  right: -9px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--rad-8);
+  font-size: var(--fs-9-5);
+  font-weight: 700;
+  line-height: 1;
+  background: var(--accent);
+  color: var(--btn-fg);
+  box-shadow: 0 0 0 1.5px var(--layer2, var(--paper));
+  animation: dock-badge-pop var(--dur-fx-fast) var(--ease-spring) backwards;
+}
+
+@keyframes dock-badge-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+}
+
+/* ---- 番茄钟环（stroke-dashoffset 动画只走合成器） ---- */
+
+.dock-ring {
+  display: block;
+  flex-shrink: 0;
+}
+
+.dock-ring-track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--muted) 30%, transparent);
+}
+
+.dock-ring-fill {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  /* 数据源 remainingSeconds 每秒步进一次（与主表盘同一 tick）：复用 fx 状态层
+     的 300ms 短过渡会「动 0.3s 停 0.7s」；对齐 tick 周期用 linear 铺满间隙
+     （三.7 统一走 --dur-tick-fill 语义 token）。 */
+  transition: stroke-dashoffset var(--dur-tick-fill, 1.05s) linear;
+}
+
+.dock-ring.is-shortBreak .dock-ring-fill,
+.dock-ring.is-longBreak .dock-ring-fill {
+  stroke: var(--success);
+}
+
+/* ---- ISLAND-MINI 首批九种（music/nowplaying 共用）：通用骨架 ----
+   根元素 .dock-mini.dock-mini-<type>。内容宽 ≤96px：磁贴自带 2×11px 内边距，
+   合计 ≤118px，满足 F-1「单枚 ≤120px」；max-height 保证内容撑不破 32px 磁贴，
+   岛高不变。文本 tabular-nums；颜色只用 token（音乐点缀色经 --mini-accent
+   注入，缺省回退 --accent）。 */
+
+.dock-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 96px;
+  max-height: 26px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.dock-mini-ico {
+  flex-shrink: 0;
+  color: var(--muted-3);
+}
+
+.dock-mini-num {
+  font-weight: 600;
+}
+
+.dock-mini-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: var(--fs-11-5);
+  font-weight: 500;
+}
+
+/* 磁贴内的次级可点元素：磁贴本身是 <button>，内层用 role=button 的 span。
+   焦点环在 POLISH 统一块；命中区不外扩——它嵌在磁贴命中区里，放大会吞掉
+   磁贴自身的点击面（WCAG 2.5.8 行内目标豁免）。 */
+.dock-mini-btn {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--mini-accent, var(--accent));
+  transition: background-color var(--dur-fx) var(--ease-fx);
+}
+
+.dock-mini-btn:hover {
+  background: var(--surface-hover);
+}
+
+/* ---- 音乐：标题跑马。仅 .is-marquee（组件在 active 且溢出时才加）；位移量
+   --mini-scroll 由组件量出。往返 alternate，线性匀速最易读。 ---- */
+
+.dock-mini-music-clip {
+  min-width: 0;
+  max-width: 64px;
+  overflow: hidden;
+}
+
+.dock-mini-music-text {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* 跑马同样受「常驻动效」开关约束（关闭后固定显示单行曲名）。 */
+html:not([data-fx-off~="ambientMotion"]) .dock-mini-music.is-marquee .dock-mini-music-text {
+  animation: dock-mini-marquee 6s linear 1s infinite alternate;
+}
+
+@keyframes dock-mini-marquee {
+  to {
+    transform: translateX(var(--mini-scroll, 0px));
+  }
+}
+
+/* reduce-motion：全局把 animation-duration 压到 0.001s 会让跑马瞬跳到终点并
+   停在那里（前半段标题被裁掉），这里明确静止在起点。 */
+[data-reduce-motion="1"] .dock-mini-music.is-marquee .dock-mini-music-text {
+  animation: none;
+}
+
+.dock-mini-music.is-playing .dock-mini-ico {
+  color: var(--mini-accent, var(--accent));
+}
+
+/* ---- 系统监控：两行 [标签][3px 细条][百分比]，细条走 scaleX 不动布局 ---- */
+
+.dock-mini-system {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.dock-mini-sys-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-9-5);
+  line-height: 1;
+}
+
+.dock-mini-sys-label {
+  width: 20px;
+  color: var(--muted-2);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.dock-mini-bar {
+  width: 34px;
+  height: 3px;
+  border-radius: var(--rad-2);
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+  overflow: hidden;
+}
+
+.dock-mini-bar i {
+  display: block;
+  height: 100%;
+  border-radius: var(--rad-2);
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform var(--dur-fx-slow) var(--ease-fx);
+}
+
+.dock-mini-sys-pct {
+  min-width: 24px;
+  text-align: right;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ---- 剪贴板：摘要省略号；隐私开关关闭 → 禁用态；回写成功 → success 闪现 ---- */
+
+.dock-mini-clipboard .dock-mini-text {
+  max-width: 74px;
+}
+
+.dock-mini-clipboard.is-disabled {
+  opacity: 0.5;
+}
+
+.dock-mini-clipboard.is-copied .dock-mini-text {
+  /* J-4 状态小字对比度：success 直出在半透明胶囊底上偏弱（11.5px/500 细小），
+     文字用途向 ink 收一档 + 字重 600，状态色相不变。 */
+  color: color-mix(in srgb, var(--success) 78%, var(--ink));
+  font-weight: 600;
+}
+
+/* ---- 亮度：M3Slider mini 档（variant="mini"：12 条 / 24px 轨道 / 6px 静息高，
+   几何由组件 props 承担，官方波形条替代 v1 的轨道+滑块 DOM）。
+   此处只覆盖 wake-slider.css 的两处默认：官方 44px min-height 触达约束
+   会撑爆迷你磁贴，压回 24px；值文字缩到 10.5px。配色沿用滑条 v2 的 token。 ---- */
+
+.dock-mini-slider {
+  display: inline-flex;
+  align-items: center;
+}
+
+.dock-mini-brightness .wake-slider.tm-slider-row {
+  width: 74px;
+  gap: 4px;
+}
+
+.dock-mini-brightness .wake-slider__track {
+  min-height: 24px;
+}
+
+.dock-mini-brightness .wake-slider__value {
+  min-width: 0;
+  font-size: var(--fs-10-5);
+}
+
+/* ---- 待办：全部完成 → success（文字态同 J-4 对比度处理） ---- */
+
+.dock-mini-todo.is-done,
+.dock-mini-todo.is-done .dock-mini-ico {
+  color: color-mix(in srgb, var(--success) 78%, var(--ink));
+  font-weight: 600;
+}
+
+/* ---- 日历：大日期数字 + 小星期 + 下一事件 ---- */
+
+.dock-mini-cal-day {
+  font-size: var(--fs-14);
+  font-weight: 700;
+}
+
+.dock-mini-cal-wd {
+  color: var(--muted);
+  font-size: var(--fs-10-5);
+  font-weight: 500;
+}
+
+.dock-mini-calendar .dock-mini-text {
+  max-width: 50px;
+}
+
+/* ---- 倒数日：今天强调 / 已过去弱化 ---- */
+
+.dock-mini-countdown .dock-mini-text {
+  max-width: 46px;
+}
+
+.dock-mini-countdown.is-today .dock-mini-num {
+  color: var(--accent-ink);
+}
+
+.dock-mini-countdown.is-past .dock-mini-num,
+.dock-mini-countdown.is-empty .dock-mini-num {
+  color: var(--muted);
+}
+
+/* ---- 习惯：x/y 小环（复用 .dock-ring），全部完成 → success ---- */
+
+.dock-mini-habit.is-complete .dock-ring-fill {
+  stroke: var(--success);
+}
+
+.dock-mini-habit.is-complete .dock-mini-num {
+  /* J-4：同上，数字文字态向 ink 收一档 + 加粗。 */
+  color: color-mix(in srgb, var(--success) 78%, var(--ink));
+  font-weight: 600;
+}
+
+/* ══ MISC ══  「杂项」面板（widgets/misc/MiscBoardPanel）：格子板 + 条目 + 拖动占位。
+   条目 left / top 由 TSX 按格位算出内联，排布变化（被推开 / 上移填空）走 --dur-fx 过渡（原 260ms，与拖动预演占位统一）——
+   「磁性吸附 + 自适应」的观感就来自这里；拖动中的那一枚 transition:none 跟手；松手
+   那一枚由 TSX 做 FLIP 落格（补偿 transform 钉住松手位置 → 只过渡 transform，450ms
+   dockQ 弹簧，同 DockShell.animatePlacement），行内过渡结束即清，不落在本表里。 */
+.dock-panel-misc {
+  padding: 14px 16px 16px;
+  gap: 10px;
+}
+
+.misc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 40px; /* 让位右上角的 .wexp-close */
+  color: var(--muted);
+  font-size: var(--fs-12-5);
+}
+
+.misc-title {
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.misc-add {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--paper-solid, var(--paper)) 72%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    transform var(--dur-fx-fast) var(--ease-spring),
+    color var(--dur-fx) var(--ease-fx),
+    background-color var(--dur-fx) var(--ease-fx),
+    border-color var(--dur-fx) var(--ease-fx);
+}
+
+.misc-add:hover {
+  transform: scale(1.08);
+  color: var(--ink);
+  background: var(--paper-solid, var(--paper));
+}
+
+.misc-add:active {
+  transform: scale(0.94);
+}
+
+.misc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden auto;
+  padding: 2px 2px 8px;
+}
+
+.misc-board {
+  position: relative;
+  min-height: 180px;
+}
+
+.misc-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--fs-13);
+  pointer-events: none;
+}
+
+.misc-empty-sub {
+  font-size: var(--fs-12);
+  opacity: 0.8;
+}
+
+.misc-item {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: var(--rad-14);
+  background: var(--paper, rgba(255, 255, 255, 0.09));
+  color: var(--ink);
+  /* layout-anim: ok 杂项面板格位重排一次性 200ms；width/height 同动画，translate 化无净收益 */
+  transition:
+    left var(--dur-fx, 0.2s) var(--ease-spatial-fast),
+    top var(--dur-fx, 0.2s) var(--ease-spatial-fast),
+    width var(--dur-fx, 0.2s) var(--ease-out),
+    height var(--dur-fx, 0.2s) var(--ease-out),
+    box-shadow var(--dur-fx) var(--ease-fx),
+    opacity var(--dur-fx) var(--ease-fx);
+}
+
+.misc-item.is-dragging {
+  z-index: 5;
+  transition: none;
+  opacity: 0.94;
+  box-shadow: 0 14px 32px var(--dock-shadow);
+  cursor: grabbing;
+}
+
+/* 调整大小中的条目：压过邻件、显出强调描边；整板换 nwse 光标。 */
+.misc-item.is-resizing {
+  z-index: 5;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 10px 26px var(--dock-shadow);
+}
+
+/* 右下角调整大小手柄：默认隐身，悬停 / 拖动中浮现斜纹标志（与 .wexp-grip 同语言）。 */
+.misc-item-rs {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 18px;
+  height: 18px;
+  border-top-left-radius: 10px;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity var(--dur-fx) var(--ease-fx);
+}
+.misc-item-rs::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  background: linear-gradient(
+    135deg,
+    transparent 0 40%,
+    var(--muted) 40% 55%,
+    transparent 55% 70%,
+    var(--muted) 70% 85%,
+    transparent 85%
+  );
+  pointer-events: none;
+}
+.misc-item:hover .misc-item-rs,
+.misc-item.is-resizing .misc-item-rs {
+  opacity: 1;
+}
+.misc-board.is-resizing {
+  cursor: nwse-resize;
+}
+.misc-board.is-resizing .misc-item-bar {
+  pointer-events: none;
+}
+
+/* 拖动把手条：悬浮在条目顶部 22px，只在悬停 / 拖动中浮现，不占内容区的布局。 */
+.misc-item-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  font-size: var(--fs-11-5);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--paper-solid, var(--paper)) 82%, transparent);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  opacity: 0;
+  transition: opacity var(--dur-fx) var(--ease-fx);
+}
+
+.misc-item:hover .misc-item-bar,
+.misc-item.is-dragging .misc-item-bar {
+  opacity: 1;
+}
+
+.misc-item-grip {
+  flex-shrink: 0;
+}
+
+.misc-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.misc-item-del {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fx) var(--ease-fx),
+    background-color var(--dur-fx) var(--ease-fx);
+}
+
+.misc-item-del:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+
+.misc-item-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.misc-item-unknown {
+  padding: 12px;
+  color: var(--muted);
+  font-size: var(--fs-12);
+}
+
+/* 吸附占位：拖动中条目将落入的格位，随预演布局 200ms 移动。 */
+.misc-placeholder {
+  position: absolute;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 65%, transparent);
+  border-radius: var(--rad-14);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  pointer-events: none;
+  /* layout-anim: ok 拖动预演占位 200ms 一次性移动，虚线框 scale 会形变 */
+  transition:
+    left var(--dur-fx, 0.2s) var(--ease-out),
+    top var(--dur-fx, 0.2s) var(--ease-out),
+    width var(--dur-fx, 0.2s) var(--ease-out),
+    height var(--dur-fx, 0.2s) var(--ease-out);
+}
+
+/* 画布占位（registry dockOnly，正常不会出现在画布上）。 */
+.misc-canvas-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 14px;
+  color: var(--muted);
+  font-size: var(--fs-12-5);
+}
+
+/* ══ POLISH · reduce-motion 兜底 ══
+   三重兜底：① global.css `:root[data-reduce-motion="1"] *` 与 ② 其 @media
+   (prefers-reduced-motion) 块已把全部 transition / animation 压到 0.001s（含 TSX
+   内联写的吸附 / 换边 / FLIP 过渡——!important 作者规则压过内联）；③ JS
+   prefersReducedMotion() 让 flipReorder / 幽灵退场 / 面板 settle 直接瞬移。
+   这里对本文件的几何动效再显式声明一次作为文件内契约——岛宽 spring、hover
+   微涨、磁贴弹入、幽灵收缩、弹层入退场——全局门控日后收窄作用域时本处仍成立。
+   音乐跑马在 MINI 区段是 animation:none（压到 0.001s 会停在终点裁掉前半段），
+   此处补 @media 变体。 */
+html[data-reduce-motion="1"] .dock,
+html[data-reduce-motion="1"] .dock::before,
+html[data-reduce-motion="1"] .dock-tiles,
+html[data-reduce-motion="1"] .dock-takeover,
+html[data-reduce-motion="1"] .dock-tile,
+html[data-reduce-motion="1"] .dock-tile-add,
+html[data-reduce-motion="1"] .dock-view-arrow,
+html[data-reduce-motion="1"] .dock-handle,
+html[data-reduce-motion="1"] .dock-insert-bar,
+html[data-reduce-motion="1"] .dock-drop-bar,
+html[data-reduce-motion="1"] .widget-card.dock-drop-back {
+  transition-duration: 0.001s !important;
+}
+
+html[data-reduce-motion="1"] .dock-drag-ghost.is-exiting,
+html[data-reduce-motion="1"] .dock-picker,
+html[data-reduce-motion="1"] .dock-picker.is-closing,
+html[data-reduce-motion="1"] .dock-drop-ring,
+html[data-reduce-motion="1"] .dock-drop-bar,
+html[data-reduce-motion="1"] .dock-drop-ghost,
+html[data-reduce-motion="1"] .dock-cfg,
+html[data-reduce-motion="1"] .dock-cfg-add-menu {
+  animation-duration: 0.001s !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dock,
+  .dock::before,
+  .dock-tiles,
+  .dock-takeover,
+  .dock-tile,
+  .dock-tile-add,
+  .dock-view-arrow,
+  .dock-handle,
+  .dock-insert-bar,
+  .dock-drop-bar,
+  .widget-card.dock-drop-back {
+    transition-duration: 0.001s !important;
+  }
+
+  .dock-drag-ghost.is-exiting,
+  .dock-picker,
+  .dock-picker.is-closing,
+  .dock-drop-ring,
+  .dock-drop-bar,
+  .dock-drop-ghost,
+  .dock-cfg,
+  .dock-cfg-add-menu {
+    animation-duration: 0.001s !important;
+  }
+
+  .dock-mini-music.is-marquee .dock-mini-music-text {
+    animation: none;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   借鉴 NotchPeninsula 的增强（一.4 / 二.8 / 二.10）
+   ════════════════════════════════════════════════════════════════════ */
+
+/* 一.4 链接快开接管条：链接语义用 accent 色的图标点亮（其余 kind 沿用
+   缺省图标色），标题 / 副标与既有接管条共用排版。 */
+.dock-takeover.is-link .dock-takeover-ico {
+  color: var(--accent);
+}
+
+/* 二.8 悬停展开面的指针捕获壳：只承载 pointerenter / pointerleave 事件，
+   不参与视觉（块级铺满宽度，高度随内容），不干扰 wexp-content 的测量。 */
+.dock-expand-surface {
+  position: relative;
+  width: 100%;
+}
+
+/* 二.10 通用磁贴摘要的安全上限：磁贴宽度本就随内容自适应（min-width 40 +
+   无上限），摘要超长（长路径 / 长任务名）会把单枚磁贴撑过半屏——NPS 的
+   「装不下整枚不显示」由既有 >8 枚横向滚动承接；这里给摘要补一道 240px
+   截断（ellipsis + title 悬停全文，磁贴本就带 title），磁贴名不截断。 */
+.dock-tile-generic-summary {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 秒表：正计时值（借鉴 ClassSoftwareHub #3） ---- */
+
+.dock-mini-stopwatch .dock-mini-num {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.dock-mini-stopwatch.is-running .dock-mini-num {
+  color: var(--accent-ink);
+}
+.dock-mini-stopwatch.is-empty .dock-mini-num {
+  color: var(--muted);
+}

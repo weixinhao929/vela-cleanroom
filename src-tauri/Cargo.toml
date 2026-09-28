@@ -1,0 +1,89 @@
+[package]
+name = "focus-desk"
+version = "0.1.0"
+description = "A clean-room desktop productivity app"
+authors = ["浩浩浩"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "focus_desk_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# 任务栏注入 DLL（velatap.dll）作为独立 cdylib 成员：主包默认构建/测试
+# 不含它（cargo 在含 [package] 的根目录只跑根包），CI 单独 `-p velatap`。
+[workspace]
+members = ["crates/taskbar_tap"]
+resolver = "2"
+
+# R9：release 编译调优。本应用是常驻后台的桌面小组件层——稳态采样/命中
+# 测试路径吃薄 LTO 的跨 crate 内联；strip 符号直接砍安装包与进程映像体积；
+# codegen-units=1 换更优代码布局（链接时间增加可接受，发布构建不频繁）。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+# 单实例插件：第二实例只把 argv 转发给首实例后立即退出（不建窗口/托盘），
+# 防双开双托盘双心跳；回调在首实例内执行（lib.rs cli.rs 的命令面）。
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# BentoDesk 借鉴 #12：样式预设包（.zip）读写。最小 feature 集（仅 deflate）。
+zip = { version = "2", default-features = false, features = ["deflate"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+# env_logger 已移除：日志改由 src/logging.rs 自实现，同时写 stderr 与按天
+# 滚动的文件（S1）。env_logger 只能写 stderr，打包后完全丢失。
+# "std" feature 提供 set_boxed_logger（此前由 env_logger 间接启用）。
+log = { version = "0.4", features = ["std"] }
+sysinfo = "0.33"
+calamine = "0.26"
+encoding_rs = "0.8"
+base64 = "0.22"
+# 需要解码用户导入的各种图片格式来生成缩略图（P2），因此在 png 之外
+# 补齐 jpeg/webp/gif/bmp；avif 解码依赖 C 库，不启用（回退为直接使用原图）。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+rfd = "0.15"
+# alpha 依赖：pin 死精确版本，升级需显式改这里并回归 email.rs 手工超时封装。
+# 跟踪 upstream（rust-imap/imap）正式 3.0 发布；API 冻结前可能断裂、CVE 响应慢。
+imap = "=3.0.0-alpha.15"
+native-tls = "0.2"
+# B-10：统一 TLS 栈到 SChannel（与 native-tls/邮件侧同源），整棵剪掉 rustls 依赖环。
+reqwest = { version = "0.13.4", default-features = false, features = ["native-tls", "blocking"] }
+ts-rs = "12.0.1"
+# C-3 更新链安全：下载安装包后做 SHA-256 完整性校验；url 用于解析/校验
+# 下载地址的 host，强制与用户配置的更新源同域。
+sha2 = "0.10"
+# D-1：更新清单 Ed25519 签名验证（离线公钥内嵌 update_sig.rs）
+ed25519-dalek = "2"
+# 编码哈希工具（借鉴 ClassSoftwareHub #2）：文件流式同时计算四种哈希。
+md-5 = "0.10"
+sha1 = "0.10"
+notify = "6"
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+# OS 通知点击回调基建：notify-rust 4.18 的 Windows 后端本就依赖
+# tauri-winrt-notification，这里直接引用以拿到 on_activated 进程内激活
+# 回调（见 os_notify.rs），不引入新依赖树。
+tauri-winrt-notification = "0.7"
+# Win32_System_WinRT：TB-STATE 的 RoGetActivationFactory(ShellViewCoordinator)
+# （搜索 / 任务视图状态源，需求 §5.3 / §5.4 检测落点）。
+# Media：MediaPlaybackAutoRepeatMode（repeat 循环控制，media.rs）。
+# UI_Notifications(+Management)/UI/ApplicationModel：sysnotify.rs 的
+# UserNotificationListener 系统通知监听（一.1；AppInfo 在 ApplicationModel）。
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Power", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Media_Control", "Media", "Win32_System_Com", "Storage_Streams", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_Graphics_Dxgi", "Win32_Storage_FileSystem", "Win32_Devices_Bluetooth", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Devices_FunctionDiscovery", "Win32_System_Performance", "Win32_Security_Cryptography", "Win32_Devices_Display", "Win32_System_Wmi", "Win32_System_Variant", "Win32_UI_Accessibility", "Win32_Graphics_Dwm", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_WinRT", "UI_Notifications", "UI_Notifications_Management", "UI", "ApplicationModel", "Win32_UI_Shell_PropertiesSystem", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+winreg = "0.52"
+# #[implement] 宏展开引用 ::windows_core 路径（COM 回调实现需要）。
+windows-core = "0.61"

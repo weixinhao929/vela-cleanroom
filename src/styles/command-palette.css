@@ -1,0 +1,287 @@
+﻿/* === 全局命令面板（I1）=== */
+.cmd-palette {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-cmd, 10150);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: min(16vh, 140px);
+}
+/* 遮罩纯色 α：此前 blur(2px) 的视觉收益接近零，却在全屏遮罩上常驻一层
+   合成器模糊（多层玻璃同屏时的主要掉帧源之一）。
+   一.6：打开时遮罩淡入（复用 cmd-palette-fade-in，与关闭的 fade-out 对称）——
+   此前打开硬切出现、关闭却有淡出，观感不同步。 */
+.cmd-palette-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  animation: cmd-palette-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) both;
+}
+html[data-reduce-motion="1"] .cmd-palette-backdrop {
+  animation: none;
+}
+.cmd-palette-box {
+  position: relative;
+  width: min(560px, calc(100vw - 48px));
+  background: var(--popover-bg, var(--paper-solid));
+  border: 1px solid var(--line);
+  border-radius: var(--rad-14);
+  overflow: hidden;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+  animation: cmd-palette-pop var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out) both;
+}
+@keyframes cmd-palette-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+html[data-reduce-motion="1"] .cmd-palette-box {
+  animation: none;
+}
+
+.cmd-palette-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.cmd-palette-input input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink);
+  font-size: var(--fs-15);
+  font-family: inherit;
+}
+.cmd-palette-input input::placeholder {
+  color: var(--muted-2);
+}
+.cmd-palette-input kbd {
+  flex-shrink: 0;
+  font: 600 var(--fs-10)/1 var(--font-mono, monospace);
+  color: var(--muted-2);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--rad-5);
+  padding: 3px 6px;
+}
+
+/* [PASTE]（ZTools #1）粘贴态载荷芯片：输入框下、列表上的一行当前载荷 +
+   清除按钮（Esc 第一步同义）。 */
+.cmd-palette-payload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.cmd-palette-payload-chip {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-12);
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  padding: 4px 10px;
+}
+.cmd-palette-payload-clear {
+  transition: color var(--dur-fx) var(--ease-fx);
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  background: var(--surface-soft);
+  color: var(--muted-2);
+  cursor: pointer;
+  font-size: var(--fs-13);
+  line-height: 1;
+  padding: 0;
+}
+.cmd-palette-payload-clear:hover {
+  color: var(--ink);
+}
+/* P2 三轮补退场：清除后保留一拍播淡出（useDelayedUnmount 快照渲染承载）。 */
+.cmd-palette-payload.is-closing {
+  animation: cmd-palette-fade-out var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease) forwards;
+  pointer-events: none;
+}
+
+.cmd-palette-list {
+  max-height: 380px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cmd-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--rad-9);
+  cursor: pointer;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-13-5);
+  font-family: inherit;
+  text-align: left;
+  transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+/* #110 起高亮由滑移指示条（.cmd-palette-indicator，accent 药丸）独自承载：
+   此处保留的 .active 静态底色与指示条以不同速度/曲线同时变化，键盘连按时
+   可见「药丸追底色」叠影——不再二选一，删底色。 */
+/* A4 按压态：state-layer pressed 一档（高亮本体仍由指示条承载）。 */
+.cmd-palette-item:active {
+  background: color-mix(in srgb, var(--ink) var(--state-layer-pressed, 0.12), transparent);
+}
+.cmd-palette-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmd-palette-item-group {
+  flex-shrink: 0;
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+}
+.cmd-palette-hint {
+  flex-shrink: 0;
+  font: 600 var(--fs-10)/1 var(--font-mono, monospace);
+  color: var(--muted-2);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--rad-5);
+  padding: 3px 6px;
+}
+.cmd-palette-empty {
+  padding: 26px 14px;
+  text-align: center;
+  color: var(--muted-2);
+  font-size: var(--fs-13);
+}
+
+/* === C 节 #56/#57/#111 补全 === */
+/* #56 空态淡入 */
+.cmd-palette-empty {
+  animation: cmd-palette-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
+}
+@keyframes cmd-palette-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* #56 列表项错落入场（延迟由 TSX 内联注入，7 项封顶） */
+.cmd-palette-item {
+  animation: cmd-palette-fade-in var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out) backwards;
+}
+/* #57/#111 关闭退场：背景淡出 + 面板反向 pop-out（= --dur-fx-fast，与
+   CommandPalette 的 useDelayedUnmount 同源，随 设置→动效 速度档缩放） */
+.cmd-palette.is-closing {
+  pointer-events: none;
+}
+.cmd-palette.is-closing .cmd-palette-backdrop {
+  animation: cmd-palette-fade-out var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) forwards;
+}
+.cmd-palette-box.is-closing {
+  animation: cmd-palette-pop-out var(--dur-fx-fast, 0.15s) var(--ease-in, ease-in) forwards;
+}
+@keyframes cmd-palette-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes cmd-palette-pop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+html[data-reduce-motion="1"]
+  :is(
+    .cmd-palette-box.is-closing,
+    .cmd-palette.is-closing .cmd-palette-backdrop,
+    .cmd-palette-empty,
+    .cmd-palette-item
+  ) {
+  animation: none;
+}
+/* === SPOT Spotlight 升级：应用模式头像 + 网页兜底引擎芯片 === */
+/* 应用项字母磁贴（无真实图标时与启动器小组件同款渐变配色，背景由 TSX 内联注入） */
+.cmd-palette-item-avatar {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--rad-6);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+/* 当前搜索引擎芯片：点击 / Tab 循环切换 */
+.cmd-palette-engine {
+  flex-shrink: 0;
+  font-size: var(--fs-11);
+  line-height: 1;
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--rad-5);
+  padding: 4px 7px;
+  cursor: pointer;
+  transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.cmd-palette-engine:hover {
+  background: var(--surface-active, rgba(255, 255, 255, 0.08));
+}
+/* ══ #110 键盘导航滑移指示条（原错放在 widget-anim.css 静态主包，随面板
+   chunk 迁入）：随 aria-activedescendant 高亮项平移，行间滑动全在合成器层。 ══ */
+.cmd-palette-list {
+  position: relative;
+}
+.cmd-palette-indicator {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 0;
+  height: 0;
+  border-radius: var(--rad-9);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  /* 位移走 translateY：键盘连按的行间滑动全在合成器层，不逐次 reflow；
+     height 不参与过渡（跨不同高条目直接跳变，少见路径），圆角由本元素承载。 */
+  transform: translateY(0);
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
+    opacity var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}

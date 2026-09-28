@@ -1,0 +1,38 @@
+/* P2-8 任务栏网速条窗口（taskbar-net.html 独立入口）。
+   自 widget.css 拆出：该窗口是零交互常驻小窗，走精简入口（不加载
+   widget.css 的其余 250KB），只带这一屏样式。 */
+.taskbar-net {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 8px;
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-11);
+  /* 文字色收编为 token（此前 5 处 var(--text, #eaeaea) 回退从未有定义）。 */
+  --text: #eaeaea;
+  color: var(--text);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+.taskbar-net .taskbar-net-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+}
+.taskbar-net .taskbar-net-arrow {
+  font-size: var(--fs-9);
+  opacity: 0.85;
+}
+.taskbar-net .taskbar-net-up .taskbar-net-arrow {
+  color: var(--accent, #7c8cf8);
+}
+.taskbar-net .taskbar-net-down .taskbar-net-arrow {
+  color: var(--accent-2, #4fc3f7);
+}

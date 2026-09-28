@@ -1,0 +1,509 @@
+/* ══════════════════════════════════════════════════════════════════
+   POLISH 打磨包：贝塞尔曲线编辑器（B3）/ 滑条 v2（D 表）/ 快捷键速查表（D 表）
+   ──────────────────────────────────────────────────────────────────
+   两个窗口共用（main.tsx 静态加载）：滑条经 shared.tsx 出现在设置窗与桌面
+   层就地配置弹层，速查表两窗均可 Ctrl+? 呼出。全部消费 A1–A3 统一 token，
+   不在此重定义任何 --ease-* 契约值；交互态过渡只动 transform/opacity/颜色。
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── 滑条（Wake Slider" 集成）：组件自携 wake-slider.css（条形、
+   波形、disabled、reduce-motion 兜底），此处只保留设置行布局约束——
+   .tm-slider-row 类挂在 WakeSlider 根元素上，宽度沿用 230px；
+   就地弹层的紧凑宽度与键盘描边一并给出。
+   选择器必须写成 .wake-slider.tm-slider-row（0-2-0）：官方 .wake-slider
+   { width: 100% } 与单类 .tm-slider-row 同特异性，而 wake-slider.css 随
+   SettingsView 懒 chunk 注入、晚于本文件，单类会被 100% 宽度压过——
+   滑条撑满设置行并把左侧标题挤成竖排（每行一字）。 ── */
+.wake-slider.tm-slider-row {
+  align-items: center;
+  gap: 12px;
+  width: 230px;
+  flex-shrink: 0;
+}
+.wcfg-popover .wake-slider.tm-slider-row {
+  gap: 8px;
+  width: 150px;
+  min-width: 0;
+}
+.wcfg-popover .wake-slider__value {
+  min-width: 3ch;
+  font-size: var(--fs-10-5);
+}
+.wake-slider__track {
+  touch-action: none;
+}
+
+/* ── A4 / touch target：Toggle 命中 wrap（docs/ui-guidelines.md §2）──
+   48×48 透明按钮承载点击 / 键盘 / aria，44×24 轨道 .tm-toggle 作为子元素居中；
+   两窗共用（就地弹层也渲染 Toggle）。transform 过渡同时是 check-transitions
+   对 .tm-toggle-wrap:active 涨径规则的基线。 */
+.tm-toggle-wrap {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-spring);
+}
+/* 就地配置弹层紧凑变体：行高 30px，wrap 收到 40×30（overlay 模式整窗可交互，
+   命中面仍大于 34×20 的轨道视觉）；34px 轨道的拇指行程是 14px，按压涨径时
+   保持该行程（否则 feature-animations 的 20px 通用行程会在窄轨道上越界）。 */
+.wcfg-popover .tm-toggle-wrap {
+  width: 40px;
+  height: 30px;
+}
+.wcfg-popover .tm-toggle-wrap:active .tm-toggle.on .tm-toggle-knob {
+  transform: translateX(var(--toggle-travel-narrow)) scale(var(--toggle-press-scale));
+}
+
+/* ── B3 贝塞尔曲线编辑器 ── */
+.tm-bezier {
+  display: flex;
+  gap: 18px;
+  padding: 14px 16px 16px;
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-soft);
+}
+.tm-bezier-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.tm-bezier-pad {
+  width: 200px;
+  height: 200px;
+  border-radius: var(--rad-6);
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border: 1px solid var(--line);
+  overflow: visible;
+  touch-action: none;
+}
+.tm-bezier-grid {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+}
+.tm-bezier-base {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+.tm-bezier-diag {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.tm-bezier-arm {
+  stroke: color-mix(in srgb, var(--accent) 45%, transparent);
+  stroke-width: 1.5;
+}
+.tm-bezier-curve {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-bezier.is-invalid .tm-bezier-curve {
+  stroke: var(--danger);
+}
+.tm-bezier-end {
+  fill: var(--ink);
+}
+.tm-bezier-head {
+  fill: var(--bg);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.tm-bezier.is-invalid .tm-bezier-head {
+  stroke: var(--danger);
+}
+.tm-bezier-handle {
+  fill: var(--accent);
+  stroke: var(--bg);
+  stroke-width: 2;
+  cursor: grab;
+  outline: none;
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-spring),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.tm-bezier-handle:hover {
+  transform: scale(1.15);
+}
+.tm-bezier-handle:active {
+  cursor: grabbing;
+  transform: scale(1.25);
+}
+.tm-bezier-handle:focus-visible {
+  filter: drop-shadow(0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent));
+  transform: scale(1.15);
+}
+.tm-bezier.is-invalid .tm-bezier-handle {
+  fill: var(--danger);
+}
+/* 演示道：小球按曲线映射进度平移（JS 直写 transform） */
+.tm-bezier-lane {
+  position: relative;
+  height: 14px;
+  border-radius: var(--rad-7);
+  background: var(--track);
+}
+.tm-bezier-ball {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.tm-bezier-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.tm-bezier-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tm-bezier-chip {
+  padding: 4px 10px;
+  font-size: var(--fs-12);
+  color: var(--muted-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tm-bezier-chip:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.tm-bezier-chip:active {
+  transform: scale(0.96);
+}
+.tm-bezier-chip.active {
+  color: var(--btn-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.tm-bezier-inputs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.tm-bezier-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.tm-bezier-input.tm-text-input {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.tm-bezier.is-invalid .tm-bezier-input.tm-text-input {
+  border-color: var(--danger);
+}
+.tm-bezier-css {
+  align-self: flex-start;
+  padding: 4px 8px;
+  font-size: var(--fs-12);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  user-select: all;
+}
+.tm-bezier-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+.tm-bezier-status {
+  font-size: var(--fs-12);
+  color: var(--muted-2);
+}
+.tm-bezier-status.bad {
+  color: var(--danger);
+}
+.tm-bezier-status.shake {
+  animation: tm-bezier-shake var(--dur-fx-slow, 0.3s) var(--ease-out);
+}
+@keyframes tm-bezier-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+}
+.tm-bezier-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+/* ── D 表 快捷键速查表（Ctrl+?）：全窗覆盖层 + 分类多列瀑布 ──
+   与命令面板同款覆盖层语言（遮罩 blur 2px、面板 pop 入场 / 反向 pop 退场）；
+   分类段用 CSS columns 自动瀑布（break-inside: avoid），窄窗自动降列。 */
+.tm-cheatsheet {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-cmd, 10150);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: min(10vh, 88px) 24px 24px;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: tm-cheatsheet-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) both;
+}
+.tm-cheatsheet.is-closing {
+  pointer-events: none;
+  animation: tm-cheatsheet-fade-out var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) forwards;
+}
+.tm-cheatsheet-panel {
+  position: relative;
+  width: min(920px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--popover-bg, var(--paper-solid));
+  border: 1px solid var(--line);
+  border-radius: var(--rad-14);
+  box-shadow: 0 18px 60px color-mix(in srgb, var(--shadow-tint) 90%, transparent);
+  outline: none;
+  animation: tm-cheatsheet-pop var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+.tm-cheatsheet-panel.is-closing {
+  animation: tm-cheatsheet-pop-out var(--dur-fx-fast, 0.15s) var(--ease-in) forwards;
+}
+@keyframes tm-cheatsheet-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes tm-cheatsheet-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes tm-cheatsheet-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes tm-cheatsheet-pop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+.tm-cheatsheet-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.tm-cheatsheet-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-15);
+  font-weight: 600;
+  color: var(--ink);
+}
+.tm-cheatsheet-hint {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+  color: var(--muted-2);
+}
+.tm-cheatsheet-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--rad-8);
+  background: transparent;
+  color: var(--muted-3);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tm-cheatsheet-close:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.tm-cheatsheet-close:active {
+  transform: scale(0.94);
+}
+.tm-cheatsheet-cols {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 16px 18px;
+  columns: 3 260px;
+  column-gap: 22px;
+}
+.tm-cheatsheet-section {
+  break-inside: avoid;
+  margin-bottom: 18px;
+  animation: tm-cheatsheet-sec-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--sti, 0), 6) * 30ms);
+}
+@keyframes tm-cheatsheet-sec-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.tm-cheatsheet-section-title {
+  margin: 0 0 4px;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.tm-cheatsheet-note {
+  margin: 0 0 8px;
+  font-size: var(--fs-11-5);
+  line-height: 1.45;
+  color: var(--muted-2);
+}
+.tm-cheatsheet-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tm-cheatsheet-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--fs-12-5);
+  color: var(--ink);
+}
+.tm-cheatsheet-row:last-child {
+  border-bottom: 0;
+}
+.tm-cheatsheet-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.35;
+}
+.tm-cheatsheet-group {
+  font-style: normal;
+  font-size: var(--fs-10-5);
+  color: var(--muted-2);
+}
+.tm-cheatsheet-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.tm-cheatsheet-chord {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.tm-cheatsheet-chord kbd {
+  font: 600 var(--fs-10-5)/1 var(--font-mono, monospace);
+  color: var(--muted-3);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: var(--rad-5);
+  padding: 3px 6px;
+  min-width: 18px;
+  text-align: center;
+}
+.tm-cheatsheet-sep,
+.tm-cheatsheet-nokey {
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+  padding: 0 2px;
+}
+.tm-cheatsheet-hint kbd {
+  font: 600 var(--fs-10)/1 var(--font-mono, monospace);
+  color: var(--muted-2);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--rad-5);
+  padding: 3px 6px;
+}
+/* reduce-motion：入场/退场/错落全部关停（全局 0.001s 压缩之外显式归零，与 palette 同步） */
+html[data-reduce-motion="1"]
+  :is(
+    .tm-cheatsheet,
+    .tm-cheatsheet.is-closing,
+    .tm-cheatsheet-panel,
+    .tm-cheatsheet-panel.is-closing,
+    .tm-cheatsheet-section
+  ) {
+  animation: none;
+}

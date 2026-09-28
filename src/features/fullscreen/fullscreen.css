@@ -1,0 +1,127 @@
+/**
+ * 全屏展示窗样式（借鉴 ClassSoftwareHub #5）：投影场景固定深色底（不跟随
+ * 桌面层透明语义），字号按视口百分比自适应（无秒 min(30vw,46vh) 量级）。
+ *
+ * 动画：窗体入场淡入 + 内容上浮（show 握手后首帧即播）；Esc/双击先播
+ * is-closing 淡出再关窗（FullscreenView exit()，时长 JS 侧 animDurations 同源）；
+ * 倒计时归零一次性强调（is-done 类挂上时播一次 burst）；番茄钟专注/休息/暂停
+ * 状态用颜色过渡表达。reduce-motion 由全局 0.001s 压缩兜底（本窗与主窗共用
+ * main.tsx 入口，global.css 的双信号门禁覆盖到这里）。
+ */
+
+.fs-root {
+  position: fixed;
+  inset: 0;
+  background: #0b0c10;
+  color: #f2f3f5;
+  overflow: hidden;
+  user-select: none;
+  animation: fs-root-in var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
+}
+.fs-root.is-closing {
+  pointer-events: none;
+  animation: fs-root-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
+}
+@keyframes fs-root-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes fs-root-out {
+  to {
+    opacity: 0;
+  }
+}
+.fs-body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3vh;
+  font-variant-numeric: tabular-nums;
+  /* 内容层比窗体略延迟上浮：表面先亮、内容后现（沉浸层同配方）。
+     key=数据态 切换（占位 ↔ 数据）时重挂重播，替代硬切。 */
+  animation: fs-body-in var(--dur-fx-slow, 0.3s) var(--ease-out) calc(var(--dur-fx-fast, 0.15s)) backwards;
+}
+@keyframes fs-body-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.99);
+  }
+}
+.fs-clock {
+  display: flex;
+  align-items: baseline;
+  font-weight: 800;
+  font-size: min(26vw, 44vh);
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: #f2f3f5;
+  /* 番茄钟专注/休息/暂停与倒计时归零的颜色状态切换走过渡。 */
+  transition: color var(--dur-fx, 0.2s) var(--ease-out);
+}
+.fs-colon {
+  animation: fs-blink 2s steps(1) infinite;
+  margin: 0 0.5vw;
+}
+.fs-seconds {
+  font-size: 0.42em;
+  color: rgba(242, 243, 245, 0.55);
+  margin-left: 1.2vw;
+  align-self: flex-end;
+  padding-bottom: 0.35em;
+}
+.fs-placeholder {
+  font-size: min(8vw, 12vh);
+  color: rgba(242, 243, 245, 0.5);
+  font-weight: 600;
+}
+.fs-clock.is-focus {
+  color: #6cb6ff;
+}
+.fs-clock.is-break {
+  color: #51c88c;
+}
+.fs-clock.is-idle {
+  color: rgba(242, 243, 245, 0.6);
+}
+/* 倒计时归零：转强调色 + 一次性 scale 脉冲（类挂上时播一次，不常驻）。
+   此前 is-done 只有颜色，归零毫无仪式感（对比 CountdownWidget 的满环 burst）。 */
+.fs-clock.is-done {
+  color: #f5a524;
+  animation: fs-done-burst calc(0.8s * var(--fx-scale, 1)) var(--ease-spring);
+}
+@keyframes fs-done-burst {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.fs-date {
+  font-size: min(4vw, 7vh);
+  font-weight: 500;
+  color: rgba(242, 243, 245, 0.72);
+}
+.fs-exit-hint {
+  position: absolute;
+  right: 24px;
+  bottom: 18px;
+  font-size: var(--fs-13);
+  color: rgba(242, 243, 245, 0.35);
+}
+@keyframes fs-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}

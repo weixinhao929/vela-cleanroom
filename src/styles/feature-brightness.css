@@ -1,0 +1,175 @@
+/* ────────────────────────────────────────────────────────────── *
+ * §4.12 亮度控制小组件（实验性）
+ *  - bright-*：面板壳 / 每屏滑条行 / 降级行；
+ *  - 滑条本体复用 feature-polish.css 的 tm-slider-*（滑条 v2），
+ *    本文件只管布局与降级态。
+ * 全部颜色/圆角取全局 token；hover 改透明度均带对应 transition
+ * （check-transitions 基线）。
+ * ────────────────────────────────────────────────────────────── */
+
+.bright-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.bright-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px;
+}
+
+.bright-ico {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.bright-title {
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.bright-badge {
+  font-size: var(--fs-10);
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--amber, #c98a1b) 18%, transparent);
+  color: var(--amber, #c98a1b);
+}
+
+.bright-refresh {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: var(--muted, #9ca3af);
+  cursor: pointer;
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+
+.bright-refresh:hover {
+  color: var(--ink);
+  opacity: 0.85;
+}
+
+.bright-refresh:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.bright-spinning {
+  animation: bright-spin var(--dur-spinner, 1s) linear infinite;
+}
+
+@keyframes bright-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.bright-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bright-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--radius, 12px);
+  /* --panel 从未定义（曾恒回退 55% 白底，暗色档白字 ≈2:1）：改接 A1 求解的
+     卡面层色（跟随明暗档 / 自定义背景 / 不透明度滑条）。 */
+  background: var(--layer2, var(--surface-soft));
+}
+
+.bright-row.is-unsupported {
+  opacity: 0.55;
+}
+
+.bright-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bright-label {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bright-slot {
+  flex-shrink: 0;
+  font-size: var(--fs-10);
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: var(--rad-5);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-ink, var(--ink));
+}
+
+.bright-kind {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: var(--fs-10);
+  color: var(--muted, #9ca3af);
+}
+
+.bright-unsupported {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-10);
+  font-weight: 600;
+  color: var(--muted, #9ca3af);
+}
+
+.bright-unsupported-bar {
+  height: 16px;
+  border-radius: var(--rad-8);
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--muted, #9ca3af) 22%, transparent) 0 6px,
+    transparent 6px 12px
+  );
+}
+
+.bright-empty {
+  margin: 4px 2px;
+  font-size: var(--fs-12);
+  color: var(--muted, #9ca3af);
+  word-break: break-all;
+}
+
+.bright-error-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-10-5);
+  opacity: 0.8;
+}
+
+.bright-foot {
+  margin-top: auto;
+  padding: 0 2px;
+  font-size: var(--fs-10-5);
+  color: var(--muted, #9ca3af);
+}

@@ -1,0 +1,199 @@
+﻿/* === 视图系统 / 设置入口（feature-views） ===
+   本文件由主流程统一导入（main.tsx 不在此处修改）。
+   视图切换只在设置窗口「视图」页进行（桌面层不再有常驻切换器）。 */
+
+/* === 设置内：当前视图小组件列表 === */
+.tm-widget-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tm-widget-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+.tm-widget-name {
+  flex: 1;
+  font-size: var(--fs-14);
+  font-weight: 600;
+  color: var(--ink);
+}
+.tm-widget-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-12);
+  font-weight: 400;
+  color: var(--muted, rgba(255, 255, 255, 0.55));
+}
+
+/* === 设置内：「杂项」磁贴面板的组件网格（紧凑卡片，替代整宽行） === */
+.tm-misc-set-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+}
+.tm-misc-set-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-10);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: var(--fs-13);
+}
+.tm-misc-set-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.tm-misc-set-card .tm-btn-secondary {
+  padding: 4px 10px;
+}
+.tm-misc-set-card .tm-misc-set-del {
+  padding: 5px;
+}
+
+/* === 设置内：添加小组件选择器（模态） === */
+.widget-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  /* 遮罩浓度收敛到 --scrim（原三处各自硬编码 rgba(0,0,0,.32)）。 */
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+  animation: widget-picker-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) both;
+}
+.widget-picker-panel {
+  width: min(720px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--paper-solid);
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 28px)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur, 28px)) saturate(140%);
+  /* 进出场对齐命令面板 cmd-palette-pop 的双向节奏（此前瞬现瞬消）。 */
+  animation: widget-picker-pop var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out) both;
+}
+
+@keyframes widget-picker-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes widget-picker-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes widget-picker-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes widget-picker-pop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+}
+.widget-picker-overlay.is-closing {
+  pointer-events: none;
+  animation: widget-picker-fade-out var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease) forwards;
+}
+.widget-picker-panel.is-closing {
+  animation: widget-picker-pop-out var(--dur-fx-xfast, 0.12s) var(--ease-in, ease-in) forwards;
+}
+html[data-reduce-motion="1"] :is(.widget-picker-overlay, .widget-picker-panel) {
+  animation: none;
+}
+.widget-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.widget-picker-title {
+  font-size: var(--fs-15);
+  font-weight: 600;
+  color: var(--ink);
+}
+.widget-picker-close {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-ctl);
+  background: var(--surface-soft, rgba(255, 255, 255, 0.08));
+  color: var(--muted, rgba(255, 255, 255, 0.6));
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.widget-picker-close:hover {
+  color: var(--ink);
+  background: var(--surface-hover, rgba(255, 255, 255, 0.14));
+}
+.widget-picker-close:active {
+  transform: scale(0.92);
+}
+.widget-picker-grid {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+.widget-picker-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--paper, rgba(255, 255, 255, 0.09));
+  color: var(--ink);
+  font-size: var(--fs-13);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-picker-card svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.widget-picker-card:hover {
+  border-color: var(--accent);
+  background: var(--surface-hover, rgba(255, 255, 255, 0.12));
+}

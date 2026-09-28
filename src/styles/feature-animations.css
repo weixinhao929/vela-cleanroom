@@ -1,0 +1,1299 @@
+:root {
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  /* 大面积表面专用软弹（过冲 ≤6%）：窗口/模态等 ≥300px 元素用，
+     小控件仍用 --ease-spring 的轻快回弹。anime.js createSpring 分档思想。 */
+  --ease-spring-soft: cubic-bezier(0.34, 1.3, 0.64, 1);
+  /* ══ A3 动效两族分档（expressive 基准曲线，源自工作区对标分析）
+     升级而非重写：三分法/三档速度/fx 门禁照旧驱动 --anim-dur；本族 token 表达
+     「位移用带过冲的 Spatial、状态/颜色用近对称的 fx」的分工。 ══ */
+  /* Spatial 过冲族 —— 位移/尺寸/几何变化专用（100% 标准档 = 350/500/650ms）。
+     时长由 --anim-dur 族派生（时长双轨制收口）：速度三档 / 时长微调 /
+     禁用动画现在同时作用于本族与 fx 族；乘数与 src/lib/durations.ts 保持一致。 */
+  /* Spatial 过冲族 —— 位移/尺寸/几何变化专用（fast 350 / default 500 / slow 650ms） */
+  --ease-spatial-fast: cubic-bezier(0.42, 1.67, 0.21, 0.9);
+  --ease-spatial: cubic-bezier(0.38, 1.21, 0.22, 1);
+  --ease-spatial-slow: cubic-bezier(0.39, 1.29, 0.35, 0.98);
+  --dur-spatial-fast: calc(var(--anim-dur, 0.25s) * 1.4);
+  --dur-spatial: var(--anim-dur-slow, 0.5s);
+  --dur-spatial-slow: calc(var(--anim-dur-slow, 0.5s) * 1.3);
+  /* fx 近对称族 —— 颜色/透明度/状态层专用（100% 标准档 = 120/150/200/300ms 四档） */
+  /* fx 近对称族 —— 颜色/透明度/状态层专用（150/200/300ms 三档） */
+  --ease-fx: cubic-bezier(0.34, 0.8, 0.34, 1);
+  --dur-fx-xfast: calc(var(--anim-dur, 0.25s) * 0.48);
+  --dur-fx-fast: calc(var(--anim-dur-fast, 0.125s) * 1.2);
+  --dur-fx: calc(var(--anim-dur, 0.25s) * 0.8);
+  --dur-fx-slow: calc(var(--anim-dur-slow, 0.5s) * 0.6);
+
+  /* 语义别名 —— elementMove：小位移元素专用。规则（Keystone 小增量降档）：
+     几何变化 ≤20px 的位移/缩放一律取 fast 档曲线，细腻感明显提升；
+     大位移/重排才升 default/slow。JS 判定在 src/lib/anim.ts pickSpatialEase
+     （flipReorder / WidgetCard pos-anim / WidgetExpandOverlay 消费）；
+     check-transitions ease-contract 要求三个别名在 src 各至少一处真实消费。 */
+  --ease-element-move: var(--ease-spatial-fast);
+  --dur-element-move: var(--dur-spatial-fast);
+  /* cardReflow：卡片重排/几何重映射（默认档；widget-anim.css .pos-anim 兜底消费） */
+  --ease-card-reflow: var(--ease-spatial);
+  --dur-card-reflow: var(--dur-spatial);
+  /* A4 状态层参数：hover 8% / pressed 12% 叠 On 色，150ms 过渡 */
+  --state-layer-hover: 0.08;
+  --state-layer-pressed: 0.12;
+  /* Toggle 按压几何（A4，P3 三轮 token 化）：拇指涨径系数与行程。此前
+     scale(1.28) / translateX(20px) 在 feature-animations / feature-fx /
+     feature-polish 三文件逐字重复，改参要同步三处；窄轨道（34px 轨道，
+     wcfg-popover 紧凑变体）行程用 --toggle-travel-narrow。 */
+  --toggle-press-scale: 1.28;
+  --toggle-travel: 20px;
+  --toggle-travel-narrow: 14px;
+
+  /* B3 自定义曲线：动画页贝塞尔编辑器的产出由 theme-engine 以内联值写入
+     --ease-custom（缺省回退 Spatial 默认档）；--ease-entrance 是小组件入场与
+     动画页预览卡消费的语义别名，用户启用自定义曲线时 theme-engine 让它指向
+     --ease-custom，未启用回退减速曲线——两处消费同一别名，所见即所得。 */
+  --ease-custom: var(--ease-spatial);
+  --ease-entrance: var(--ease-out);
+  /* dockQ 弹簧（二.7，借鉴 NotchPeninsula 的统一弹簧）：s(t) = 1 −
+     cos(2π·2.65·t)·e^(−10.8·t)，450ms，峰值过冲 ≈15.8% @150ms。NPS 把岛体
+     宽 / 高 / 位移 / 形态 morph 全部共用同一条曲线（原话：「同一公式抄三份、
+     常量各写一遍，改一处忘一处就会出现这个动画弹、那个不弹」）——Vela 的
+     灵动岛几何 morph（收合位移 / 吸附 FLIP / 接管宽度 / 磁贴生长）统一走它，
+     手感一致。前代 --ease-island-expand（过冲样条，基准峰值 1.035）随本
+     token 接任其全部消费点而退役删除。不支持 linear() 的引擎回退 Spatial
+     默认档。check-transitions 契约：两处定义都只允许在本文件。 */
+  --ease-dock-spring: var(--ease-spatial);
+  --dur-dock-spring: calc(var(--anim-dur, 0.25s) * 1.8); /* 100% 标准档 = 450ms */
+
+  --ease-clock-hand: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 三.4：由「写死 0.4s 的假 token」改为 calc 派生（×1.6，100% 标准档
+     仍 = 400ms），随 设置→动效 速度三档缩放；消费点 global.css ×3、
+     widget.css ×2 自动跟随。乘数与 src/lib/durations.ts 文档表保持一致。 */
+  --dur-clock-hand: calc(var(--anim-dur, 0.25s) * 1.6);
+
+  --dur-ft-breathe: 2.6s;
+  /* 加载 spinner 统一转速（C3 收敛：历史上 7 处 4 套 keyframes × 4 种时长
+     0.8/0.9/1/4s；keyframes 因窗口样式分包各自保留，声明时长统一走本 token）。 */
+  --dur-spinner: 1s;
+  /* 音乐进度条平滑周期（P-perf 三轮）：组件侧进度显示已 1Hz 节流（减少
+     useClickThrough 全量采集触发），过渡略大于节拍周期、永远在途。数据跳变
+     由 .snap 旁路。数据节拍属循环节奏，不随速度档（同 --dur-ft-breathe 先例）。 */
+  --dur-np-progress: 1s;
+  /* 三.7 每秒 tick 数据填充的统一节奏（进度环 / 硬件条 / 系统条共用）：
+     过渡时长必须 ≥ tick 周期（1s），取 1.05s 覆盖 setInterval 漂移间隙，
+     填充始终在途；配 linear 防「动-停」阶梯感（D6）。数据节拍属循环节奏，
+     不随速度档（--dur-ft-breathe / --dur-np-progress 同政策）。 */
+  --dur-tick-fill: 1.05s;
+}
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --ease-dock-spring: linear(
+      0,
+      0.3018 5.6%,
+      0.6078 11.1%,
+      0.8592 16.7%,
+      1.032 22.2%,
+      1.1267 27.8%,
+      1.1583 33.3%,
+      1.1472 38.9%,
+      1.1133 44.4%,
+      1.0724 50%,
+      1.0351 55.6%,
+      1.0068 61.1%,
+      0.9891 66.7%,
+      0.9808 72.2%,
+      0.9795 77.8%,
+      0.9826 83.3%,
+      0.9876 88.9%,
+      0.9929 94.4%,
+      1
+    );
+  }
+}
+
+html:not([data-fx-off~="elastic"]) .ctx-menu .ctx-item {
+  animation: rb-ctx-item-in var(--dur-fx-xfast, 0.12s) var(--ease-out) backwards;
+  /* --sti 由 ContextMenu TSX 注入序号，cap 11×20ms=.22s 封顶。 */
+  animation-delay: calc(min(var(--sti, 0), 11) * 20ms);
+}
+@keyframes rb-ctx-item-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* G-4（本文件 1153 行起）：透明桌面画布上 hover 不用 transform——合成层
+   建立瞬间会闪白/闪空。右键菜单在桌面窗与设置窗共用，除 state-layer 底色
+   （feature-context-menu.css）外，hover 强调统一走色彩：图标 muted → ink。 */
+.ctx-menu .ctx-item-icon {
+  transition: color var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.ctx-menu .ctx-item:hover .ctx-item-icon {
+  color: var(--ink);
+}
+/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   2. 设置页控件微交互   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+.tm-toggle-knob {
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-spring);
+}
+/* A4 按压几何：拇指按压「涨径」（拇指按压涨径到 28px 的同型语义），
+   18px → ×1.28 ≈ 23px，仍在 24px 轨道内；替代此前的 scaleX 挤压。
+   :active 挂在 48px 命中 wrap 上（Toggle DOM 见 shared.tsx）。 */
+.tm-toggle-wrap:active .tm-toggle-knob {
+  transform: scale(var(--toggle-press-scale));
+}
+.tm-toggle-wrap:active .tm-toggle.on .tm-toggle-knob {
+  transform: translateX(var(--toggle-travel)) scale(var(--toggle-press-scale));
+}
+/* 复合选择器基线：check-transitions 以去伪类后的选择器比对基础过渡（按文件） */
+.tm-toggle-wrap {
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-spring);
+}
+.tm-toggle .tm-toggle-knob,
+.tm-toggle.on .tm-toggle-knob,
+.tm-toggle-wrap .tm-toggle-knob,
+.tm-toggle-wrap .tm-toggle.on .tm-toggle-knob {
+  transition: transform var(--dur-fx-slow, 0.3s) var(--ease-spring);
+}
+/* 分段控件：激活项"敲定"回弹 */
+.tm-segmented-item {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+
+html:not([data-fx-off~="elastic"]) .tm-segmented-item.active {
+  animation: rb-seg-pop var(--dur-fx, 0.2s) var(--ease-spring);
+}
+@keyframes rb-seg-pop {
+  from {
+    transform: scale(0.94);
+  }
+  60% {
+    transform: scale(1.03);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+/* ── [POLISH] 分段控件双速拉伸胶囊 + 按压加宽 ──
+   两层同色胶囊：快层 50ms 先到位（--ease-fx 近对称），慢层 220ms 跟进
+   （--ease-out）；过渡期两层并集 = 拉伸胶囊，到位后重合。位置/宽度由
+   shared.tsx 内联 transform/width 驱动；可见气泡是内层 .tm-segmented-pill-b
+   （外圆角由 TSX 按激活位置内联），按压时气泡 scaleX(1.12)≈+10px 加宽。 */
+.tm-segmented-pill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  pointer-events: none;
+}
+.tm-segmented-pill.pill-fast {
+  /* 五.7：width 参与过渡（不等宽分段切换时胶囊宽度不再瞬跳）；50ms 收编为
+     --dur-fx-xfast 的同源比例（×0.42 ≈ 标准档 50ms），随速度档缩放。
+     layout-anim: ok 双速胶囊宽度层（绝对定位覆盖层小面积，刻意设计） */
+  transition:
+    transform calc(var(--dur-fx-xfast, 0.12s) * 0.42) var(--ease-fx),
+    width calc(var(--dur-fx-xfast, 0.12s) * 0.42) var(--ease-fx);
+}
+.tm-segmented-pill.pill-slow {
+  /* layout-anim: ok 双速胶囊慢层宽度（同上，随 --dur-fx 跟进） */
+  transition:
+    transform var(--dur-fx, 0.2s) var(--ease-out),
+    width var(--dur-fx, 0.2s) var(--ease-out);
+}
+.tm-segmented-pill-b {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background: var(--surface-active);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  transition: transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+/* check-transitions 基线：门禁以「:active 之前的选择器」比对基础过渡，
+   组按压规则的基线是 .tm-segmented 本身。 */
+.tm-segmented {
+  transition: transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+.tm-segmented:active .tm-segmented-pill-b {
+  transform: scaleX(1.12);
+}
+
+html:not([data-fx-off~="elastic"]) .tm-check-badge {
+  animation: rb-badge-pop var(--dur-fx, 0.2s) var(--ease-spring);
+}
+@keyframes rb-badge-pop {
+  from {
+    transform: scale(0) rotate(-40deg);
+  }
+  70% {
+    transform: scale(1.15) rotate(6deg);
+  }
+  to {
+    transform: scale(1) rotate(0);
+  }
+}
+
+.tm-preset-card {
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx, 0.2s) var(--ease-out);
+}
+.tm-preset-card:hover {
+  transform: translateY(-2px);
+}
+.tm-preset-card:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.tm-sidebar-item svg {
+  transition: transform var(--dur-fx, 0.2s) var(--ease-spring);
+}
+.tm-sidebar-item:hover svg {
+  transform: translateX(1px) scale(1.08);
+}
+.tm-sidebar-item.active svg {
+  transform: scale(1.1);
+}
+.tm-sidebar-item,
+.tm-sidebar-sub-item {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.tm-sidebar-item:active,
+.tm-sidebar-sub-item:active {
+  transform: scale(0.97);
+}
+
+.tm-stepper-btn {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tm-stepper-btn:active {
+  transform: scale(0.94);
+}
+/* 涓嬫媺鑿滃崟椤癸細鎮仠杞诲井鍙崇Щ */
+.tm-select-item {
+  transition:
+    background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.tm-select-item:hover {
+  transform: translateX(2px);
+}
+
+.tm-setting-row {
+  /* A4 后 hover 反馈由状态层（::after 8% On 色，见 settings.css）统一承载，
+     此处只保留圆角；fx 档错落入场照旧。 */
+  border-radius: var(--radius-ctl);
+}
+
+.tm-btn-secondary,
+.tm-btn-danger,
+.tm-btn-ghost,
+.tm-add-widget-btn,
+.tm-action-row,
+.fd-prompt-btn {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tm-add-widget-btn:active,
+.tm-btn-secondary:active {
+  transform: scale(0.97);
+}
+/* 日期输入 hover 寰厜 */
+.tm-date-input {
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.tm-date-input:hover {
+  transform: translateY(-1px);
+}
+/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   3. 小组件层   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+
+html:not([data-fx-off~="listStagger"]) .widget-gallery-card,
+html:not([data-fx-off~="listStagger"]) .tm-gallery-card {
+  animation: rb-tile-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--sti, 0), 4) * 30ms);
+}
+@keyframes rb-tile-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tm-gallery-card {
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-gallery-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--shadow-tint) 28%, transparent);
+}
+.tm-gallery-card-icon,
+.widget-gallery-card-icon {
+  transition:
+    color var(--dur-fx, 0.2s) var(--ease-out),
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.tm-gallery-card:hover .tm-gallery-card-icon,
+.widget-gallery-card:hover .widget-gallery-card-icon {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* G-4（见本文件 14.3）：透明桌面画布禁 transform hover——合成层建立瞬间
+   闪白/闪空。旧版「磁贴上浮 + 图标 scale」与后文 14.3 着色方案并存且打架
+   （着色生效、transform 也在跑），统一收敛到着色：图标 tint 见 14.3，
+   磁贴悬停补一个底色，天气图标改背景 tint。 */
+.tm-shortcut-item,
+.widget-card .launcher-tile {
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-card .launcher-tile:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.widget-card .widget-weather-icon {
+  transition: background var(--dur-fx, 0.2s) var(--ease-fx, ease);
+  border-radius: var(--rad-8, 8px);
+}
+
+.widget-card .widget-weather:hover .widget-weather-icon {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 硬件监控 / 系统监控进度条：填充推进由组件内联 transform:scaleX 驱动，
+   此处的 width 过渡是死规则（width 从不变化），已删除（S2 违规清理）。 */
+
+.tm-conn-badge.ok .tm-conn-dot,
+.tm-conn-badge.off .tm-conn-dot {
+  position: relative;
+}
+html:not([data-fx-off~="ambientMotion"]) .tm-conn-badge.ok .tm-conn-dot::after,
+html:not([data-fx-off~="ambientMotion"]) .tm-conn-badge.off .tm-conn-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  box-shadow: 0 0 7px 1px currentColor;
+  opacity: 0.35;
+  pointer-events: none;
+  /* 呼吸周期属循环节奏，不随速度档（同 --dur-ft-breathe 先例）。
+     勿写 var(--anim-dur, X)：theme-engine 无条件内联 :root，fallback 永不生效。 */
+  animation: rb-ring-pulse 1.8s ease-in-out infinite;
+}
+@keyframes rb-ring-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+/* 鍥惧簱棰勮鍗★細杞诲井鎮仠鍏夋檿 */
+.tm-gallery-preview-card {
+  transition:
+    box-shadow var(--anim-dur, 0.25s) var(--ease-fx, ease),
+    transform var(--dur-fx, 0.2s) var(--ease-out);
+}
+.tm-gallery-preview-card:hover {
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 22%, transparent);
+  transform: translateY(-2px);
+}
+
+.tm-btn-primary {
+  padding: 6px 20px;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--btn-fg);
+  background: var(--btn-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-btn-primary:hover {
+  background: var(--accent-2);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--btn-bg) 30%, transparent);
+}
+.tm-btn-primary:active {
+  transform: scale(0.97);
+}
+.tm-btn-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+  transform: none;
+  box-shadow: none;
+}
+/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   6. 璁剧疆绐楀彛鏍囬鏍?/ 鎮诞绐楄鍥惧垏鎹?  鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+html:not([data-fx-off~="listStagger"]) .tm-titlebar {
+  animation: rb-titlebar-in var(--dur-fx-slow, 0.3s) var(--ease-out);
+}
+@keyframes rb-titlebar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.tm-titlebar-btn {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tm-titlebar-btn:active {
+  transform: scale(0.94);
+}
+
+.widget-quickactions .quick-btn {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.widget-quickactions .quick-btn:active {
+  transform: scale(0.94);
+}
+
+.widget-editbar-bottom button {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.widget-editbar-bottom button:active {
+  transform: scale(0.94);
+}
+/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   7. 设置页各卡片 / 列表项：hover + 错落入场   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+.tm-monitor-card,
+.tm-conn-card,
+.tm-update-card,
+.tm-widget-row,
+.tm-notes-trash-row {
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+}
+.tm-monitor-card:hover,
+.tm-conn-card:hover,
+.tm-update-card:hover,
+.tm-widget-row:hover,
+.tm-notes-trash-row:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 2px 10px color-mix(in srgb, #000 6%, transparent);
+}
+.tm-widget-row:active,
+.tm-notes-trash-row:active {
+  transform: scale(0.99);
+}
+
+html:not([data-fx-off~="listStagger"]) .tm-monitor-card,
+html:not([data-fx-off~="listStagger"]) .tm-conn-card,
+html:not([data-fx-off~="listStagger"]) .tm-update-card,
+html:not([data-fx-off~="listStagger"]) .tm-widget-row,
+html:not([data-fx-off~="listStagger"]) .tm-notes-trash-row,
+html:not([data-fx-off~="listStagger"]) .tm-view-row {
+  animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--sti, 0), 3) * 30ms);
+}
+/* rb-row-in 全库唯一定义地（原先文件尾部还有一份 translateY(4px) 的重名
+   keyframes 静默覆盖此处，已收敛：保留生效值 4px，定义只留这一份）。 */
+@keyframes rb-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 视图列表行：补齐按下反馈 */
+.tm-view-row {
+  transition: transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tm-view-row:active {
+  transform: scale(0.99);
+}
+
+html:not([data-fx-off~="listStagger"]) .tm-section-title,
+html:not([data-fx-off~="listStagger"]) .tm-setting-group-title {
+  animation: rb-fade-slide var(--dur-fx-slow, 0.3s) var(--ease-out);
+}
+@keyframes rb-fade-slide {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+html:not([data-fx-off~="listStagger"]) .tm-setting-saved {
+  transition:
+    opacity var(--anim-dur, 0.25s) var(--ease-fx, ease),
+    transform var(--dur-fx, 0.2s) var(--ease-out);
+  animation: rb-fade-slide var(--anim-dur, 0.25s) var(--ease-out);
+}
+html:not([data-fx-off~="elastic"]) .tm-setting-error {
+  transition: opacity var(--anim-dur, 0.25s) var(--ease-fx, ease);
+  animation: rb-shake var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+@keyframes rb-shake {
+  /* 真·左右抖动：逐帧交替 ±3px 并衰减（0→±3→±2→±1→0）。
+     旧版只有 25%/75% 两个端点，0.28s 里是一次 -3→+3 的匀速慢扫，
+     读作「歪一下漂回来」而非抖动；错误反馈（bm-error/tt-error 等）共用。 */
+  0% {
+    opacity: 0;
+    transform: translateX(0);
+  }
+  10% {
+    opacity: 1;
+    transform: translateX(-3px);
+  }
+  25% {
+    transform: translateX(3px);
+  }
+  40% {
+    transform: translateX(-2px);
+  }
+  55% {
+    transform: translateX(2px);
+  }
+  70% {
+    transform: translateX(-1px);
+  }
+  85% {
+    transform: translateX(1px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.tm-speed-chip,
+.tm-shortcut-kind,
+.tm-conn-badge {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+.tm-speed-chip:hover,
+.tm-shortcut-kind:hover,
+.tm-conn-badge:hover {
+  transform: translateY(-1px);
+}
+
+html:not([data-fx-off~="listStagger"]) .mail-list > .mail-item {
+  animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+.mail-list > .mail-item:nth-child(1) {
+  animation-delay: 0s;
+}
+.mail-list > .mail-item:nth-child(2) {
+  animation-delay: 0.03s;
+}
+.mail-list > .mail-item:nth-child(3) {
+  animation-delay: 0.06s;
+}
+.mail-list > .mail-item:nth-child(n + 4) {
+  animation-delay: 0.09s;
+}
+.mail-item {
+  transition: transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+.mail-item:active {
+  transform: scale(0.99);
+}
+
+html:not([data-fx-off~="listStagger"]) .hw-row,
+html:not([data-fx-off~="listStagger"]) .widget-sys-row,
+html:not([data-fx-off~="listStagger"]) .widget-sys-net-item {
+  animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+.hw-rows > :nth-child(1),
+.widget-system > :nth-child(1) {
+  animation-delay: 0s;
+}
+.hw-rows > :nth-child(2),
+.widget-system > :nth-child(2) {
+  animation-delay: 0.03s;
+}
+.hw-rows > :nth-child(3),
+.widget-system > :nth-child(3) {
+  animation-delay: 0.06s;
+}
+.hw-rows > :nth-child(n + 4),
+.widget-system > :nth-child(n + 4) {
+  animation-delay: 0.09s;
+}
+
+html:not([data-fx-off~="listStagger"]) .widget-shortcut {
+  animation: rb-tile-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+.widget-shortcuts-grid > .widget-shortcut:nth-child(1) {
+  animation-delay: 0s;
+}
+.widget-shortcuts-grid > .widget-shortcut:nth-child(2) {
+  animation-delay: 0.03s;
+}
+.widget-shortcuts-grid > .widget-shortcut:nth-child(3) {
+  animation-delay: 0.06s;
+}
+.widget-shortcuts-grid > .widget-shortcut:nth-child(4) {
+  animation-delay: 0.09s;
+}
+.widget-shortcuts-grid > .widget-shortcut:nth-child(n + 5) {
+  animation-delay: 0.12s;
+}
+.widget-shortcut {
+  transition: transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+.widget-shortcut:active {
+  transform: scale(0.95);
+}
+
+html:not([data-fx-off~="elastic"]) .cp-history .cp-swatch {
+  animation: rb-badge-pop var(--dur-fx, 0.2s) var(--ease-spring);
+}
+.cp-swatch {
+  transition: transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+.cp-swatch:active {
+  transform: scale(0.94);
+}
+
+.uc-swap {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+.uc-swap:active {
+  transform: scale(0.94);
+}
+
+/* 热力格 hover 描边环改走 ::after 的 opacity 交叉淡化：月/年热力图上百格
+   都是 hover 高频目标，逐帧插值 box-shadow 每帧重绘数据格；伪元素阴影只
+   画一次，过渡期仅合成 opacity（G-4 同款 accent 环，视觉不变）。 */
+.heat-cell {
+  position: relative;
+}
+.heat-cell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent);
+  opacity: 0;
+  transition: opacity var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+  pointer-events: none;
+}
+.heat-cell:hover::after,
+.heat-cell:focus-visible::after {
+  opacity: 1;
+}
+html:not([data-fx-off~="listStagger"]) .heat-tooltip {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+html:not([data-fx-off~="listStagger"]) .sysbar-trend {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+
+html:not([data-fx-off~="listStagger"]) .analytics-group {
+  animation: rb-fade-slide var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
+}
+.analytics-group:nth-child(1) {
+  animation-delay: 0s;
+}
+.analytics-group:nth-child(2) {
+  animation-delay: 0.05s;
+}
+.analytics-group:nth-child(n + 3) {
+  animation-delay: 0.1s;
+}
+
+html:not([data-fx-off~="listStagger"]) .widget-picker-overlay {
+  animation: rb-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+html:not([data-fx-off~="elastic"]) .widget-picker-panel {
+  animation: rb-modal-pop var(--dur-fx-slow, 0.3s) var(--ease-spring-soft);
+}
+@keyframes rb-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes rb-modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+html:not([data-fx-off~="listStagger"]) .tt-preview-overlay {
+  animation: rb-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+html:not([data-fx-off~="elastic"]) .tt-preview {
+  animation: rb-modal-pop var(--dur-fx-slow, 0.3s) var(--ease-spring-soft);
+}
+
+.cp-field button,
+.widget-edit-toolbar-btn,
+.widget-weather-retry,
+.mail-real-badge,
+.calc-copy,
+.uc-copy,
+.clock-style-pill,
+.tt-nav-btn,
+.tt-mini-btn,
+.widget-files-clear,
+.widget-notes-search-clear,
+.launcher-clear,
+.launcher-add-btn,
+.bm-add,
+.bm-cancel {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.cp-field button:active,
+.widget-edit-toolbar-btn:active,
+.widget-weather-retry:active,
+.mail-real-badge:active,
+.calc-copy:active,
+.uc-copy:active,
+.clock-style-pill:active,
+.tt-nav-btn:active,
+.tt-mini-btn:active,
+.widget-files-clear:active,
+.widget-notes-search-clear:active,
+.launcher-clear:active,
+.launcher-add-btn:active,
+.bm-add:active,
+.bm-cancel:active {
+  transform: scale(0.94);
+}
+
+/* 澶у厓绱狅紙钃濈墮鐜級鍙仛蹇収寮忔寜涓嬶紝涓嶈鐩栧叾鏃㈡湁 hover 缩放 */
+.bt-ring-wrap {
+  transition:
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.bt-ring-wrap:active {
+  transform: scale(0.96);
+}
+
+.pomodoro-seg-btn:active:not(:disabled),
+.pomodoro-mode-mini button:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.session-count {
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.session-count:hover {
+  color: var(--accent);
+}
+.session-count:active {
+  transform: scale(0.94);
+}
+
+html:not([data-fx-off~="listStagger"]) .widget-notes-list > .widget-note,
+html:not([data-fx-off~="listStagger"]) .habit-list > .habit-row,
+html:not([data-fx-off~="listStagger"]) .bm-list > .bm-item,
+html:not([data-fx-off~="listStagger"]) .gal-grid > .gal-tile,
+html:not([data-fx-off~="listStagger"]) .widget-cal-grid .widget-cal-cell,
+html:not([data-fx-off~="listStagger"]) .tt-grid > .tt-course,
+html:not([data-fx-off~="listStagger"]) .widget-cal-detail .widget-cal-pop-item {
+  animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+.habit-list > .habit-row:nth-child(1),
+.bm-list > .bm-item:nth-child(1),
+.gal-grid > .gal-tile:nth-child(1) {
+  animation-delay: 0s;
+}
+.habit-list > .habit-row:nth-child(2),
+.bm-list > .bm-item:nth-child(2),
+.gal-grid > .gal-tile:nth-child(2) {
+  animation-delay: 0.04s;
+}
+.habit-list > .habit-row:nth-child(3),
+.bm-list > .bm-item:nth-child(3),
+.gal-grid > .gal-tile:nth-child(3) {
+  animation-delay: 0.08s;
+}
+.habit-list > .habit-row:nth-child(n + 4),
+.bm-list > .bm-item:nth-child(n + 4),
+.gal-grid > .gal-tile:nth-child(n + 4) {
+  animation-delay: 0.12s;
+}
+/* 便签入场改走 --sti（TSX 注入序号），错落随列表长度而非 DOM 序。 */
+.widget-notes-list > .widget-note {
+  animation-delay: calc(min(var(--sti, 0), 12) * var(--anim-dur) * 0.12);
+}
+
+.tt-grid > .tt-course:nth-child(1) {
+  animation-delay: 0s;
+}
+.tt-grid > .tt-course:nth-child(2) {
+  animation-delay: 0.02s;
+}
+.tt-grid > .tt-course:nth-child(n + 3) {
+  animation-delay: 0.04s;
+}
+html:not([data-fx-off~="listStagger"]) .widget-weather-hourly > *,
+html:not([data-fx-off~="listStagger"]) .widget-weather-forecast > * {
+  animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+  /* --sti 由 TSX 注入序号，cap 12（对齐便签行方案，错落随列表长度而非 DOM 序）。 */
+  animation-delay: calc(min(var(--sti, 0), 12) * var(--anim-dur) * 0.12);
+}
+
+.widget-files-list > .widget-file-row:nth-child(1) {
+  animation-delay: 0s;
+}
+.widget-files-list > .widget-file-row:nth-child(2) {
+  animation-delay: 0.02s;
+}
+.widget-files-list > .widget-file-row:nth-child(n + 3) {
+  animation-delay: 0.04s;
+}
+
+.tm-notes-trash-row:nth-child(1) {
+  animation-delay: 0s;
+}
+.tm-notes-trash-row:nth-child(2) {
+  animation-delay: 0.03s;
+}
+.tm-notes-trash-row:nth-child(n + 3) {
+  animation-delay: 0.06s;
+}
+
+html:not([data-fx-off~="listStagger"]) .tm-preset-card,
+html:not([data-fx-off~="listStagger"]) .tm-conn-result,
+html:not([data-fx-off~="listStagger"]) .tm-monitor-msg,
+html:not([data-fx-off~="listStagger"]) .tm-speed-result,
+html:not([data-fx-off~="listStagger"]) .tm-geo-msg,
+html:not([data-fx-off~="listStagger"]) .metric-tile,
+html:not([data-fx-off~="listStagger"]) .deadline-group-label {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--sti, 0), 3) * 30ms);
+}
+
+html:not([data-fx-off~="listStagger"]) .data-section h3 {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+.data-button {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.data-button:active {
+  transform: scale(0.97);
+}
+
+html:not([data-fx-off~="elastic"]) .tm-select-menu .tm-select-item,
+html:not([data-fx-off~="elastic"]) .pomodoro-event-dropdown .pomodoro-event-item {
+  animation: rb-ctx-item-in var(--dur-fx-xfast, 0.12s) var(--ease-out) backwards;
+}
+.tm-select-menu .tm-select-item:nth-child(1),
+.pomodoro-event-dropdown .pomodoro-event-item:nth-child(1) {
+  animation-delay: 0s;
+}
+.tm-select-menu .tm-select-item:nth-child(2),
+.pomodoro-event-dropdown .pomodoro-event-item:nth-child(2) {
+  animation-delay: 0.02s;
+}
+.tm-select-menu .tm-select-item:nth-child(n + 3),
+.pomodoro-event-dropdown .pomodoro-event-item:nth-child(n + 3) {
+  animation-delay: 0.04s;
+}
+
+.bt-ring-progress {
+  transition:
+    stroke-dasharray var(--dur-spatial, 0.5s) var(--ease-out),
+    stroke var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
+}
+
+.widget-notes-search,
+.widget-files-search,
+.launcher-search {
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.widget-notes-search:focus-within,
+.widget-files-search:focus-within,
+.launcher-search:focus-within,
+.uc-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.uc-input {
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+
+.widget-sys-icon,
+.bm-avatar {
+  transition: transform var(--dur-fx, 0.2s) var(--ease-spring);
+}
+.widget-sys-icon:hover,
+.bm-avatar:hover {
+  transform: scale(1.08);
+}
+
+html:not([data-fx-off~="elastic"]) .calc-result,
+html:not([data-fx-off~="elastic"]) .uc-result {
+  animation: rb-num-pop var(--dur-fx, 0.2s) var(--ease-spring);
+  transform-origin: center;
+}
+@keyframes rb-num-pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.cp-copyall {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.cp-copyall:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.cp-copyall:active {
+  transform: scale(0.95);
+}
+.cp-input {
+  transition:
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.cp-input:hover {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.cp-input:active {
+  transform: scale(0.96);
+}
+.cp-field button:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.widget-weather-retry:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  transform: translateY(-1px);
+}
+.clock-settings-btn {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.clock-settings-btn:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.clock-settings-btn:active {
+  transform: scale(0.94);
+}
+
+.widget-cal-picker-year button {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+}
+.widget-cal-picker-year button:hover {
+  transform: translateY(-1px);
+}
+
+.widget-sys-net-item {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+}
+.widget-sys-net-item:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  transform: translateY(-1px);
+}
+
+html:not([data-fx-off~="listStagger"]) .cd-presets,
+html:not([data-fx-off~="listStagger"]) .cd-custom,
+html:not([data-fx-off~="listStagger"]) .cd-controls {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+.cd-controls {
+  animation-delay: 0.03s;
+}
+.cd-custom {
+  animation-delay: 0.06s;
+}
+
+.tm-dropdown {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tm-dropdown:active {
+  transform: scale(0.97);
+}
+
+.tm-slider-value {
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+}
+/* 13.10 色块选中：轻弹入 */
+.tm-color-swatch {
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-spring),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-color-swatch:active {
+  transform: scale(0.94);
+}
+
+.widget-picker-card {
+  transition: transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
+}
+.widget-picker-card:active {
+  transform: scale(0.96);
+}
+
+.tm-gallery-search {
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.tm-gallery-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+html:not([data-fx-off~="elastic"]) .tm-gallery-card.active {
+  animation: rb-gallery-activate var(--dur-fx, 0.2s) var(--ease-spring);
+}
+@keyframes rb-gallery-activate {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(0.96);
+  }
+  60% {
+    transform: scale(1.03);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+html:not([data-fx-off~="listStagger"]) .tm-gallery-cat {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+.tm-view-icon {
+  transition: transform var(--dur-fx, 0.2s) var(--ease-spring);
+}
+.tm-view-row:hover .tm-view-icon {
+  transform: scale(1.1);
+}
+html:not([data-fx-off~="elastic"]) .tm-view-active {
+  animation: rb-badge-pop var(--dur-fx, 0.2s) var(--ease-spring);
+}
+html:not([data-fx-off~="listStagger"]) .tm-conn-result {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+
+html:not([data-fx-off~="listStagger"]) .data-message {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+html:not([data-fx-off~="listStagger"]) .widget-cal-pop-add {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+
+html:not([data-fx-off~="elastic"]) .tm-speed-value {
+  animation: rb-num-pop var(--dur-fx, 0.2s) var(--ease-spring);
+  transform-origin: center;
+}
+
+html:not([data-fx-off~="listStagger"]) .empty-state {
+  animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
+}
+
+.launcher-tile-icon {
+  transition:
+    color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.launcher-tile:hover .launcher-tile-icon {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.tm-action-row svg {
+  transition: color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.tm-action-row:hover svg {
+  color: var(--accent);
+}
+
+.recycle-row {
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.recycle-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+}
+html:not([data-fx-off~="listStagger"]) .recycle-row {
+  animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--sti, 0), 12) * var(--anim-dur) * 0.12);
+}
+.recycle-row-icon {
+  transition: color var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.recycle-row:hover .recycle-row-icon {
+  color: var(--accent);
+}
+
+.recycle-empty-btn,
+.recycle-row-btn {
+  transition:
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    border-color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.recycle-empty-btn:active,
+.recycle-row-btn:active {
+  transform: scale(0.94);
+}
+
+.today-overview-task {
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.today-overview-task:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+}
+html:not([data-fx-off~="listStagger"]) .today-overview-block {
+  animation: rb-row-in var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
+}
+/* 行级错落入场：--sti 由 TSX 注入序号，cap 12；is-closing 退场以更高优先级覆盖。 */
+html:not([data-fx-off~="listStagger"]) .today-overview-task {
+  animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--sti, 0), 12) * var(--anim-dur) * 0.12);
+}
+html:not([data-fx-off~="listStagger"]) .today-overview-head {
+  animation: rb-fade-slide var(--dur-fx-slow, 0.3s) var(--ease-out);
+}
+/* rb-row-in 的重名定义已删除：唯一定义地在文件前部（.tm-view-row 段落）。 */
+/* 15.4 天气预警横幅：图标轻微脉搏提示（仅在存在预警时） */
+html:not([data-fx-off~="ambientMotion"]) .widget-weather-alert-icon {
+  animation: rb-alert-pulse 1.6s ease-in-out infinite;
+}
+@keyframes rb-alert-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 0.75;
+  }
+}
+/* 15.5 鎵归噺鎿嶄綔宸ュ叿鏍忔寜閽細hover 弹起 */
+/* 15.5 批量操作工具栏按钮：hover 底色反馈（G-4：透明桌面画布禁 transform
+   hover——合成层闪白）；按压回弹（:active）保留 transform。 */
+.widget-batch-btn {
+  transition:
+    background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.widget-batch-btn:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+.widget-batch-btn:active {
+  transform: scale(0.94);
+}
+/* 15.6 鏇存柊椤典笅杞?涓嬭浇椤垫寜閽細hover 寰姩 */
+.tm-update-dl {
+  transition:
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-update-dl:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+.tm-update-dl:active {
+  transform: scale(0.97);
+}

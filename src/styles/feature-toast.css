@@ -1,0 +1,174 @@
+/* 应用内 toast 栈（#99）——从 widget-anim.css 拆出（C-10）：ToastHost 在
+   哪个窗口挂载，样式就跟到哪个窗口（由 ToastHost.tsx 直接 import），
+   snip/super-panel 等精简入口窗口不再为此背负整份 widget-anim.css。
+   规则本体原样迁移，未做任何改写。 */
+
+/* #99 应用内 toast：右上角固定栈，入 250ms / 停 4s / 出 200ms，最多 3 条 */
+.app-toast-stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.app-toast {
+  display: flex;
+  align-items: stretch;
+  min-width: 220px;
+  max-width: 300px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-sm);
+  background: var(--paper-solid);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  /* fill 用 backwards（原 widget-anim.css 头 G-4）：末帧即自然值，不因
+     forwards/both 给常驻 toast 保留持久合成层。入/出时长走 --anim-dur /
+     --dur-fx（时长双轨制收口），与 ToastHost exitLingerMs 同源，随
+     设置→动效 速度档缩放。 */
+  animation: app-toast-in var(--anim-dur, 0.25s) var(--ease-out) backwards;
+}
+.app-toast.is-closing {
+  animation: app-toast-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
+}
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes app-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+}
+.app-toast-bar {
+  width: 3px;
+  flex: none;
+  background: var(--accent);
+}
+/* 五.12 剩余时间倒计时条：scaleX 1→0（合成器路径），时长 = stayMs（内联
+   --toast-stay 注入）；悬停暂停与 JS 计时器暂停同步，离开重启（key 重挂）
+   对齐重排后的完整时长。error 条 8s / 其余 4s 一眼可辨。 */
+.app-toast-bar.is-countdown {
+  transform-origin: left center;
+  animation: app-toast-countdown var(--toast-stay, 4000ms) linear forwards;
+}
+.app-toast:hover .app-toast-bar.is-countdown {
+  animation-play-state: paused;
+}
+@keyframes app-toast-countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+.app-toast.kind-pomodoro .app-toast-bar {
+  background: var(--accent);
+}
+.app-toast.kind-todo .app-toast-bar {
+  background: var(--success);
+}
+.app-toast.kind-info .app-toast-bar {
+  background: var(--muted);
+}
+.app-toast.kind-ok .app-toast-bar {
+  background: var(--success);
+}
+.app-toast.kind-error .app-toast-bar {
+  background: var(--danger);
+}
+/* B8：类型图标 + 关闭/动作按钮。 */
+.app-toast-ico {
+  flex: none;
+  align-self: center;
+  margin-left: 10px;
+  color: var(--muted);
+}
+.app-toast.kind-ok .app-toast-ico,
+.app-toast.kind-todo .app-toast-ico {
+  color: var(--success);
+}
+.app-toast.kind-error .app-toast-ico {
+  color: var(--danger);
+}
+.app-toast.kind-pomodoro .app-toast-ico,
+.app-toast.kind-info .app-toast-ico {
+  color: var(--accent);
+}
+.app-toast-close {
+  flex: none;
+  align-self: flex-start;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: 5px 5px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.app-toast-close:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+/* A4 按压态：state-layer pressed 一档（ctx-item:active 同范式）。 */
+.app-toast-close:active {
+  background: color-mix(in srgb, var(--ink) var(--state-layer-pressed, 0.12), transparent);
+}
+.app-toast-action {
+  flex: none;
+  align-self: center;
+  margin-right: 2px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: var(--fs-11-5);
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.app-toast-action:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.app-toast-action:active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.app-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+}
+.app-toast-body strong {
+  font-size: var(--fs-12-5);
+  color: var(--ink);
+  font-weight: 600;
+}
+.app-toast-body span {
+  font-size: var(--fs-11-5);
+  color: var(--muted-2);
+  line-height: 1.45;
+}
+
+/* 减少动态兜底（原在 widget-anim.css 共享 :is() 列表里，随迁移拆出） */
+[data-reduce-motion="1"] .app-toast {
+  animation: none !important;
+}

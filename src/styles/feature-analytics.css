@@ -1,0 +1,776 @@
+﻿.analytics-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.analytics-head h3 {
+  margin: 0;
+  font-size: var(--fs-11);
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.analytics-head-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--rad-8);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-ink);
+  flex: none;
+}
+.analytics-head-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--line), transparent);
+
+  transform-origin: 0 50%;
+  animation: an-line-draw var(--dur-spatial, 0.5s) var(--ease-out) backwards;
+}
+@keyframes an-line-draw {
+  from {
+    transform: scaleX(0);
+  }
+}
+.head-note {
+  font-size: var(--fs-10);
+  color: var(--muted-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-hero {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(120% 160% at 0% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 55%),
+    var(--paper-solid);
+  overflow: hidden;
+  position: relative;
+
+  animation: an-rise-in var(--dur-spatial, 0.5s) var(--ease-out) backwards;
+}
+
+@keyframes an-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+  }
+}
+.hero-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hero-label {
+  font-size: var(--fs-10);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+.hero-value {
+  font:
+    600 var(--fs-34)/1.05 Outfit,
+    sans-serif;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.hero-sub {
+  font-size: var(--fs-11);
+  color: var(--muted);
+  font-weight: 600;
+}
+.hero-side {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  flex: none;
+}
+.hero-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--paper-soft);
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx, 0.2s) var(--ease-out),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.hero-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--ink) 25%, transparent);
+}
+.hero-chip svg {
+  color: var(--accent);
+  flex: none;
+}
+.hero-chip b {
+  font:
+    650 var(--fs-17)/1 Outfit,
+    sans-serif;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.hero-chip span {
+  font-size: var(--fs-10);
+  color: var(--muted);
+  font-weight: 600;
+  line-height: 1.35;
+  display: flex;
+  flex-direction: column;
+}
+.hero-chip span em {
+  font-style: normal;
+  font-size: var(--fs-9);
+  color: var(--muted-2);
+  font-weight: 500;
+}
+.hero-chip.streak svg {
+  color: var(--amber);
+}
+.hero-chip.streak b {
+  color: var(--amber);
+}
+
+.metric-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.metric-grid > * {
+  animation: an-rise-in var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
+}
+.metric-grid.three > :nth-child(2) {
+  animation-delay: 0.07s;
+}
+.metric-grid.three > :nth-child(3) {
+  animation-delay: 0.14s;
+}
+.metric-grid.two > :nth-child(2) {
+  animation-delay: 0.07s;
+}
+.metric-grid.three {
+  grid-template-columns: repeat(3, 1fr);
+}
+.metric-grid.two {
+  grid-template-columns: repeat(2, 1fr);
+}
+.metric-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--paper-solid);
+  transition:
+    transform var(--dur-fx, 0.2s) var(--ease-out),
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.metric-tile:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: 0 10px 24px -14px color-mix(in srgb, var(--ink) 30%, transparent);
+  background: var(--surface-hover);
+}
+.metric-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.metric-tile-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--rad-9);
+  background: var(--surface-soft);
+  color: var(--accent);
+  flex: none;
+  transition:
+    transform var(--dur-fx, 0.2s) var(--ease-out),
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    color var(--dur-fx, 0.2s) var(--ease-fx, ease);
+}
+.metric-tile:hover .metric-tile-icon {
+  transform: scale(1.08) rotate(-4deg);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-ink);
+}
+.metric-tile-label {
+  font-size: var(--fs-10-5);
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.metric-tile-value {
+  font:
+    600 var(--fs-23)/1 Outfit,
+    sans-serif;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.metric-tile-value em {
+  font-style: normal;
+  font-size: var(--fs-11);
+  color: var(--muted);
+  font-weight: 600;
+  margin-left: 3px;
+}
+.metric-tile-sub {
+  font-size: var(--fs-10);
+  color: var(--muted);
+  font-weight: 500;
+}
+.metric-tile.tone-giveup .metric-tile-icon {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.metric-tile.tone-giveup:hover .metric-tile-icon {
+  color: var(--danger-ink);
+}
+
+.bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(64px, 150px) 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  margin: 0 -8px;
+  border-radius: var(--rad-10);
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.bar-row:hover {
+  background: var(--surface-hover);
+  transform: translateX(2px);
+}
+.bar-name {
+  font-size: var(--fs-11);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+  min-width: 0;
+}
+.bar-row:hover .bar-name {
+  color: var(--ink);
+}
+.bar-track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--track);
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+
+  transform-origin: 0 50%;
+  animation: an-bar-grow var(--dur-spatial, 0.5s) var(--ease-out) backwards;
+  transition: filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.bar-row:hover .bar-fill {
+  filter: brightness(1.12) saturate(1.05);
+}
+.bar-row.tone-danger .bar-fill {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--danger) 72%, transparent), var(--danger));
+}
+.bar-val {
+  font-size: var(--fs-10);
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@keyframes an-bar-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.bar-row:nth-child(1) .bar-fill {
+  animation-delay: 0.05s;
+}
+.bar-row:nth-child(2) .bar-fill {
+  animation-delay: 0.11s;
+}
+.bar-row:nth-child(3) .bar-fill {
+  animation-delay: 0.17s;
+}
+.bar-row:nth-child(4) .bar-fill {
+  animation-delay: 0.23s;
+}
+.bar-row:nth-child(n + 5) .bar-fill {
+  animation-delay: 0.29s;
+}
+
+.daily-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 96px;
+  padding-top: 14px;
+}
+.daily-bar-col {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  cursor: default;
+
+  height: 100%;
+  justify-content: flex-end;
+
+  transition:
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+  animation: an-col-in var(--dur-spatial-fast, 0.35s) var(--ease-out) backwards;
+}
+.daily-bar-col:nth-child(1) {
+  animation-delay: 0.02s;
+}
+.daily-bar-col:nth-child(2) {
+  animation-delay: 0.06s;
+}
+.daily-bar-col:nth-child(3) {
+  animation-delay: 0.1s;
+}
+.daily-bar-col:nth-child(4) {
+  animation-delay: 0.14s;
+}
+.daily-bar-col:nth-child(5) {
+  animation-delay: 0.18s;
+}
+.daily-bar-col:nth-child(n + 6) {
+  animation-delay: 0.22s;
+}
+@keyframes an-col-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.daily-bar-track {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  max-width: 26px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: var(--track);
+  border-radius: var(--rad-7);
+  overflow: hidden;
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.daily-bar-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--rad-7) var(--rad-7) var(--rad-2) var(--rad-2);
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  transform-origin: bottom;
+
+  transition:
+    transform var(--dur-dock-spring, 0.45s) var(--ease-out),
+    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+
+.daily-bar-fill:not(.empty) {
+  transform-origin: bottom;
+  animation: an-bar-grow-y var(--dur-spatial, 0.5s) var(--ease-out) backwards;
+}
+@keyframes an-bar-grow-y {
+  from {
+    transform: scaleY(0);
+  }
+}
+.daily-bar-fill.empty {
+  background: transparent;
+}
+.daily-bar-col:hover .daily-bar-track {
+  background: color-mix(in srgb, var(--accent) 10%, var(--track));
+}
+.daily-bar-col:hover .daily-bar-fill {
+  filter: brightness(1.12);
+}
+.daily-bar-label {
+  font-size: var(--fs-9);
+  color: var(--muted);
+  white-space: nowrap;
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.daily-bar-col.today .daily-bar-label {
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.daily-bar-col.today .daily-bar-fill {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.daily-bar-col::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 50%;
+  transform: translateX(-50%) translateY(3px) scale(0.96);
+  padding: 4px 9px;
+  border-radius: var(--rad-8);
+  background: var(--popover-bg, var(--paper-solid));
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--ink) 30%, transparent);
+  font-size: var(--fs-9-5);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 5;
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+}
+.daily-bar-col:hover::after,
+.daily-bar-col:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+/* 键盘可达：柱格聚焦时给出可见焦点环（数值气泡复用 :hover 同一 ::after）。 */
+.daily-bar-col:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pie-svg {
+  transform-origin: 50px 50px;
+  animation: an-pie-in var(--dur-spatial, 0.5s) var(--ease-out) backwards;
+}
+@keyframes an-pie-in {
+  from {
+    opacity: 0;
+    transform: rotate(-14deg) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.heat-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--paper-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-pill);
+  padding: 2px;
+  flex-shrink: 0;
+}
+.heat-tab {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-10-5);
+  font-weight: 600;
+  padding: 4px 13px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.heat-tab:hover {
+  color: var(--ink);
+}
+.heat-tab:active {
+  transform: scale(0.94);
+}
+.heat-tab.active {
+  background: var(--paper-solid);
+  color: var(--accent-ink);
+  box-shadow:
+    0 1px 4px color-mix(in srgb, var(--ink) 12%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, var(--line-strong));
+}
+
+.heat-cell.today {
+  outline: 1.5px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
+.month-heatmap .heat-cell,
+.year-cells .heat-cell {
+  position: relative;
+  transition: outline-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.month-heatmap .heat-cell::after,
+.year-cells .heat-cell::after {
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent),
+    0 2px 10px color-mix(in srgb, var(--ink) 25%, transparent);
+}
+.month-heatmap .heat-cell:hover,
+.year-cells .heat-cell:hover,
+.month-heatmap .heat-cell:focus-visible,
+.year-cells .heat-cell:focus-visible {
+  z-index: 2;
+  outline: 1.5px solid var(--accent-ink);
+  outline-offset: 1px;
+}
+
+/* 月/年热力图切换：旧视图 120ms 淡出后换挂载，新视图复用 an-rise-in 入场。 */
+.heat-pane {
+  transition: opacity var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+  animation: an-rise-in var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
+}
+.heat-pane.heat-pane-out {
+  opacity: 0;
+}
+
+.analytics-panel .analytics-hero-group {
+  margin-bottom: 4px;
+}
+
+/* 小组件卡片内紧凑适配 */
+.widget-card .analytics-hero {
+  padding: 12px 14px;
+  gap: 10px;
+}
+.widget-card .hero-value {
+  font-size: var(--fs-28);
+}
+.widget-card .metric-grid {
+  gap: 8px;
+  margin-top: 10px;
+}
+.widget-card .metric-tile {
+  padding: 9px 11px;
+}
+.widget-card .metric-tile-value {
+  font-size: var(--fs-19);
+}
+
+/* ================================================================== */
+/* FocusTimer 借鉴（#13 时段分布图）：24 小时专注分布柱                 */
+/* ================================================================== */
+.hourly-bars {
+  margin-top: 6px;
+}
+.hourly-cells {
+  display: grid;
+  grid-template-columns: repeat(24, 1fr);
+  gap: 3px;
+  align-items: end;
+}
+.hourly-bar-col {
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+  cursor: default;
+}
+.hourly-bar-track {
+  position: relative;
+  width: 100%;
+  /* 累计迷你行是气泡矩阵的次级视图，压低高度让层级分明。 */
+  height: 34px;
+  border-radius: var(--rad-4);
+  background: var(--track);
+  overflow: hidden;
+  transition: filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.hourly-bar-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--rad-4);
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  transform-origin: bottom;
+  /* 三.3：与同屏 .daily-bar-fill 同源（--dur-dock-spring，标准档 450ms），
+     原裸 0.45s 不随速度档。 */
+  transition: transform var(--dur-dock-spring, 0.45s) var(--ease-out);
+}
+.hourly-bar-fill.empty {
+  background: color-mix(in srgb, var(--track) 70%, transparent);
+}
+.hourly-bar-col:hover .hourly-bar-track,
+.hourly-bar-col:focus-visible .hourly-bar-track {
+  filter: brightness(1.12);
+}
+.hourly-bar-col:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--rad-4);
+}
+.hourly-bar-col.peak .hourly-bar-track {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.hourly-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  padding: 0 2px;
+  font-size: var(--fs-9-5);
+  color: var(--muted-2);
+}
+
+/* ================================================================== */
+/* FocusTimer 月页 BubbleChart 同款：近 N 天 × 24 小时气泡矩阵          */
+/* （行 = 天，列 = 小时；半径 ∝ sqrt 分 4 级量化；空值 10% 基圆）       */
+/* ================================================================== */
+.hourly-bubbles {
+  margin-top: 6px;
+}
+.hb-row {
+  display: grid;
+
+  grid-template-columns: 30px repeat(24, minmax(0, 1fr));
+  align-items: center;
+  /* 格尺寸旋钮（AnalyticsPanel 注释口径）：定义在行容器上保持可按实例
+     内联覆盖，.hb-cell 消费端不再带回退（token 恒定义）。 */
+  --hb-cell: 18px;
+}
+.hb-row.today .hb-day {
+  color: var(--accent);
+  font-weight: 700;
+}
+.hb-head {
+  margin-bottom: 2px;
+}
+.hb-day {
+  font-size: var(--fs-9-5);
+  color: var(--muted-2);
+  text-align: right;
+  padding-right: 6px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.hb-head .hb-day {
+  min-height: 12px;
+}
+.hb-cell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: var(--hb-cell);
+  min-width: 0;
+}
+.hb-cell:focus {
+  outline: none;
+}
+.hb-cell:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: var(--rad-4, 4px);
+}
+.hb-tick {
+  font-size: var(--fs-9);
+  color: var(--muted-2);
+  line-height: 1;
+}
+.hb-bubble {
+  display: block;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  /* 尺寸随数据重算（低频）直接落位，不做 width/height 过渡（layout-anim 门禁）；
+     只保留 hover 提亮的 filter 过渡（合成层）。 */
+  transition: filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.hb-bubble.empty {
+  background: var(--accent);
+  opacity: 0.14;
+}
+.hb-cell:hover .hb-bubble,
+.hb-cell:focus-visible .hb-bubble {
+  filter: contrast(0.75) brightness(1.15);
+}
+/* FocusTimer 同款 hover 提亮 + 复用日趋势柱的 data-tip 气泡模型 */
+.hb-cell::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%) translateY(3px) scale(0.96);
+  padding: 4px 9px;
+  border-radius: var(--rad-8);
+  background: var(--popover-bg, var(--paper-solid));
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--ink) 30%, transparent);
+  font-size: var(--fs-9-5);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 5;
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
+}
+.hb-cell:hover::after,
+.hb-cell:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+/* 小时轴：0/6/12/18 刻度均分到 24 格宽度（无 30px 行标列）。 */
+.hb-axis {
+  display: grid;
+  grid-template-columns: 30px repeat(4, 1fr);
+  margin-top: 4px;
+  font-size: var(--fs-9);
+  color: var(--muted-2);
+}
+.hb-axis span:not(.hb-day) {
+  text-align: left;
+}
+/* 累计小时分布的次级标题 + 迷你行压低层级 */
+.hourly-totals-caption {
+  margin: 12px 0 2px;
+  font-size: var(--fs-10-5);
+  color: var(--muted-2);
+}

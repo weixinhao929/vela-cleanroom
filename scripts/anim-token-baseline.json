@@ -1,0 +1,92 @@
+{
+  "src/components/CommandPalette.tsx": {
+    "dur": 0,
+    "ease": 0,
+    "delay": 1
+  },
+  "src/components/wake-slider.css": {
+    "dur": 1,
+    "ease": 0,
+    "delay": 0
+  },
+  "src/features/fullscreen/fullscreen.css": {
+    "dur": 2,
+    "ease": 0,
+    "delay": 0
+  },
+  "src/features/super-panel/SuperPanelView.tsx": {
+    "dur": 0,
+    "ease": 0,
+    "delay": 1
+  },
+  "src/styles/feature-analytics.css": {
+    "dur": 0,
+    "ease": 0,
+    "delay": 14
+  },
+  "src/styles/feature-animations.css": {
+    "dur": 2,
+    "ease": 2,
+    "delay": 38
+  },
+  "src/styles/feature-calendar.css": {
+    "dur": 0,
+    "ease": 0,
+    "delay": 4
+  },
+  "src/styles/feature-dock.css": {
+    "dur": 10,
+    "ease": 0,
+    "delay": 0
+  },
+  "src/styles/feature-fx.css": {
+    "dur": 18,
+    "ease": 3,
+    "delay": 7
+  },
+  "src/styles/feature-immersive.css": {
+    "dur": 9,
+    "ease": 1,
+    "delay": 0
+  },
+  "src/styles/feature-notifications.css": {
+    "dur": 0,
+    "ease": 0,
+    "delay": 1
+  },
+  "src/styles/feature-polish.css": {
+    "dur": 0,
+    "ease": 0,
+    "delay": 1
+  },
+  "src/styles/feature-pomodoro.css": {
+    "dur": 1,
+    "ease": 1,
+    "delay": 6
+  },
+  "src/styles/feature-widget-interaction.css": {
+    "dur": 1,
+    "ease": 0,
+    "delay": 0
+  },
+  "src/styles/global.css": {
+    "dur": 13,
+    "ease": 7,
+    "delay": 15
+  },
+  "src/styles/settings.css": {
+    "dur": 2,
+    "ease": 1,
+    "delay": 2
+  },
+  "src/styles/widget-anim.css": {
+    "dur": 17,
+    "ease": 3,
+    "delay": 5
+  },
+  "src/styles/widget.css": {
+    "dur": 18,
+    "ease": 11,
+    "delay": 8
+  }
+}

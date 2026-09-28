@@ -1,0 +1,436 @@
+/* === B1 就地配置弹层（WidgetConfigPopover） =========================
+   独立样式文件：桌面层不加载 settings.css，弹层复用设置窗的控件组件
+   （Toggle/Segmented/Slider/Stepper，类名 tm-*），其样式在此按
+   .wcfg-popover 作用域补一套紧凑玻璃版本；视觉语言对齐悬浮工具条
+   （--paper-solid + blur + saturate + inset 高光，仅边框不投影）。 */
+
+.wcfg-popover {
+  position: fixed;
+  width: 304px;
+  max-height: min(430px, 72vh);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  background: var(--paper-solid);
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(180%);
+  backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(180%);
+  border: 1px solid var(--line);
+  box-shadow:
+    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
+    inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent);
+  color: var(--ink);
+  z-index: var(--z-config-pop); /* 高于右键菜单（--z-ctx 10100）：弹层打开时菜单已被外点关闭 */
+  animation: wcfg-in var(--dur-fx, 0.2s) var(--ease-out, ease-out) both;
+  outline: none;
+}
+.wcfg-popover.is-closing {
+  animation: wcfg-out var(--dur-fx-fast, 0.15s) var(--ease-in, ease-in) both;
+  pointer-events: none;
+}
+/* 从锚点方向生长：默认锚定在卡片上方（origin=bottom），翻转时 origin=top。 */
+@keyframes wcfg-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes wcfg-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+/* ---- 头部 / 底部 ---- */
+.wcfg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px 7px 14px;
+  flex: none;
+}
+.wcfg-title {
+  font-size: var(--fs-12);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.wcfg-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-close:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+
+.wcfg-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 4px;
+  scrollbar-width: thin;
+}
+.wcfg-divider {
+  height: 1px;
+  margin: 6px 2px;
+  background: var(--line-soft, var(--line));
+  flex: none;
+}
+
+/* ---- 行 ---- */
+.wcfg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 2px;
+  min-height: 30px;
+}
+/* 长枚举（>3 项）/世界时钟等控件较宽的行：标签在上、控件占满整行。 */
+.wcfg-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.wcfg-label {
+  font-size: var(--fs-11);
+  color: var(--muted);
+  flex: none;
+}
+.wcfg-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.wcfg-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex: none;
+  margin: 2px 8px 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--rad-10);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--muted);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-more:hover {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  color: var(--ink);
+}
+
+/* ---- 通用小件 ---- */
+.wcfg-mini-btn {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-10-5);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-mini-btn:hover {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--ink);
+}
+.wcfg-input {
+  transition: border-color var(--dur-fx) var(--ease-fx);
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-8);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  color: var(--ink);
+  font-size: var(--fs-11);
+}
+.wcfg-input::placeholder {
+  color: var(--muted-2, var(--muted));
+}
+.wcfg-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ink) 25%, var(--line));
+}
+
+.wcfg-color {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wcfg-color-input {
+  width: 34px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  background: transparent;
+  cursor: pointer;
+}
+
+/* ---- 世界时钟时区列表 ---- */
+.wcfg-zone-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.wcfg-zone-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 4px 3px 8px;
+  border-radius: var(--rad-7);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.wcfg-zone-name {
+  font-size: var(--fs-10-5);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wcfg-zone-remove {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--rad-6);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-zone-remove:hover {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  color: var(--ink);
+}
+.wcfg-zone-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ==================================================================
+   设置窗控件组件（tm-*）在桌面层的紧凑补齐（仅 .wcfg-popover 作用域；
+   settings.css 未在桌面层加载，样式不冲突）。
+   ================================================================== */
+
+/* 开关 */
+.wcfg-popover .tm-toggle {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  cursor: pointer;
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-popover .tm-toggle.on {
+  background: var(--accent, var(--ink));
+}
+.wcfg-popover .tm-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--paper-solid);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out);
+}
+.wcfg-popover .tm-toggle.on .tm-toggle-knob {
+  transform: translateX(14px);
+}
+
+/* 分段控件 */
+.wcfg-popover .tm-segmented {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--rad-9);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+/* [POLISH] 胶囊已升级为双速两层（.pill-fast/.pill-slow 包裹可见气泡 .tm-segmented-pill-b，
+   见 feature-animations.css）：视觉落在气泡上，紧凑弹层里慢层收紧到 0.18s。 */
+.wcfg-popover .tm-segmented-pill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+}
+.wcfg-popover .tm-segmented-pill.pill-slow {
+  transition: transform var(--dur-fx, 0.2s) var(--ease-out, ease-out);
+}
+.wcfg-popover .tm-segmented-pill-b {
+  background: var(--paper-solid);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.wcfg-popover .tm-segmented-item {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--rad-7);
+  font-size: var(--fs-10-5);
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-popover .tm-segmented-item.active {
+  color: var(--ink);
+}
+/* 堆叠行（>3 项枚举，如音乐 6 种可视化样式）在 304px 宽内可能折行——滑动胶囊
+   只跟踪 x 偏移，折行时会纵跨两行。这类行改用激活项底色（无位移动画），
+   ≤3 项的短枚举保留滑动胶囊。 */
+.wcfg-row-stack .tm-segmented-pill {
+  display: none;
+}
+.wcfg-row-stack .tm-segmented-item.active {
+  background: var(--paper-solid);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.wcfg-row-stack .tm-segmented-item {
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-popover .tm-segmented-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 40%, transparent);
+  outline-offset: 1px;
+}
+
+/* 滑杆（Wake Slider 集成）：组件与视觉自携（wake-slider.css），布局约束在
+   feature-polish.css 的 .tm-slider-row / .wake-slider__value popover 变体。 */
+
+/* 步进器 */
+.wcfg-popover .tm-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.wcfg-popover .tm-stepper-btn {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.wcfg-popover .tm-stepper-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.wcfg-popover .tm-stepper-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.wcfg-popover .tm-stepper-input-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 0 6px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-7);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.wcfg-popover .tm-stepper-input {
+  width: 34px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-11);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.wcfg-popover .tm-stepper-input:focus {
+  outline: none;
+}
+.wcfg-popover .tm-stepper-suffix {
+  font-size: var(--fs-10);
+  color: var(--muted);
+}
+/* 减动效无需本文件处理：全局 [data-reduce-motion="1"] 门控已把 animation
+   时长压到 0.001s（见 feature-animations.css）。 */
+
+/* === 样式预设行（DeskOrder 借鉴 #4） === */
+.wcfg-preset-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.wcfg-preset-select {
+  transition: border-color var(--dur-fx) var(--ease-fx);
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-8);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  color: var(--ink);
+  font-size: var(--fs-11-5);
+  cursor: pointer;
+}
+.wcfg-preset-select:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ink) 25%, var(--line));
+}
