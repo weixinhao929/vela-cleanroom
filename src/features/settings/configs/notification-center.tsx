@@ -17,8 +17,11 @@ import { MISC_TYPE } from "../../../widget/widgets/misc/MiscBoardPanel";
 import { sanitizeMiscItems } from "../../../widget/widgets/misc/misc-layout";
 import { inDndSchedule, setDnd, setDndSchedule, useDnd, useDndSchedule } from "../../../lib/dnd";
 import { invoke, isTauri } from "../../../lib/tauri";
+import { useTauriEvent } from "../../../lib/use-tauri-event";
 import { SYSNOTIFY_STATUS_EVENT } from "../../../lib/system-notify";
 import { useT } from "../../../i18n-lite";
+/* 设置项运行期下发失败时的用户提示。 */
+import { showToast } from "../../../components/ToastHost";
 import { SettingToggleRow, Toggle } from "../shared";
 
 /** 小组件类型 → 逐源开关键（与 widgets/*.tsx 的 sourceNotify 调用一一对应；
@@ -30,7 +33,10 @@ const SOURCE_ROWS: { type: string; source: NotificationSource; title: string; de
   { type: "countdown", source: "countdown", title: "倒计时结束", desc: "小组件倒计时结束时提醒" },
   { type: "email", source: "email", title: "新邮件", desc: "收到未读邮件时提醒" },
   { type: "weather", source: "weather", title: "天气预警", desc: "气象预警发布时提醒" },
-  { type: "bluetooth", source: "bluetooth", title: "蓝牙设备", desc: "断连与低电量提醒" }
+  { type: "bluetooth", source: "bluetooth", title: "蓝牙设备", desc: "断连与低电量提醒" },
+  /* （补漏）：store 一直有 note 逐源开关、notes-reminders 一直在消费，此前
+     本页缺行——用户无法从这里关掉便签提醒（组件类型名是 notes）。 */
+  { type: "notes", source: "note", title: "便签提醒", desc: "便签设置的提醒时间到点时提醒" }
 ];
 
 /** 待办清单 / 截止日期共用的通知行标题：按实际添加了哪个动态取名。 */
@@ -49,7 +55,9 @@ export function NotificationCenterConfig() {
   const dnd = useDnd();
   const sched = useDndSchedule();
   /* 一.1 权限提示：Rust sysnotify:status（access=denied）经 DOM 事件转发到此，
-     提示用户去系统设置开「通知」访问权（镜像开关本身开着但收不到任何东西）。 */
+     提示用户去系统设置开「通知」访问权（镜像开关本身开着但收不到任何东西）。
+     DOM 转发层（ensureSystemNotifyListeners）只装在 widget 窗口——设置窗
+     永远收不到，这里**直接**订阅 Tauri 事件（Rust 侧本就是全局广播）。 */
   const [accessDenied, setAccessDenied] = useState(false);
   useEffect(() => {
     const onStatus = (e: Event) => {
@@ -58,10 +66,19 @@ export function NotificationCenterConfig() {
     window.addEventListener(SYSNOTIFY_STATUS_EVENT, onStatus);
     return () => window.removeEventListener(SYSNOTIFY_STATUS_EVENT, onStatus);
   }, []);
+  useTauriEvent<{ access: string } | null>("sysnotify:status", (payload) => {
+    setAccessDenied((payload?.access ?? "denied") === "denied");
+  });
   /** 一.1 开关翻转：镜像持久化（下次启动 Rust 读回）+ 命令即时生效。 */
   const setSystemListener = (v: boolean) => {
     setN({ systemListener: v });
-    if (isTauri()) void invoke("set_sysnotify_enabled", { enabled: v }).catch(() => {});
+    /* store 已落盘（重启由 Rust 读回生效），但运行期
+       下发失败时本会话的系统通知开关不会变——不再静默，补 toast（不回滚
+       store：设置本身已保存，重启生效是对的）。 */
+    if (isTauri())
+      void invoke("set_sysnotify_enabled", { enabled: v }).catch(() => {
+        showToast(tr("已保存，但系统通知开关本次会话未生效，重启后生效"), "error");
+      });
   };
   /** 一.3 推送端口编辑：提交（blur/回车）时钳 1–65535 再落盘。 */
   const [portDraft, setPortDraft] = useState(String(n.pushPort));

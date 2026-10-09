@@ -35,3 +35,18 @@ Thumbs.db
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Python bytecode
+__pycache__/
+
+# Theme authoring scratch
+.theme-tmp/
+
+# N-18：密钥材料绝不入库（更新链 Ed25519 签名私钥等）。泄漏门
+# （scripts/export-github.mjs）另有 BEGIN PRIVATE KEY 内容模式双保险。
+*.pem
+*.key
+release-keys/
+
+# N-30：覆盖率产物
+coverage/

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { appearanceSettingsFields } from "../lib/appearance-fields";
 import { applySettings, reapplyTheme, useSettingsStore } from "../store/settings-store";
 
 /**
@@ -11,37 +12,7 @@ import { applySettings, reapplyTheme, useSettingsStore } from "../store/settings
  * token 跟随），不能因此背上整个 App 组合根（画布/设置窗/托盘全家）。
  */
 export function SettingsSync() {
-  const settings = useSettingsStore(
-    useShallow((s) => ({
-      preset: s.preset,
-      themeMode: s.themeMode,
-      primaryColor: s.primaryColor,
-      customColors: s.customColors,
-      zoom: s.zoom,
-      font: s.font,
-      fontSize: s.fontSize,
-      widgetBackground: s.widgetBackground,
-      widgetOpacity: s.widgetOpacity,
-      settingsWindowOpacity: s.settingsWindowOpacity,
-      cornerRadius: s.cornerRadius,
-      spacing: s.spacing,
-      blur: s.blur,
-      reduceEffects: s.general.reduceEffects,
-      enableAnimations: s.extra.enableAnimations,
-      animationSpeed: s.extra.animationSpeed,
-      animationDuration: s.extra.animationDuration,
-      animationMode: s.extra.animationMode,
-      widgetEntrance: s.extra.widgetEntrance,
-      viewTransition: s.extra.viewTransition,
-      // 特效独立开关驱动 applySettings 重写 data-fx-off（CSS 侧门控）。
-      // 此前不在此列：当前窗口切换开关后 JS 侧立即生效，但 CSS 门控的
-      // 特效（侧栏流光/扫光等）须等重启或改其他外观项才刷新。
-      fxToggles: s.extra.fxToggles,
-      // B3 自定义曲线：--ease-custom / --ease-entrance 同样由 applySettings 写入。
-      customEase: s.extra.customEase,
-      customEaseEnabled: s.extra.customEaseEnabled
-    }))
-  );
+  const settings = useSettingsStore(useShallow(appearanceSettingsFields));
   useEffect(() => {
     const st = useSettingsStore.getState();
     applySettings(

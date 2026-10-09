@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { markReminded, sweepStaleReminders } from "./remind-dedupe";
+import { markReminded, readPendingPayloads, sweepStaleReminders, tryMarkOnce } from "./remind-dedupe";
 
 describe("remind-dedupe", () => {
   beforeEach(() => {
@@ -37,5 +37,38 @@ describe("remind-dedupe", () => {
     expect(localStorage.getItem("focus-desk.x-remind.a.2026-08-01")).toBe("1");
     sweepStaleReminders("focus-desk.x-remind.", "2026-08-14");
     expect(localStorage.getItem("focus-desk.x-remind.a.2026-08-01")).toBeNull();
+  });
+});
+
+describe("tryMarkOnce 负载暂存 / readPendingPayloads 对账（P2 崩溃窗口恢复）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("无负载写 '1'（旧语义）；带负载写 JSON 且对账可读回", () => {
+    expect(tryMarkOnce("focus-desk.seg.a.2026-08-13", "focus-desk.seg.", "2026-08-13")).toBe("marked");
+    expect(localStorage.getItem("focus-desk.seg.a.2026-08-13")).toBe("1");
+
+    const record = { id: "s-1", plannedSeconds: 1500 };
+    expect(tryMarkOnce("focus-desk.seg.b.2026-08-13", "focus-desk.seg.", "2026-08-13", record)).toBe("marked");
+    expect(localStorage.getItem("focus-desk.seg.b.2026-08-13")).toBe(JSON.stringify(record));
+
+    const pending = readPendingPayloads<{ id: string }>("focus-desk.seg.");
+    expect(pending).toEqual([{ key: "focus-desk.seg.b.2026-08-13", payload: record }]);
+  });
+
+  it("重复标记 duplicate 且不覆盖既有负载", () => {
+    const record = { id: "s-2" };
+    tryMarkOnce("focus-desk.seg.c.2026-08-13", "focus-desk.seg.", "2026-08-13", record);
+    expect(tryMarkOnce("focus-desk.seg.c.2026-08-13", "focus-desk.seg.", "2026-08-13", { id: "evil" })).toBe(
+      "duplicate"
+    );
+    expect(localStorage.getItem("focus-desk.seg.c.2026-08-13")).toBe(JSON.stringify(record));
+  });
+
+  it("损坏负载的标记被对账跳过，键本身保留（去重语义不受影响）", () => {
+    localStorage.setItem("focus-desk.seg.d.2026-08-13", "{not-json");
+    expect(readPendingPayloads("focus-desk.seg.")).toEqual([]);
+    expect(localStorage.getItem("focus-desk.seg.d.2026-08-13")).toBe("{not-json");
   });
 });

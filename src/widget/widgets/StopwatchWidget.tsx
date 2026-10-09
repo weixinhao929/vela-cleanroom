@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components -- 纯函数与组件同文件导出供测试与迷你磁贴复用（FileBrowserWidget 同款惯例） */
 /**
- * 秒表小组件（借鉴 ClassSoftwareHub #3）：正计时 + 计次（保留最近 N 次，
+ * 秒表小组件：正计时 + 计次（保留最近 N 次，
  * 从新到旧展示差值与累计值）。计时基准用绝对时间戳（startAt + accumulated
  * 换算，与倒计时同一套「重启后接着跑」方案）；计次记录随状态持久化。
  * 无「结束」语义，不参与托盘仲裁；rAF 循环仅运行期间存在。
@@ -21,6 +21,10 @@ type PersistedState = {
   accumulated: number;
   /** 计次点（累计毫秒，升序）。 */
   laps: number[];
+  /** 超限淘汰后，最早一条已丢弃计次的累计值（新首条差值的基线）。 */
+  lapBase?: number;
+  /** 已因超限丢弃的计次数（全局序号偏移，编号不因截断重排）。 */
+  lapOffset?: number;
 };
 
 function stateKey(instanceId: string) {
@@ -34,10 +38,12 @@ function loadPersisted(instanceId: string): PersistedState {
     const p = JSON.parse(raw) as Partial<PersistedState>;
     const accumulated = typeof p.accumulated === "number" && p.accumulated >= 0 ? p.accumulated : 0;
     const laps = Array.isArray(p.laps) ? p.laps.filter((n): n is number => typeof n === "number" && n >= 0) : [];
+    const lapBase = typeof p.lapBase === "number" && p.lapBase >= 0 ? p.lapBase : 0;
+    const lapOffset = typeof p.lapOffset === "number" && p.lapOffset >= 0 ? p.lapOffset : 0;
     if (p.running && typeof p.startAt === "number" && p.startAt > 0) {
-      return { running: true, startAt: p.startAt, accumulated, laps };
+      return { running: true, startAt: p.startAt, accumulated, laps, lapBase, lapOffset };
     }
-    return { running: false, startAt: 0, accumulated, laps };
+    return { running: false, startAt: 0, accumulated, laps, lapBase, lapOffset };
   } catch {
     return { running: false, startAt: 0, accumulated: 0, laps: [] };
   }
@@ -58,11 +64,16 @@ export function fmtStopwatch(ms: number, showCentis = true): string {
   return showCentis ? `${body}.${String(cs).padStart(2, "0")}` : body;
 }
 
-/** 计次行：从新到旧，含与上一次的差值。 */
-export function lapRows(laps: readonly number[]): { index: number; delta: number; cumulative: number }[] {
+/** 计次行：从新到旧，含与上一次的差值。base = 超限淘汰后首条的基线累计值，
+ *  offset = 已丢弃计次数——编号/差值不因截断重排。 */
+export function lapRows(
+  laps: readonly number[],
+  base = 0,
+  offset = 0
+): { index: number; delta: number; cumulative: number }[] {
   const out: { index: number; delta: number; cumulative: number }[] = [];
   for (let i = laps.length - 1; i >= 0; i--) {
-    out.push({ index: i + 1, delta: laps[i] - (i > 0 ? laps[i - 1] : 0), cumulative: laps[i] });
+    out.push({ index: offset + i + 1, delta: laps[i] - (i > 0 ? laps[i - 1] : base), cumulative: laps[i] });
   }
   return out;
 }
@@ -77,6 +88,8 @@ export function StopwatchWidget({ instanceId }: { instanceId: string }) {
   const [running, setRunning] = useState(restored.running);
   const [accumulated, setAccumulated] = useState(restored.accumulated);
   const [laps, setLaps] = useState<number[]>(restored.laps);
+  const [lapBase, setLapBase] = useState(restored.lapBase ?? 0);
+  const [lapOffset, setLapOffset] = useState(restored.lapOffset ?? 0);
   /* 二.1 渲染分层（对齐 ClockWidget 内置秒表）：百分秒 30fps 直写 DOM
      （csRef.textContent，不进 React），整卡重渲只在秒翻转时发生（1Hz）——
      旧版 forceTick 每帧 setState，以 60fps 重渲含计次列表/按钮的整棵子树。 */
@@ -96,8 +109,8 @@ export function StopwatchWidget({ instanceId }: { instanceId: string }) {
   const lastSecRef = useRef(-1);
   const csRef = useRef<HTMLSpanElement>(null);
 
-  const stateRef = useRef({ running, startAt: startRef, accumulated, laps });
-  stateRef.current = { running, startAt: startRef, accumulated, laps };
+  const stateRef = useRef({ running, startAt: startRef, accumulated, laps, lapBase, lapOffset });
+  stateRef.current = { running, startAt: startRef, accumulated, laps, lapBase, lapOffset };
   const lastWriteRef = useRef(0);
 
   const paintCs = () => {
@@ -114,7 +127,14 @@ export function StopwatchWidget({ instanceId }: { instanceId: string }) {
     const s = stateRef.current;
     persistMirrored(
       stateKey(instanceId),
-      JSON.stringify({ running: s.running, startAt: s.startAt.current, accumulated: s.accumulated, laps: s.laps })
+      JSON.stringify({
+        running: s.running,
+        startAt: s.startAt.current,
+        accumulated: s.accumulated,
+        laps: s.laps,
+        lapBase: s.lapBase,
+        lapOffset: s.lapOffset
+      })
     );
   };
 
@@ -176,7 +196,18 @@ export function StopwatchWidget({ instanceId }: { instanceId: string }) {
        逐帧 ref 与真实墙钟最多差一帧，计次差值会带 ±一帧误差。 */
     const nowElapsed = running ? accumulatedRef.current + (Date.now() - startRef.current) : accumulatedRef.current;
     if (nowElapsed <= 0) return;
-    setLaps((prev) => [...prev, nowElapsed].slice(-lapLimit));
+    const prev = lapsRef.current;
+    const next = [...prev, nowElapsed];
+    if (next.length > lapLimit) {
+      // 超限丢最旧时，把被丢计次的累计值存为 lapBase（新首条差值基线）、
+      // 递增 lapOffset（全局编号偏移）——此前截断后剩余行的序号与差值整体
+      // 错一档（lap2 被标成「第 1 次」且差值显示成累计值）。
+      setLapBase(next[next.length - lapLimit - 1] ?? 0);
+      setLapOffset((o) => o + (next.length - lapLimit));
+      setLaps(next.slice(next.length - lapLimit));
+    } else {
+      setLaps(next);
+    }
   }
 
   function reset() {
@@ -186,12 +217,16 @@ export function StopwatchWidget({ instanceId }: { instanceId: string }) {
     lastSecRef.current = -1;
     setAccumulated(0);
     setLaps([]);
+    setLapBase(0);
+    setLapOffset(0);
   }
 
   /* 计次列表：新增行走 .sw-lap 进场动画；清空时容器播 .is-closing 淡出再卸载
-     （useDelayedUnmount + 最后一份行快照，key 不变不重挂、行动画不重播）。 */
-  const rows = lapRows(laps);
-  const lapsVisible = useDelayedUnmount(laps.length > 0, Math.round(animDurations().fxMs));
+     （useDelayedUnmount + 最后一份行快照，key 不变不重挂、行动画不重播）。
+     退场等待时长与 .sw-laps.is-closing 的
+     --dur-fx-fast 对齐（此前用 fxMs 多挂 50ms 空档）。 */
+  const rows = lapRows(laps, lapBase, lapOffset);
+  const lapsVisible = useDelayedUnmount(laps.length > 0, Math.round(animDurations().fxFastMs));
   const lastRows = useRef(rows);
   if (rows.length > 0) lastRows.current = rows;
   const shownRows = rows.length > 0 ? rows : lastRows.current;
@@ -211,7 +246,13 @@ export function StopwatchWidget({ instanceId }: { instanceId: string }) {
           {running ? <Pause size={13} /> : <Play size={13} />}
           {running ? tr("暂停") : accumulated > 0 ? tr("继续") : tr("开始")}
         </button>
-        <button className="sw-btn" onClick={lap} disabled={elapsed <= 0} title={tr("记录一次计次")} data-interactive>
+        <button
+          className="sw-btn"
+          onClick={lap}
+          disabled={!running && accumulated <= 0}
+          title={tr("记录一次计次")}
+          data-interactive
+        >
           <Flag size={13} />
           {tr("计次")}
         </button>

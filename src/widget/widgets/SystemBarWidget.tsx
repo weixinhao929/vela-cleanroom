@@ -7,9 +7,17 @@ import { createPortal } from "react-dom";
 import { Zap } from "lucide-react";
 import { isTauri } from "../../lib/tauri";
 import { useDelayedUnmount } from "../../lib/anim";
+import { coveredTickGate } from "../../lib/use-covered";
 import { animDurations } from "../../lib/durations";
 import { FxCount } from "../../lib/fx";
-import { selectNetworkRows, useNetRate, useSystemBroadcast, type SystemBroadcast } from "../../lib/system-stats";
+import { uiZoom } from "../../lib/ui-zoom";
+import {
+  fmtUptime,
+  selectNetworkRows,
+  useNetRate,
+  useSystemBroadcast,
+  type SystemBroadcast
+} from "../../lib/system-stats";
 import { useT } from "../../i18n-lite";
 import { useWidgetConfig } from "../widget-config";
 import { Sparkline } from "./sparkline";
@@ -17,21 +25,24 @@ import { Sparkline } from "./sparkline";
 type Stats = SystemBroadcast["stats"];
 
 const HISTORY_LEN = 40;
-/** W-156 阈值告警线（%）：CPU/内存高于此值数值变红。 */
-const ALERT_THRESHOLD = 80;
 
-/** W-154 可选显示项（顺序即渲染顺序）。 */
+/** 可选显示项（顺序即渲染顺序）。 */
 const ITEM_KEYS = ["fps", "lat", "gpu", "cpu", "mem", "cores", "net", "battery"] as const;
 type ItemKey = (typeof ITEM_KEYS)[number];
 
-/** W-159 悬停迷你趋势浮层：CPU/内存/网络近 HISTORY_LEN 帧的 sparkline（portal 定位）。 */
+/** 悬停迷你趋势浮层：CPU/内存/网络近 HISTORY_LEN 帧的 sparkline（portal 定位）。
+ *  range 填底部当前值文本（此前 sysbar-trend-range 是个永不填充的空占位）；
+ *  网络类指标可传第二组数据画 ↓/↑ 双曲线（与其余监控组件同口径）。 */
 function HoverTrend({
   data,
   color,
   label,
   anchor,
   max,
-  closing
+  closing,
+  data2,
+  color2,
+  range
 }: {
   data: number[];
   color: string;
@@ -39,18 +50,22 @@ function HoverTrend({
   anchor: { x: number; y: number };
   max?: number;
   closing?: boolean;
+  data2?: number[];
+  color2?: string;
+  range?: string;
 }) {
   return createPortal(
     <div className={`sysbar-trend${closing ? " is-closing" : ""}`} style={{ left: anchor.x, top: anchor.y }}>
       <span className="sysbar-trend-title">{label}</span>
-      <Sparkline data={data} color={color} max={max} />
-      <span className="sysbar-trend-range" />
+      <Sparkline data={data} color={color} max={max} span={HISTORY_LEN} />
+      {data2 && color2 && <Sparkline data={data2} color={color2} max={max} span={HISTORY_LEN} />}
+      {range && <span className="sysbar-trend-range">{range}</span>}
     </div>,
     document.body
   );
 }
 
-/** W-145 网络趋势纵轴满量程：窗口峰值 ×1.2（下限 1KB/s），避免曲线全程贴顶。 */
+/** 网络趋势纵轴满量程：窗口峰值 ×1.2（下限 1KB/s），避免曲线全程贴顶。 */
 function netHistMax(data: number[]): number {
   const peak = data.length ? Math.max(...data) : 0;
   return Math.max(1024, peak * 1.2);
@@ -58,13 +73,13 @@ function netHistMax(data: number[]): number {
 
 /**
  * Vela-style top system monitor bar: a plain text strip (no card) showing a
- * user-defined set of items (W-154: fps / latency / gpu / cpu / mem / cores /
+ * user-defined set of items (: fps / latency / gpu / cpu / mem / cores /
  * net / battery). FPS is measured from the widget's own rAF render loop;
  * "延迟" is the age of the latest `sys:stats` broadcast frame. CPU/memory/GPU/
  * net/battery come from the shared Rust sampling broadcast.
  *
- * W-155 网速 ↓↑（全网卡聚合）；W-156 >80% 变红；W-157 字号 + 分隔符样式；
- * W-159 悬停 CPU/内存 出迷你趋势浮层。
+ * 网速 ↓↑（全网卡聚合）；>80% 变红；字号 + 分隔符样式；
+ * 悬停 CPU/内存 出迷你趋势浮层。
  */
 export function SystemBarWidget({ instanceId }: { instanceId: string }) {
   const tr = useT();
@@ -75,20 +90,26 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
   const refreshIntervalSec = Math.max(1, (config.refreshInterval as number) || 2);
   const fontSize = (config.fontSize as string) || "sm";
   const separator = (config.separator as string) || "bar";
+  /** 无底板：根元素挂 transparent 类，卡片壳层经 :has 摘掉底板（时钟/音乐同款）。 */
+  const transparent = config.transparent === true;
+  /** 阈值告警线（%）与电池低电线（%）：均可配（默认 80 / 20）。 */
+  const alertThreshold = Math.max(10, Math.min(100, (config.alertThreshold as number) || 80));
+  const battLowThreshold = Math.max(5, Math.min(50, (config.battLowThreshold as number) || 20));
 
-  // W-154 显示项：config.items 驱动；未知值过滤，兼容旧 showGPU/showCores 缺省。
+  // 显示项：config.items 驱动；未知值过滤，兼容旧 showGPU/showCores 缺省。
   const rawItems = Array.isArray(config.items) ? (config.items as string[]) : null;
   const items: ItemKey[] = (rawItems && rawItems.length > 0 ? rawItems : ITEM_KEYS.slice(0, 6)).filter(
     (k): k is ItemKey => (ITEM_KEYS as readonly string[]).includes(k)
   );
 
-  // W-159 趋势历史（CPU/内存）：与广播帧同步 append。
+  // 趋势历史（CPU/内存）：与广播帧同步 append。
   const cpuHist = useRef<number[]>([]);
   const memHist = useRef<number[]>([]);
-  /** W-159/W-145 网络趋势（聚合 ↓）。 */
+  /** 网络趋势（聚合 ↓/↑ 双曲线）。 */
   const netHist = useRef<number[]>([]);
+  const netUpHist = useRef<number[]>([]);
   const [hover, setHover] = useState<{ key: "cpu" | "mem" | "net"; x: number; y: number } | null>(null);
-  /* #57 统一弹层退场：悬停浮卡不再硬切消失——关闭后播 .is-closing 再卸载，
+  /* 统一弹层退场：悬停浮卡不再硬切消失——关闭后播 .is-closing 再卸载，
      期间以最后一次悬停快照渲染（划过常驻条的高频路径，进出场都要轻）。 */
   const trendVisible = useDelayedUnmount(!!hover, Math.round(animDurations().fxXfastMs));
   const lastHover = useRef(hover);
@@ -97,10 +118,10 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
 
   const frame = useSystemBroadcast(refreshIntervalSec);
   const stats: Stats | null = frame?.stats ?? null;
-  // W-167 全局网速显示选项（bit 计/简洁/隐藏单位/上下行交换）。
+  // 全局网速显示选项（bit 计/简洁/隐藏单位/上下行交换）。
   const { fmt: fmtRate, swap: netSwap } = useNetRate();
 
-  // W-159 趋势历史（CPU/内存）：与广播帧同步 append。
+  // 趋势历史（CPU/内存）：与广播帧同步 append。
   // P-perf/正确性：此前 append 写在渲染体内——任何无关重渲（如 hover 状态）
   // 都会重复追加同一帧样本并各做一次 O(L) 数组拷贝，趋势曲线被失真拉平。
   // 移入 effect 后严格「一帧一样本」。
@@ -112,15 +133,18 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
     netHist.current = [...netHist.current, frame.networks.reduce((s, n) => s + (n.up ? n.rx_bps : 0), 0)].slice(
       -HISTORY_LEN
     );
+    netUpHist.current = [...netUpHist.current, frame.networks.reduce((s, n) => s + (n.up ? n.tx_bps : 0), 0)].slice(
+      -HISTORY_LEN
+    );
   }, [frame]);
 
-  // F-7：FPS 采样由「常驻 60Hz rAF 循环」改为「1s 定时 + 两帧差值」，窗口
+  // FPS 采样由「常驻 60Hz rAF 循环」改为「1s 定时 + 两帧差值」，窗口
   // 隐藏时完全停表（不再有隐形 WebView 永续排帧抑制空闲降频）。visible 恢复即重采。
   useEffect(() => {
     let alive = true;
     let iv = 0;
     const sample = () => {
-      if (!alive || document.hidden) return;
+      if (!alive || document.hidden || coveredTickGate()) return;
       requestAnimationFrame((t1) => {
         requestAnimationFrame((t2) => {
           if (!alive) return;
@@ -133,7 +157,7 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
     iv = window.setInterval(sample, 1000);
     sample();
     const onVis = () => {
-      if (!document.hidden) sample();
+      if (!document.hidden && !coveredTickGate()) sample();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {
@@ -171,16 +195,25 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
   );
   const cores = stats ? `${stats.cores}${tr(" 核")}` : "—";
   const fpsTxt = isTauri() ? `${fps} FPS` : `${tr("演示")} FPS`;
-  const latTxt = lastFrameAt.current ? `${Math.max(0, Math.round(now - lastFrameAt.current))}ms` : "—";
-  // W-155 网速：聚合 ↓/↑（在连网卡；W-167 走全局显示选项与上下行交换）。
+  // （暂停期延迟读数）：presence 暂停期间 sys:stats 停发，但本组件的 FPS
+  // 采样每秒仍 setNow——now-lastFrameAt 无限增长，延迟读数滚成几分钟。超过
+  // 5s 一律按「无数据」显示（真实帧间隔 ≤ 刷新间隔 ×2）。
+  const latTxt = lastFrameAt.current
+    ? now - lastFrameAt.current <= 5000
+      ? `${Math.max(0, Math.round(now - lastFrameAt.current))}ms`
+      : "—"
+    : "—";
+  // 网速：聚合 ↓/↑（在连网卡；走全局显示选项与上下行交换）。
+  // aggregate 模式对空网卡表也恒返回一行 0 速率——首帧未到时须显示占位，
+  // 不能把「无数据」渲染成「↓0 B/s」假读数（「绝不伪造数据」口径）。
   const netRows = selectNetworkRows(frame?.networks ?? [], "aggregate", "", tr("合计"));
   const netAgg = netRows[0];
-  const netTxt = netAgg
-    ? netSwap
+  const netTxt = !frame
+    ? "—"
+    : netSwap
       ? `↑${fmtRate(netAgg.tx)} ↓${fmtRate(netAgg.rx)}`
-      : `↓${fmtRate(netAgg.rx)} ↑${fmtRate(netAgg.tx)}`
-    : `↓— ↑—`;
-  // W-158 电池。充电态用 lucide 图标（emoji 不随主题变色且跨平台不一致）。
+      : `↓${fmtRate(netAgg.rx)} ↑${fmtRate(netAgg.tx)}`;
+  // 电池。充电态用 lucide 图标（emoji 不随主题变色且跨平台不一致）。
   const batt = frame?.battery;
   const battTxt = batt?.present ? (
     <>
@@ -200,12 +233,15 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
       {v}
     </span>
   );
-  // W-156 阈值告警。
-  const alertOf = (pct: number | undefined) => pct !== undefined && pct > ALERT_THRESHOLD;
+  // 阈值告警。
+  const alertOf = (pct: number | undefined) => pct !== undefined && pct > alertThreshold;
 
   const onTrendEnter =
     (key: "cpu" | "mem" | "net") => (e: React.MouseEvent<HTMLElement> | React.FocusEvent<HTMLElement>) => {
       const gap = 10;
+      // 网络浮层带 ↓/↑ 双曲线，比 CPU/内存的单曲线高约一个 sparkline 档，
+      // 锚点上移量按内容高度区分，避免浮层下沿压住悬停项。
+      const lift = key === "net" ? 106 : 76;
       // 鼠标用指针位置锚定浮层；键盘聚焦时退化为元素几何中心（FocusEvent 无坐标）。
       const pos =
         "clientX" in e
@@ -214,15 +250,18 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
               const r = e.currentTarget.getBoundingClientRect();
               return { x: r.left + r.width / 2, y: r.top };
             })();
+      /* pos（clientX / gBCR）是视觉坐标，消费处 .sysbar-trend 为 fixed 定位，
+         且下方钳制与 innerWidth（布局）混算——统一 ÷uiZoom 换算为布局单位。 */
+      const z = uiZoom();
       setHover({
         key,
-        x: Math.max(4, Math.min(pos.x - 60, window.innerWidth - 150)),
-        y: Math.max(4, pos.y - 76 - gap)
+        x: Math.max(4, Math.min(pos.x / z - 60, window.innerWidth - 150)),
+        y: Math.max(4, pos.y / z - lift - gap)
       });
     };
 
   const nodes: Record<ItemKey, React.ReactNode> = {
-    fps: <span>{num(fpsTxt)}</span>,
+    fps: <span title={tr("桌面层自身渲染帧率（反映合成负载），非游戏帧率")}>{num(fpsTxt)}</span>,
     lat: (
       <span>
         {tr("延迟")} {num(latTxt)}
@@ -267,8 +306,16 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
       </span>
     ),
     battery: (
-      <span>
-        {tr("电池")} {num(battTxt, batt?.present === true && batt.percent <= 20)}
+      <span
+        /* 剩余时间走悬停提示：条本身保持紧凑（放电且有有效估计才提示，
+           secs_left=0 表示未知/交流供电——不编造）。 */
+        title={
+          batt?.present && !batt.charging && batt.secs_left > 0
+            ? tr("剩余约 {t}", { t: fmtUptime(batt.secs_left, tr) })
+            : undefined
+        }
+      >
+        {tr("电池")} {num(battTxt, batt?.present === true && batt.percent <= battLowThreshold)}
         {batt?.present && batt.charging ? <Zap size={10} className="sysbar-charge" aria-hidden="true" /> : null}
       </span>
     )
@@ -277,7 +324,7 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
   const sepChar = separator === "dot" ? "·" : "|";
 
   return (
-    <div className={`widget-sysbar fs-${fontSize}`}>
+    <div className={`widget-sysbar fs-${fontSize}${transparent ? " transparent" : ""}`}>
       {items.map((k, i) => (
         <Fragment key={k}>
           {i > 0 && separator !== "none" && <span className="sep">{sepChar}</span>}
@@ -298,8 +345,25 @@ export function SystemBarWidget({ instanceId }: { instanceId: string }) {
                 ? `${tr("内存")}${tr("趋势")}`
                 : `${tr("网络")}${tr("趋势")}`
           }
-          max={shownHover.key === "net" ? netHistMax(netHist.current) : undefined}
+          /* 双曲线共用同一纵轴标尺（取 ↓/↑ 峰值较大者 ×1.2）：只按下行
+             定标时，上行突发会被压在顶边失真；同标尺也让两曲线可直接比。 */
+          max={
+            shownHover.key === "net" ? Math.max(netHistMax(netHist.current), netHistMax(netUpHist.current)) : undefined
+          }
           anchor={{ x: shownHover.x, y: shownHover.y }}
+          data2={shownHover.key === "net" ? netUpHist.current : undefined}
+          color2={shownHover.key === "net" ? "var(--accent)" : undefined}
+          range={
+            shownHover.key === "cpu"
+              ? `${Math.round(stats?.cpu_usage ?? 0)}%`
+              : shownHover.key === "mem"
+                ? `${Math.round(stats?.mem_percent ?? 0)}%`
+                : stats
+                  ? netSwap
+                    ? `↑${fmtRate(netAgg.tx)} ↓${fmtRate(netAgg.rx)}`
+                    : `↓${fmtRate(netAgg.rx)} ↑${fmtRate(netAgg.tx)}`
+                  : undefined
+          }
         />
       )}
     </div>

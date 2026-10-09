@@ -23,9 +23,11 @@ export function BrightnessMini({ active }: MiniComponentProps) {
 
   useEffect(() => {
     if (!active || requested.current || !isTauri()) return;
-    requested.current = true;
+    // （一次性拉取不重试）：requested 只在成功回调里置位——失败后磁贴永远
+    // 显示 "—"；active 再次翻转（磁贴重新可见）即重拉。
     void invoke<Monitor[]>("list_brightness_monitors")
       .then((rows) => {
+        requested.current = true;
         const m = rows.find((r) => r.supported) ?? null;
         setMonitor(m);
         setValue(m?.current ?? null);

@@ -1,11 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applySettings,
   cancelDeferNextThemeApply,
+  DEFAULT_CUSTOM_COLORS,
   DEFAULT_TASKBAR,
   deferNextThemeApply,
   defaultTaskbarSettings,
   defaultTaskbarStates,
+  normalizeHexColor6,
   normalizeTaskbar,
   normalizeTaskbarColor,
   sanitizeSettings,
@@ -16,6 +18,7 @@ import {
 import type { TaskbarSettings as TaskbarSettingsBinding } from "../types/bindings/TaskbarSettings";
 import type { TaskbarStateChanged } from "../types/bindings/TaskbarStateChanged";
 import { DEFAULT_SHORTCUTS, SHORTCUT_ACTIONS } from "../lib/shortcuts";
+import { resumePersistence, suspendPersistence } from "../lib/persist-gate";
 
 /** 迁移兼容：引擎要求显式传动效环境；此处读实时 store 状态，与迁移前
  *  applySettings 内部 getState() 反读的取值时机一致。 */
@@ -270,6 +273,10 @@ describe("settings-store apply chain", () => {
     // extra 嵌套字段回退
     expect(state.extra.weatherLat).toBe(39.9042);
     expect(state.extra.animationDuration).toBe(100);
+    // [INK-DUR]：主题切换水墨时长缺省 1400，越界值回默认而非钳制（同 numOr 语义）。
+    expect(state.extra.themeInkDurationMs).toBe(1400);
+    expect(sanitizeSettings({ extra: { themeInkDurationMs: 9999 } }).extra?.themeInkDurationMs).toBe(1400);
+    expect(sanitizeSettings({ extra: { themeInkDurationMs: 700 } }).extra?.themeInkDurationMs).toBe(700);
     // 非法枚举回退到默认
     expect(state.extra.widgetEntrance).toBe("scale");
     // notifications 为 null → 全默认
@@ -406,7 +413,7 @@ describe("settings-store apply chain", () => {
       linkPopup: true
     });
 
-    // [SUPER-PANEL]/[DOUBLE-TAP]/[WAKE-BL]（ZTools #11/#13/#14）新切片：缺省
+    // [SUPER-PANEL]/[DOUBLE-TAP]/[WAKE-BL]新切片：缺省
     // 关 + 时长钳制 + 键族白名单；黑名单只留非空去重字符串。
     const fresh = sanitizeSettings({ general: { language: "简体中文" } });
     expect(fresh.general?.superPanel).toEqual({ enabled: false, durationMs: 500 });
@@ -539,7 +546,7 @@ describe("theme transition / fx switching timing", () => {
 });
 
 /**
- * [TB-CORE] 任务栏切片契约：D1/D2/D3 出厂默认、normalizeTaskbar 往返与坏值
+ * [TB-CORE] 任务栏切片契约：出厂默认、normalizeTaskbar 往返与坏值
  * 逐字段回退（语义与 Rust taskbar/mod.rs from_json_value 单测一一对应）、
  * 落盘快照携带 general.taskbar（Rust parse_taskbar_config 读取路径）。
  */
@@ -773,7 +780,7 @@ describe("[TB-CORE] taskbar slice", () => {
   });
 });
 
-/** [TB-TRAY] F-11：快捷键切片对新增动作的补默认 / 未绑定语义（normalizeShortcuts 经 sanitizeSettings 暴露）。 */
+/** [TB-TRAY] ：快捷键切片对新增动作的补默认 / 未绑定语义（normalizeShortcuts 经 sanitizeSettings 暴露）。 */
 describe("[TB-TRAY] shortcuts slice", () => {
   const LEGACY_NINE = {
     "toggle-pomodoro": "Ctrl+Alt+Space",
@@ -833,5 +840,166 @@ describe("[TB-TRAY] shortcuts slice", () => {
     store.setShortcut("taskbar:toggle", DEFAULT_SHORTCUTS["taskbar:toggle"]);
     expect(useSettingsStore.getState().shortcuts["taskbar:toggle"]).toBe("");
     expect(JSON.parse(localStorage.getItem("focus-desk.settings.v1") ?? "{}").shortcuts["taskbar:toggle"]).toBe("");
+  });
+});
+
+/**
+ * 颜色入口校验（「导入设置」等外部来源防任意 CSS 串）：
+ *  - primaryColor 只收 hex（luminance/取色器/预设全按 hex 假设）；
+ *  - widgetBackground / customColors 收 hex 或 rgb/rgba（预设底色历史即 rgba）；
+ *  - url(...) / 颜色名等不在白名单的一律拒绝且旧值保留。
+ */
+describe("color value validation at setters", () => {
+  it("setPrimaryColor：合法 hex 归一为 #rrggbb 落库，非 hex 拒绝且保留旧值", () => {
+    const s = useSettingsStore.getState();
+    s.setPrimaryColor("#1e90ff");
+    expect(useSettingsStore.getState().primaryColor).toBe("#1e90ff");
+    // 短 hex 归一展开（input[type=color] 只认 7 位、派生链路只认 #rrggbb）。
+    s.setPrimaryColor("#abc");
+    expect(useSettingsStore.getState().primaryColor).toBe("#aabbcc");
+    s.setPrimaryColor("url(https://tracker/x.png)");
+    expect(useSettingsStore.getState().primaryColor).toBe("#aabbcc");
+    s.setPrimaryColor("red");
+    expect(useSettingsStore.getState().primaryColor).toBe("#aabbcc");
+  });
+
+  it("setWidgetBackground：hex 与 rgb/rgba 收，其余拒绝", () => {
+    const s = useSettingsStore.getState();
+    s.setWidgetBackground("rgba(255,255,255,.08)");
+    expect(useSettingsStore.getState().widgetBackground).toBe("rgba(255,255,255,.08)");
+    s.setWidgetBackground("#ffffff");
+    expect(useSettingsStore.getState().widgetBackground).toBe("#ffffff");
+    s.setWidgetBackground("url(javascript:alert(1))");
+    expect(useSettingsStore.getState().widgetBackground).toBe("#ffffff");
+  });
+
+  it("setCustomColors：逐字段收口，坏值保留旧值", () => {
+    const s = useSettingsStore.getState();
+    const before = useSettingsStore.getState().customColors;
+    s.setCustomColors({ dark: { bg: "url(https://evil)" as unknown as string, ink: "#111111" } });
+    const after = useSettingsStore.getState().customColors;
+    expect(after.dark.bg).toBe(before.dark.bg);
+    expect(after.dark.ink).toBe("#111111");
+  });
+
+  it("normalizeHexColor6：hex 各位数位与 rgb()/rgba() 一律归一为 #rrggbb", () => {
+    expect(normalizeHexColor6("#abc")).toBe("#aabbcc");
+    expect(normalizeHexColor6("#abcd")).toBe("#aabbcc"); // 4 位 alpha 丢弃
+    expect(normalizeHexColor6("#aabbcc")).toBe("#aabbcc");
+    expect(normalizeHexColor6("#AABBCCDD")).toBe("#aabbcc"); // 8 位 alpha 丢弃
+    expect(normalizeHexColor6("RGB(18, 20, 28)")).toBe("#12141c");
+    expect(normalizeHexColor6("rgba(255, 255, 255, 0.5)")).toBe("#ffffff");
+    expect(normalizeHexColor6("rgb(100%, 50%, 0%)")).toBe("#ff8000");
+    // 非法输入 → null（调用方回退出厂值）。
+    expect(normalizeHexColor6("red")).toBeNull();
+    expect(normalizeHexColor6("url(https://evil)")).toBeNull();
+    expect(normalizeHexColor6("")).toBeNull();
+    expect(normalizeHexColor6("#gg")).toBeNull();
+    expect(normalizeHexColor6(42 as unknown as string)).toBeNull();
+  });
+
+  /* 两级口径一致性——setter 与 sanitize 均经 normalizeCustomColor
+     归一为 #rrggbb（旧口径 setter 收 #fff 而 sanitize 仅认 ^#rrggbb$，
+     下次启动静默回档出厂色；归一后 #rrggbb 是不动点，往返稳定）。
+     归一同时是派生链路的正确性前提：deriveCustomTokens 的 luminance/mixHex
+     只认 #rrggbb，rgb()/短 hex 会把明暗极性静默判错。 */
+  it("P2-2：customColors 归一往返——#fff/rgba() 在 setter 与 sanitize 双侧都归一为 #rrggbb", () => {
+    const s = useSettingsStore.getState();
+    s.setCustomColors({ dark: { bg: "#fff" } });
+    expect(useSettingsStore.getState().customColors.dark.bg).toBe("#ffffff");
+    // 模拟下次启动：store 当前值（= 持久化快照内容）再过一遍 sanitize，值稳定。
+    const resanitized = sanitizeSettings({
+      customColors: { ...useSettingsStore.getState().customColors }
+    });
+    expect(resanitized.customColors?.dark.bg).toBe("#ffffff");
+    // rgba 同理：归一为不透明 hex（alpha 对种子色无语义）。
+    s.setCustomColors({ light: { bg: "rgba(255,255,255,.5)" } });
+    expect(useSettingsStore.getState().customColors.light.bg).toBe("#ffffff");
+    expect(
+      sanitizeSettings({ customColors: { ...useSettingsStore.getState().customColors } }).customColors?.light.bg
+    ).toBe("#ffffff");
+    // 快照里的旧 rgb() 值（跨窗 / 手改存储）启动时也被归一而非回退出厂。
+    expect(
+      sanitizeSettings({ customColors: { dark: { bg: "rgb(18, 20, 28)", ink: "#123456" } } }).customColors?.dark.bg
+    ).toBe("#12141c");
+    // 仍非白名单的值照旧回退出厂色。
+    expect(sanitizeSettings({ customColors: { dark: { bg: "red", ink: "#123456" } } }).customColors?.dark.bg).toBe(
+      DEFAULT_CUSTOM_COLORS.dark.bg
+    );
+    expect(sanitizeSettings({ customColors: { dark: { bg: "red", ink: "#123456" } } }).customColors?.dark.ink).toBe(
+      "#123456"
+    );
+  });
+
+  /* 显式白名单重建——未知顶层键（含与 action 同名的数据键、瞬态键）
+     一律丢弃；primaryColor/widgetBackground/font 走与 setter 同源的校验，
+     非法值回退默认；已知合法字段全保留（快照兼容）。 */
+  it("P2-1：未知顶层键被丢弃、非法色/空字体被回退、已知合法字段保留", () => {
+    const out = sanitizeSettings({
+      zoom: 110,
+      setZoom: 5, // 与 action 同名的数据键：不得进 store（旧行为会把 setter 覆盖成数字）
+      evilPayload: { x: 1 }, // 未知顶层键
+      settingsOpen: true, // 瞬态键不在持久化白名单
+      primaryColor: "url(https://tracker/x.png)", // 非法色（旧 strOr 原样放行）
+      widgetBackground: "javascript:alert(1)",
+      font: "" // 空串字体
+    });
+    const rec = out as Record<string, unknown>;
+    expect(out.zoom).toBe(110);
+    expect(out.preset).toBe("default");
+    expect(rec.setZoom).toBeUndefined();
+    expect(rec.evilPayload).toBeUndefined();
+    expect(rec.settingsOpen).toBeUndefined();
+    expect(out.primaryColor).toBe("#3a81f6"); // default 暗档强调色
+    expect(out.widgetBackground).toBe("rgba(23,23,23,.66)");
+    expect(out.font).toBe("系统");
+    // 合法值保留（primaryColor 归一为 #rrggbb，与 setter 同口径）。
+    const ok = sanitizeSettings({ primaryColor: "#abc", widgetBackground: "rgba(255,255,255,.08)", font: "Serif" });
+    expect(ok.primaryColor).toBe("#aabbcc");
+    expect(ok.widgetBackground).toBe("rgba(255,255,255,.08)");
+    expect(ok.font).toBe("Serif");
+  });
+});
+
+/** 持久化闸门在 saveSettings 单一入口收口——恢复备份 ack 窗口内，
+ *  即时落盘的 setter（不走防抖）也不得把恢复前的内存态写回持久层。 */
+describe("persist gate at saveSettings (P1-1)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    resumePersistence();
+  });
+
+  it("闸门挂起期间即时 setter 改内存但不落盘", () => {
+    suspendPersistence();
+    useSettingsStore.getState().setThemeMode("dark");
+    // 内存态照常更新（UI 不受闸门影响）。
+    expect(useSettingsStore.getState().themeMode).toBe("dark");
+    // 但持久层零写入：localStorage 保持空、镜像 setSetting 也不发起（浏览器
+    // 模式无 IPC，以 LS 为准）。
+    expect(localStorage.getItem("focus-desk.settings.v1")).toBeNull();
+  });
+});
+
+/** 语言枚举白名单——导入文件 / 损坏快照带入的未知语言串不放行
+ *  （下拉无此项、t() 只认 English），坏值回默认。 */
+describe("general slice sanitize", () => {
+  it("语言白名单：未知语言串清洗回默认，合法值（含跟随系统）原样保留", () => {
+    expect(sanitizeSettings({ general: { language: "Français" } }).general?.language).toBe("简体中文");
+    expect(sanitizeSettings({ general: { language: 42 } }).general?.language).toBe("简体中文");
+    expect(sanitizeSettings({ general: { language: "English" } }).general?.language).toBe("English");
+    expect(sanitizeSettings({ general: { language: "简体中文" } }).general?.language).toBe("简体中文");
+    expect(sanitizeSettings({ general: { language: "跟随系统" } }).general?.language).toBe("跟随系统");
+  });
+
+  it("setGeneralDebounced：与 setGeneral 同清洗（时长钳制），供滑杆高频路径复用", () => {
+    const s = useSettingsStore.getState();
+    s.setGeneralDebounced({ superPanel: { enabled: true, durationMs: 9999 } });
+    const g = useSettingsStore.getState().general.superPanel;
+    expect(g.enabled).toBe(true);
+    expect(g.durationMs).toBe(1000);
+    // 还原默认，避免泄漏到同文件后续用例。
+    s.setGeneral({ superPanel: { enabled: false, durationMs: 500 } });
   });
 });

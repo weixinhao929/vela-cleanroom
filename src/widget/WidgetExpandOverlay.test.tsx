@@ -73,7 +73,7 @@ describe("WidgetExpandOverlay · 调整大小", () => {
     const r = await mount("dock:test");
     expect(document.querySelectorAll(".wexp-grip")).toHaveLength(8);
     for (const id of ["nw", "ne", "se", "sw", "n", "s", "w", "e"]) expect(grip(id)).toBeTruthy();
-    // F3（焦点圈配套）：柄是纯指针控件，对 AT 隐藏（键盘缩放走卡片 Shift+方向键），
+    // （焦点圈配套）：柄是纯指针控件，对 AT 隐藏（键盘缩放走卡片 Shift+方向键），
     // 不再暴露「读得到却进不去」的 aria-label。
     expect(grip("se").getAttribute("aria-hidden")).toBe("true");
     expect(grip("se").getAttribute("aria-label")).toBeNull();

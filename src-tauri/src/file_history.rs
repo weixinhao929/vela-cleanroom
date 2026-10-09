@@ -1,6 +1,6 @@
-//! E15 删除可撤销（行为规格：删除前私有备份，可一键恢复）。
+//! 删除可撤销（行为规格：删除前私有备份，可一键恢复）。
 //!
-//! 参考实现 的 `RecyclePathWithUndoBackup`：删除前先把目标**完整复制进
+//! 的 `RecyclePathWithUndoBackup`：删除前先把目标**完整复制进
 //! 应用私有目录**，再送系统回收站；撤销从私有备份恢复——不依赖回收站
 //! （回收站可能被用户清空或被存储感知策略自动清理，而「撤销」承诺必须
 //! 在删除后的短时间内绝对可信）。
@@ -40,6 +40,7 @@ pub struct DeleteWithUndoResult {
     pub undoable: bool,
 }
 
+#[derive(Clone)]
 struct UndoEntry {
     ticket: String,
     original_path: String,
@@ -64,8 +65,17 @@ fn operations_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// 目录体积（尽力而为：读不到的条目按 0 计）。
+/// 目录体积（尽力而为：读不到的条目按 0 计）。深度保险对齐 copy_tree 的
+/// MAX_COPY_DEPTH——病态深树（环/junction 链虽被 symlink 判定挡住，极端
+/// 嵌套仍可栈溢出），超深子树按 0 计。
 fn tree_size(p: &Path) -> u64 {
+    tree_size_depth(p, 0)
+}
+
+fn tree_size_depth(p: &Path, depth: usize) -> u64 {
+    if depth > MAX_COPY_DEPTH {
+        return 0;
+    }
     let md = match std::fs::symlink_metadata(p) {
         Ok(m) => m,
         Err(_) => return 0,
@@ -79,14 +89,20 @@ fn tree_size(p: &Path) -> u64 {
     let mut total = 0;
     if let Ok(rd) = std::fs::read_dir(p) {
         for e in rd.flatten() {
-            total += tree_size(&e.path());
+            total += tree_size_depth(&e.path(), depth + 1);
         }
     }
     total
 }
 
 /// 递归复制（文件或目录树）。体积上限在调用方预先判定，这里按总量双保险。
-fn copy_tree(src: &Path, dst: &Path, budget: &mut u64, depth: usize) -> Result<(), String> {
+/// pub(crate)：files.rs 的 transfer_into_dir（拖放复制 / Ctrl+V 粘贴）复用。
+pub(crate) fn copy_tree(
+    src: &Path,
+    dst: &Path,
+    budget: &mut u64,
+    depth: usize,
+) -> Result<(), String> {
     if depth > MAX_COPY_DEPTH {
         return Err("目录层级过深".into());
     }
@@ -148,6 +164,20 @@ pub(crate) fn unique_destination(target: &Path) -> PathBuf {
     parent.join(format!("{stem}-{ts}{}", ext.unwrap_or_default()))
 }
 
+/// 删除文件或目录（备份两者皆可）：remove_dir_all 对普通文件返回 Err——
+/// 单文件删除的备份就是 operations/ 下的一个**文件**，此前孤儿清理/撤销
+/// 收尾对它永远失败且 `let _ =` 吞错，崩溃残留的文件型备份随时间累积占盘。
+fn remove_any(p: &Path) {
+    let ok = match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir_all(p).is_ok(),
+        Ok(_) => std::fs::remove_file(p).is_ok(),
+        Err(_) => false, // 已不存在：视为清理完成
+    };
+    if !ok {
+        log::debug!("备份清理失败: {}", p.display());
+    }
+}
+
 /// 孤儿备份清理：operations/ 下不在本会话注册表里、且目录修改时间超过 TTL
 /// 的子目录整树删除（崩溃残留的备份不该永远占盘）。TTL 可注入便于单测。
 fn purge_orphans(ops: &Path, ttl: Duration) {
@@ -168,13 +198,75 @@ fn purge_orphans(ops: &Path, ttl: Duration) {
                 .unwrap_or(true)
         });
         if expired {
-            let _ = std::fs::remove_dir_all(&p);
+            remove_any(&p);
         }
     }
 }
 
-/// E15 删除到回收站（可撤销）：备份 → 回收 → 登记。
-/// E16 围栏与 E17 审计沿用 files.rs 的 delete 语义（围栏拒绝/审计成败）。
+/// 删除到回收站（可撤销）单条核心（单删 / 批量共用）：
+/// 备份 → 回收 → 登记（含栈超限挤出）。返回 Some(ticket) = 可撤销。
+fn delete_one_with_undo(ops: &Path, path: &str) -> Result<Option<String>, String> {
+    if let Some(reason) = destructive_path_denied(Path::new(path)) {
+        return Err(reason.to_string());
+    }
+    let src = PathBuf::from(path);
+
+    // 阶段 1：私有备份（超大/复制失败 → 降级为普通删除，仍可回收站找回）。
+    let mut ticket: Option<String> = None;
+    if tree_size(&src) <= MAX_BACKUP_BYTES {
+        let t = format!(
+            "undo-{}-{}",
+            std::process::id(),
+            TICKET_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let backup = ops.join(&t);
+        let mut budget = MAX_BACKUP_BYTES;
+        match copy_tree(&src, &backup, &mut budget, 0) {
+            Ok(()) => ticket = Some(t),
+            Err(e) => {
+                // 备份失败不阻断删除（回收站仍是兜底），清掉半成品。
+                log::warn!("audit: delete-with-undo backup SKIPPED error={e}");
+                remove_any(&backup);
+            }
+        }
+    } else {
+        log::info!("audit: delete-with-undo backup SKIPPED (oversize)");
+    }
+
+    // 阶段 2：送回收站。失败则撤掉备份回滚——不留"原文件还在但备份也占着
+    // 盘"的中间态。
+    if let Err(e) = move_to_recycle_bin(path) {
+        if let Some(t) = &ticket {
+            remove_any(&ops.join(t));
+        }
+        return Err(e);
+    }
+
+    // 阶段 3：登记撤销条目；栈超限挤出最旧并释放其物理备份。
+    let registered = ticket.clone();
+    if let Some(t) = registered {
+        let backup = ops.join(&t);
+        let evicted = with_stack(|s| {
+            s.push(UndoEntry {
+                ticket: t.clone(),
+                original_path: path.to_string(),
+                backup_path: backup.clone(),
+            });
+            if s.len() > MAX_UNDO_ENTRIES {
+                Some(s.remove(0)) // 最旧
+            } else {
+                None
+            }
+        });
+        if let Some(old) = evicted {
+            remove_any(&old.backup_path);
+        }
+    }
+    Ok(ticket)
+}
+
+/// 删除到回收站（可撤销）：备份 → 回收 → 登记。
+/// 围栏与 审计沿用 files.rs 的 delete 语义（围栏拒绝/审计成败）。
 #[tauri::command]
 pub async fn delete_with_undo(
     window: tauri::Window,
@@ -182,113 +274,202 @@ pub async fn delete_with_undo(
     path: String,
 ) -> Result<DeleteWithUndoResult, String> {
     crate::require_trusted(&window)?;
-    if let Some(reason) = destructive_path_denied(Path::new(&path)) {
-        log::warn!(
-            "audit: delete-with-undo DENIED window={} path={path:?} reason={reason}",
-            window.label()
-        );
-        return Err(reason.to_string());
-    }
     let label = window.label().to_string();
-    let src = PathBuf::from(&path);
     tauri::async_runtime::spawn_blocking(move || {
         let ops = operations_dir(&app)?;
         purge_orphans(&ops, ORPHAN_TTL);
-
-        // 阶段 1：私有备份（超大/复制失败 → 降级为普通删除，仍可回收站找回）。
-        let mut ticket: Option<String> = None;
-        if tree_size(&src) <= MAX_BACKUP_BYTES {
-            let t = format!(
-                "undo-{}-{}",
-                std::process::id(),
-                TICKET_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            );
-            let backup = ops.join(&t);
-            let mut budget = MAX_BACKUP_BYTES;
-            match copy_tree(&src, &backup, &mut budget, 0) {
-                Ok(()) => ticket = Some(t),
-                Err(e) => {
-                    // 备份失败不阻断删除（回收站仍是兜底），清掉半成品。
-                    log::warn!("audit: delete-with-undo backup SKIPPED error={e}");
-                    let _ = std::fs::remove_dir_all(&backup);
-                }
+        match delete_one_with_undo(&ops, &path) {
+            Ok(ticket) => {
+                let undoable = ticket.is_some();
+                log::info!("audit: delete-with-undo OK window={label} undoable={undoable}");
+                Ok(DeleteWithUndoResult { ticket, undoable })
             }
-        } else {
-            log::info!("audit: delete-with-undo backup SKIPPED (oversize)");
-        }
-
-        // 阶段 2：送回收站（既有路径）。失败则撤掉备份回滚——不留"原文件还在
-        // 但备份也占着盘"的中间态。
-        if let Err(e) = move_to_recycle_bin(&path) {
-            if let Some(t) = &ticket {
-                let _ = std::fs::remove_dir_all(ops.join(t));
-            }
-            log::warn!("audit: delete-with-undo FAIL window={label} error={e}");
-            return Err(e);
-        }
-
-        // 阶段 3：登记撤销条目；栈超限挤出最旧并释放其物理备份。
-        let undoable = ticket.is_some();
-        let result = DeleteWithUndoResult {
-            ticket: ticket.clone(),
-            undoable,
-        };
-        if let Some(t) = ticket {
-            let backup = ops.join(&t);
-            let evicted = with_stack(|s| {
-                s.push(UndoEntry {
-                    ticket: t.clone(),
-                    original_path: path.clone(),
-                    backup_path: backup.clone(),
-                });
-                if s.len() > MAX_UNDO_ENTRIES {
-                    Some(s.remove(0)) // 最旧
-                } else {
-                    None
-                }
-            });
-            if let Some(old) = evicted {
-                let _ = std::fs::remove_dir_all(&old.backup_path);
+            Err(e) => {
+                log::warn!("audit: delete-with-undo FAIL window={label} error={e}");
+                Err(e)
             }
         }
-        log::info!("audit: delete-with-undo OK window={label} undoable={undoable}");
-        Ok(result)
     })
     .await
     .map_err(|e| format!("删除任务失败: {e}"))?
 }
 
-/// E15 撤销删除：私有备份 → 原路径（被占用则唯一化新名）。
+/// 批量删除进度事件载荷（files:delete-batch-progress，emit_filter 受信窗口）。
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BatchProgress<'a> {
+    done: usize,
+    total: usize,
+    current: &'a str,
+    cancelled: bool,
+}
+
+fn emit_batch_progress(app: &tauri::AppHandle, p: BatchProgress<'_>) {
+    // 进度含被删文件名，全局 emit
+    // 会投给任意 WebView（含 web-preview 远程页）——emit_filter 限定受信窗口。
+    let _ = tauri::Emitter::emit_filter(app, "files:delete-batch-progress", p, |win| match win {
+        tauri::EventTarget::WebviewWindow { label }
+        | tauri::EventTarget::Webview { label }
+        | tauri::EventTarget::Window { label }
+        | tauri::EventTarget::AnyLabel { label } => crate::trusted_window(label),
+        _ => false,
+    });
+}
+
+/// 批量删除的单条结果：ticket = 可撤销；cancelled = 用户中止后跳过；两者
+/// 皆空且 error 有值 = 该条失败。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteBatchOutcome {
+    pub path: String,
+    pub ticket: Option<String>,
+    pub error: Option<String>,
+    pub cancelled: bool,
+}
+
+/// 批量删除取消标志（cancel_delete_batch 置位；每批开始时复位）。
+static BATCH_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 取消进行中的批量删除（停止发起后续删除，已完成的保留）。
+#[tauri::command]
+pub async fn cancel_delete_batch(window: tauri::Window) -> Result<(), String> {
+    crate::require_trusted(&window)?;
+    BATCH_CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// 批量删除（单 IPC）：此前前端逐条 invoke——N 次 IPC 往返 + 每条重复
+/// operations_dir/purge_orphans 开销。顺序执行（批量传输语义不变），逐条
+/// 广播进度；取消由 cancel_delete_batch 协作式生效。
+#[tauri::command]
+pub async fn delete_batch_with_undo(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    paths: Vec<String>,
+) -> Result<Vec<DeleteBatchOutcome>, String> {
+    crate::require_trusted(&window)?;
+    let label = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::sync::atomic::Ordering::Relaxed;
+        BATCH_CANCEL.store(false, Relaxed);
+        let ops = operations_dir(&app)?;
+        purge_orphans(&ops, ORPHAN_TTL);
+        let total = paths.len();
+        let mut out = Vec::with_capacity(total);
+        let mut done = 0usize;
+        for p in paths {
+            let current = p.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+            let cancelled = BATCH_CANCEL.load(Relaxed);
+            emit_batch_progress(
+                &app,
+                BatchProgress {
+                    done,
+                    total,
+                    current: &current,
+                    cancelled,
+                },
+            );
+            if cancelled {
+                out.push(DeleteBatchOutcome {
+                    path: p,
+                    ticket: None,
+                    error: None,
+                    cancelled: true,
+                });
+                continue;
+            }
+            match delete_one_with_undo(&ops, &p) {
+                Ok(ticket) => {
+                    if ticket.is_some() {
+                        done += 1;
+                    }
+                    out.push(DeleteBatchOutcome {
+                        path: p,
+                        ticket,
+                        error: None,
+                        cancelled: false,
+                    });
+                }
+                Err(e) => out.push(DeleteBatchOutcome {
+                    path: p,
+                    ticket: None,
+                    error: Some(e),
+                    cancelled: false,
+                }),
+            }
+        }
+        emit_batch_progress(
+            &app,
+            BatchProgress {
+                done,
+                total,
+                current: "",
+                cancelled: BATCH_CANCEL.load(Relaxed),
+            },
+        );
+        log::info!("audit: delete-batch window={label} total={total} done={done}");
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("批量删除任务失败: {e}"))?
+}
+
+/// 撤销删除：私有备份 → 原路径（被占用则唯一化新名）。
 /// 跨卷恢复（备份在 C: 的 APPDATA、原文件在 D:）rename 会失败，回退
 /// 复制后删备份。恢复后父目录不存在（连目录一起删过）则重建。
 #[tauri::command]
 pub async fn undo_delete(window: tauri::Window, ticket: String) -> Result<String, String> {
     crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
+        // （并发认领）：票据先从栈里原子移除再恢复——此前「克隆→成功后才
+        // 弹出」在双击撤销/批量回放与手动撤销并发时，两路都能拿到同一票据，
+        // 交错对同一目标 rename/copy 会写坏恢复结果。认领后失败则原样放回，
+        // 重试仍有据可依；崩溃丢失的票据由孤儿备份 TTL（7 天）兜底。
         let entry = with_stack(|s| {
             s.iter()
                 .position(|e| e.ticket == ticket)
                 .map(|i| s.remove(i))
         });
         let Some(entry) = entry else {
-            return Err("撤销记录不存在或已过期".into());
+            return Err("撤销记录不存在或已在恢复中".into());
         };
         if !entry.backup_path.exists() {
+            // 备份已丢失：票据无意义（认领即弃），报错。
             return Err("备份已丢失（可能被清理）".into());
         }
         let target = unique_destination(Path::new(&entry.original_path));
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("重建目标目录失败: {e}"))?;
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                with_stack(|s| s.push(entry));
+                return Err(format!("重建目标目录失败: {e}"));
+            }
         }
         // 同卷：直接 rename（瞬时、原子）；失败（跨卷/权限）→ 复制 + 删备份。
-        if std::fs::rename(&entry.backup_path, &target).is_err() {
+        let outcome = (|| -> Result<(), String> {
+            if std::fs::rename(&entry.backup_path, &target).is_ok() {
+                return Ok(());
+            }
             let mut budget = u64::MAX;
-            copy_tree(&entry.backup_path, &target, &mut budget, 0)
-                .map_err(|e| format!("恢复失败: {e}"))?;
-            let _ = std::fs::remove_dir_all(&entry.backup_path);
+            if let Err(e) = copy_tree(&entry.backup_path, &target, &mut budget, 0) {
+                // 半恢复残留清理：复制中断会在目标留半棵树——回到「删除后」
+                // 的干净状态，而不是留一个看似恢复完成的残缺文件。
+                remove_any(&target);
+                return Err(format!("恢复失败: {e}"));
+            }
+            remove_any(&entry.backup_path);
+            Ok(())
+        })();
+        match outcome {
+            Ok(()) => {
+                log::info!("audit: undo-delete OK ticket={ticket}");
+                Ok(target.to_string_lossy().into_owned())
+            }
+            Err(e) => {
+                // 恢复失败回滚票据：备份未动，用户重试仍可撤销。
+                with_stack(|s| s.push(entry));
+                Err(e)
+            }
         }
-        log::info!("audit: undo-delete OK ticket={ticket}");
-        Ok(target.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| format!("恢复任务失败: {e}"))?
@@ -351,15 +532,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// 孤儿清理：TTL=0 时清掉不在注册表里的目录，注册表内的保留。
+    /// 孤儿清理：TTL=0 时清掉不在注册表里的目录**与文件**（单文件删除的
+    /// 备份是文件，remove_dir_all 对它无效），注册表内的保留。
     #[test]
     fn purge_orphans_respects_registry_and_ttl() {
         let d = tmp("orphan");
         // 清空注册表状态（测试互斥地持锁）。
         let survivor = d.join("undo-keep");
-        let ghost = d.join("undo-ghost");
+        let ghost_dir = d.join("undo-ghost-dir");
+        let ghost_file = d.join("undo-ghost-file");
         std::fs::create_dir_all(&survivor).unwrap();
-        std::fs::create_dir_all(&ghost).unwrap();
+        std::fs::create_dir_all(&ghost_dir).unwrap();
+        std::fs::write(&ghost_file, b"x").unwrap();
         with_stack(|s| {
             s.clear();
             s.push(UndoEntry {
@@ -370,8 +554,26 @@ mod tests {
         });
         purge_orphans(&d, Duration::ZERO);
         assert!(survivor.exists());
-        assert!(!ghost.exists());
+        assert!(!ghost_dir.exists());
+        assert!(!ghost_file.exists());
         with_stack(|s| s.clear());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// remove_any：文件与目录都能删；不存在的路径不报错。
+    #[test]
+    fn remove_any_handles_file_dir_and_missing() {
+        let d = tmp("rmany");
+        let f = d.join("file-backup");
+        let dir = d.join("dir-backup");
+        std::fs::write(&f, b"x").unwrap();
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        std::fs::write(dir.join("inner/x"), b"x").unwrap();
+        remove_any(&f);
+        remove_any(&dir);
+        remove_any(&d.join("never-existed"));
+        assert!(!f.exists());
+        assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

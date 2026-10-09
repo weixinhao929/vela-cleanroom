@@ -136,6 +136,10 @@ describe("ShortcutFolderPopup 弹层内拖拽", () => {
     expect(ghostInBody()).toHaveTextContent("西表格");
     expect(screen.getByLabelText("西表格")).toHaveStyle({ display: "none" });
 
+    // 幽灵中心对齐当前指针：指针 (10,30)，jsdom 无布局 → 尺寸退化为
+    // offsetWidth/Height = 0，left/top 即指针坐标本身（zoom 默认 1）。
+    expect(ghostInBody()).toHaveStyle({ left: "10px", top: "30px" });
+
     // 松手：提交 childIds 全序（c 插到 a 之前），幽灵随之移除。
     fireWindowPointer("pointerup");
     expect(props.onReorder).toHaveBeenCalledWith(["c", "a", "b"]);
@@ -180,5 +184,26 @@ describe("ShortcutFolderPopup 弹层内拖拽", () => {
     fireEvent.click(item);
     expect(props.onOpenItem).toHaveBeenCalledWith(ITEMS[1]);
     expect(item).not.toHaveStyle({ display: "none" });
+  });
+
+  it("界面缩放（--ui-zoom）下幽灵中心仍对齐指针：left/top 除回缩放系数", () => {
+    stubRects();
+    stubHitTarget("a");
+    document.documentElement.style.setProperty("--ui-zoom", "1.25");
+    try {
+      renderPopup();
+      fireEvent.pointerDown(screen.getByLabelText("西表格"), {
+        button: 0,
+        pointerId: 1,
+        clientX: 10,
+        clientY: 10
+      });
+      // 指针 (10,30)：left = 10/1.25 = 8、top = 30/1.25 = 24（渲染后再乘
+      // zoom，视觉中心回到指针上）。
+      fireWindowPointer("pointermove", { clientX: 10, clientY: 30 });
+      expect(ghostInBody()).toHaveStyle({ left: "8px", top: "24px" });
+    } finally {
+      document.documentElement.style.removeProperty("--ui-zoom");
+    }
   });
 });

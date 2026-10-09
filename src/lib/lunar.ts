@@ -105,6 +105,14 @@ interface LunarDate {
   isLeap: boolean;
 }
 
+/** 农历年表覆盖范围（1900-2100）；越界年份查表会取到 undefined 位段，
+ * 产出 "undefined月" 之类的乱值——调用方据此跳过农历路径。 */
+const LUNAR_MIN_YEAR = 1901;
+const LUNAR_MAX_YEAR = 2099;
+function inLunarRange(y: number): boolean {
+  return y >= LUNAR_MIN_YEAR && y <= LUNAR_MAX_YEAR;
+}
+
 /** 公历转农历（支持 1900-2100）。 */
 function solar2lunar(date: Date): LunarDate {
   const y = date.getFullYear();
@@ -274,11 +282,36 @@ function getSpecialDay(date: Date): HolidayInfo | undefined {
  * ```
  */
 export function getLunarInfo(date: Date): LunarInfo {
+  // 越界守卫：1900 前 / 2100 后查表结果是乱值（此前会显示 "undefined月"）。
+  if (!inLunarRange(date.getFullYear())) {
+    return { lunar: "" };
+  }
+  // 按日期键缓存：月格 42 格每次渲染（点击选中即全网格重算）反复查表 +
+  // 节气换算，静态表无失效问题（1900-2100 固定）。
+  const cacheKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const cached = lunarInfoCache.get(cacheKey);
+  if (cached) return cached;
   const lunar = solar2lunar(date);
   const lunarText =
     lunar.day === 1 ? `${lunar.isLeap ? "闰" : ""}${lunarMonthNames[lunar.month - 1]}月` : lunarDayNames[lunar.day - 1];
   const term = getSolarTerm(date);
-  return term ? { lunar: lunarText, term } : { lunar: lunarText };
+  const info = term ? { lunar: lunarText, term } : { lunar: lunarText };
+  lunarInfoCache.set(cacheKey, info);
+  return info;
+}
+
+/** getLunarInfo 的日期键缓存（农历/节气为静态表，缓存不过期）。 */
+const lunarInfoCache = new Map<string, LunarInfo>();
+
+/** solar2lunar 的日期键缓存（getHoliday 的农历节日分支共用）。 */
+const lunarDateCache = new Map<string, LunarDate>();
+function solar2lunarCached(date: Date): LunarDate {
+  const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const hit = lunarDateCache.get(key);
+  if (hit) return hit;
+  const res = solar2lunar(date);
+  lunarDateCache.set(key, res);
+  return res;
 }
 
 /**
@@ -296,19 +329,22 @@ export function getLunarInfo(date: Date): LunarInfo {
  * ```
  */
 export function getHoliday(date: Date): HolidayInfo | undefined {
-  // W-018 远程节假日优先：在线更新的放假日覆盖内置表（跨年不发版可更新）。
+  // 远程节假日优先：在线更新的放假日覆盖内置表（跨年不发版可更新）。
   // 只覆盖放假日（mark=休）；调休上班日的「班」标记由课表侧 remote 数据渲染。
   const remote = remoteHoliday(
     `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
   );
   if (remote?.off) return { name: remote.name || "法定节假日", mark: "休" };
 
-  const lunar = solar2lunar(date);
-  const lunarHoliday = LUNAR_HOLIDAYS[`${lunar.month}-${lunar.day}`];
-  if (lunarHoliday) return lunarHoliday;
+  // 越界守卫：范围外不做农历匹配（solar2lunar 结果是乱值），固定公历节日照常。
+  if (inLunarRange(date.getFullYear())) {
+    const lunar = solar2lunarCached(date);
+    const lunarHoliday = LUNAR_HOLIDAYS[`${lunar.month}-${lunar.day}`];
+    if (lunarHoliday) return lunarHoliday;
 
-  const term = getSolarTerm(date);
-  if (term === "清明") return { name: "清明节", mark: "休" };
+    const term = getSolarTerm(date);
+    if (term === "清明") return { name: "清明节", mark: "休" };
+  }
 
   const fixed = FIXED_HOLIDAYS[`${date.getMonth() + 1}-${date.getDate()}`];
   if (fixed) return fixed;

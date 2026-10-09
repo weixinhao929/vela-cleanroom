@@ -23,13 +23,16 @@ import {
   cumulativeStatsFromAgg,
   splitSessionsByDay,
   todayInterruptions,
-  isSameDay,
-  type FocusAggregate
+  virtualDayKey
 } from "../../domain/analytics";
-import { isTauri } from "../../lib/tauri";
+import { useFocusAggregate } from "../../lib/focus-aggregate";
 import { animDurations } from "../../lib/durations";
-import { sqliteRepo } from "../../lib/persistence/sqlite";
-import { INTERRUPTION_REASONS, type InterruptionReason, type PomodoroDialTheme } from "../../domain/pomodoro";
+import {
+  INTERRUPTION_REASONS,
+  countupGoalSeconds,
+  type InterruptionReason,
+  type PomodoroDialTheme
+} from "../../domain/pomodoro";
 import {
   AMBIENCE_KINDS,
   isAmbiencePlaying,
@@ -40,14 +43,14 @@ import {
   type AmbienceKind,
   type AmbiencePrefs
 } from "../../lib/ambience";
-import { useAppStore } from "../../store/app-store";
+import { getSegmentPlannedSeconds, hasFocusSegmentAnchor, useAppStore } from "../../store/app-store";
 import { useSettingsStore } from "../../store/settings-store";
 import { useWidgetConfig } from "../../widget/widget-config";
 import { useT } from "../../i18n-lite";
 import { pushAppToast } from "../../components/ToastHost";
 import { useDelayedUnmount } from "../../lib/anim";
 import { persistMirrored } from "../../lib/local-backup";
-import { dayKeyOf, dayKeyToDate, useNow } from "../../lib/use-now";
+import { dayKeyOf, useNow } from "../../lib/use-now";
 import { useTransientFlag } from "../../lib/use-transient-flag";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
 
@@ -83,10 +86,12 @@ function ConfigStepper({
     <div className="pomodoro-config-field">
       {label && <span className="pomodoro-config-label">{label}</span>}
       <div className="pomodoro-stepper">
+        {/* 输入框与按钮带 label 的可访问名称——面板里三组步进器此前
+            是 3 个无名输入框 + 6 个无法区分的「减少/增加」。 */}
         <button
           className="pomodoro-stepper-btn"
           onClick={() => onChange(Math.max(min, value - 1))}
-          aria-label={tr("减少")}
+          aria-label={label ? `${label} ${tr("减少")}` : tr("减少")}
           type="button"
         >
           <Minus size={13} />
@@ -103,6 +108,7 @@ function ConfigStepper({
                 (e.target as HTMLInputElement).blur();
               }
             }}
+            aria-label={label}
             inputMode="numeric"
             autoComplete="off"
           />
@@ -111,7 +117,7 @@ function ConfigStepper({
         <button
           className="pomodoro-stepper-btn"
           onClick={() => onChange(Math.min(max, value + 1))}
-          aria-label={tr("增加")}
+          aria-label={label ? `${label} ${tr("增加")}` : tr("增加")}
           type="button"
         >
           <Plus size={13} />
@@ -122,7 +128,7 @@ function ConfigStepper({
 }
 
 /** 专注表盘：柔和光晕 + 精细刻度 + 渐变进度弧 + 光点端点 + 今日轮次圆点，运行中轻呼吸。 */
-function FocusTimer({
+function FocusDial({
   seconds,
   progress,
   running,
@@ -187,7 +193,7 @@ function FocusTimer({
   // 今日专注轮次圆点：最多显示 8 个，超出显示 +N。
   const dots = Array.from({ length: Math.min(8, Math.max(0, sessionCount)) }, (_, i) => i);
 
-  /* #98 完成庆祝：sessionCount +1 时挂 .celebrate 850ms —— 满环高亮脉冲 + 轻量粒子；
+  /* 完成庆祝：sessionCount +1 时挂 .celebrate 850ms —— 满环高亮脉冲 + 轻量粒子；
      #100 新 dot：同刻最后一个圆点 scale-in + 光环，+N 轻微跳动（em key 重建驱动）。 */
   const prevCount = useRef(sessionCount);
   const [celebrating, setCelebrating] = useState(false);
@@ -203,7 +209,7 @@ function FocusTimer({
     prevCount.current = sessionCount;
   }, [sessionCount, safeTimeout]);
 
-  /* #102 结束并记录：正计时秒数骤降归零时，时间数字做一次回卷收缩。 */
+  /* 结束并记录：正计时秒数骤降归零时，时间数字做一次回卷收缩。 */
   const prevSecs = useRef(seconds);
   const [rewinding, setRewinding] = useState(false);
   useEffect(() => {
@@ -264,8 +270,8 @@ function FocusTimer({
         )}
       </svg>
       {celebrating && (
-        /* #98 轻量庆祝粒子：14 颗 accent 同色系圆点从表盘中心向外飞散，一次播完即卸载。
-           D7（质感升级）：注入角度抖动 / 距离 / 自旋 / 时长的连续随机量——
+        /* 轻量庆祝粒子：14 颗 accent 同色系圆点从表盘中心向外飞散，一次播完即卸载。
+           （质感升级）：注入角度抖动 / 距离 / 自旋 / 时长的连续随机量——
            此前每次庆祝轨迹完全一致，观感机械。 */
         <span className="ft-confetti" aria-hidden="true">
           {Array.from({ length: 14 }, (_, i) => (
@@ -300,7 +306,12 @@ function FocusTimer({
           <b className={running && isBreak ? "phase-break" : ""}>{phaseLabel}</b>
           <span>{tr("目标 {n} 分钟", { n: targetMinutes })}</span>
         </span>
-        <span className="focus-timer-sessions" title={tr("今日已专注 {n} 轮", { n: sessionCount })}>
+        {/* 轮次圆点全是空 <i>，信息补一份 aria-label（title 键盘/触屏不可达）。 */}
+        <span
+          className="focus-timer-sessions"
+          title={tr("今日已专注 {n} 轮", { n: sessionCount })}
+          aria-label={tr("今日已专注 {n} 轮", { n: sessionCount })}
+        >
           {dots.map((i) => (
             <i key={i} className={`${i === 0 ? "first" : ""}${freshDot && i === dots.length - 1 ? " fresh" : ""}`} />
           ))}
@@ -362,7 +373,7 @@ function TimerDial({
         }
       }}
     >
-      <FocusTimer
+      <FocusDial
         seconds={totalSeconds}
         progress={progress}
         running={isRunning}
@@ -445,18 +456,18 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
   const [countupGoalDraft, setCountupGoalDraft] = useState(config.countupGoalMinutes ?? 0);
   const [showNoEventWarning, setShowNoEventWarning] = useState(false);
   const [eventOpen, setEventOpen] = useState(false);
-  /* D3：事件下拉对称退场（入场有错落，收起此前瞬关）。 */
+  /* 事件下拉对称退场（入场有错落，收起此前瞬关）。 */
   const eventVisible = useDelayedUnmount(eventOpen && !isRunning, animDurations().fxFastMs);
   const eventClosing = !eventOpen && eventVisible;
   const [eventQuery, setEventQuery] = useState("");
 
-  /* #96 启动脉冲：isRunning 变 true 的一刻，表盘整体亮度脉冲一次 */
+  /* 启动脉冲：isRunning 变 true 的一刻，表盘整体亮度脉冲一次 */
   const startedPulse = useTransientFlag(isRunning, 620, "rise");
 
-  /* #97 阶段换色：mode 变化时表盘播一次满环扩散光波（颜色过渡由 CSS 承担） */
+  /* 阶段换色：mode 变化时表盘播一次满环扩散光波（颜色过渡由 CSS 承担） */
   const phaseWave = useTransientFlag(mode, 720);
 
-  /* #102 结束并记录：点击时刻表盘绿色确认脉冲 + 停止按钮缩放退场 */
+  /* 结束并记录：点击时刻表盘绿色确认脉冲 + 停止按钮缩放退场 */
   const [stopPulse, setStopPulse] = useState(false);
   const [stopExiting, setStopExiting] = useState(false);
   const handleStopCountup = () => {
@@ -470,63 +481,68 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
     .filter(Boolean)
     .join(" ");
 
+  /* （草稿被无关操作冲掉）：依赖收敛到草稿真正映射的字段——此前依赖整个
+   * config 对象，勾「自动下一轮」/ 切目标方式（都产生新 config 引用）会把
+   * 弹层里未提交的草稿静默重置回已存值。 */
   useEffect(() => {
     setFocusDraft(config.focusMinutes);
     setGoalModeDraft(config.dailyGoalMode ?? "sessions");
     setGoalDraft(config.dailyGoalSessions ?? 8);
     setGoalMinutesDraft(config.dailyGoalMinutes ?? 120);
     setCountupGoalDraft(config.countupGoalMinutes ?? 0);
-  }, [config]);
+  }, [
+    config.focusMinutes,
+    config.dailyGoalMode,
+    config.dailyGoalSessions,
+    config.dailyGoalMinutes,
+    config.countupGoalMinutes
+  ]);
+
+  // 虚拟午夜口径（0/2/4），与 SQL 聚合共用同一设置值。
+  const vmHour = useSettingsStore((s) => s.extra.virtualMidnightHour ?? 0);
 
   const nowTick = useNow();
-  // E-dayKey：统计只关心「今天是哪天」，依赖归约为天粒度 todayKey，
-  // 不再随 30s tick 整面板重算；跨零点翻新语义（A-13）由 todayKey 变化保留。
-  const todayKey = dayKeyOf(nowTick);
+  // 统计的「今天」以当前墙钟所属的虚拟日为准。
+  // 此前拿 dayKeyToDate(todayKey)=当天零点当 now——vmHour>0 时零点属于昨天
+  // 的虚拟日，isSameVirtualDay 把「今日」整体错位成昨天（今天上午的段全部
+  // 漏计、昨天 04:00 后的段反而计入）。依赖同样换成虚拟日键：自然日键在
+  // 00:00 翻转而虚拟日在 04:00 翻转，否则跨虚拟午夜不会触发重算。
+  const todayKey = vmHour > 0 ? virtualDayKey(nowTick, vmHour) : dayKeyOf(nowTick);
 
   // 累计统计走 SQLite 全量按日聚合（与 AnalyticsPanel 同口径）：内存 sessions
   // 有 SESSIONS_CAP=500 截断，长期用户的「累计专注/天数」会被截掉；聚合加载
-  // 失败（浏览器模式/首次未就绪）回退内存口径。刷新键用尾条 session id：
-  // 截断后 length 恒为 500，内容变化不再可见。
-  const native = isTauri();
-  const [focusAgg, setFocusAgg] = useState<FocusAggregate | null>(null);
-  const lastSessionId = sessions.length > 0 ? sessions[sessions.length - 1].id : "";
-  // FocusTimer 借鉴：虚拟午夜口径（0/2/4），与 SQL 聚合共用同一设置值。
-  const vmHour = useSettingsStore((s) => s.extra.virtualMidnightHour ?? 0);
-  useEffect(() => {
-    if (!native) return;
-    let cancelled = false;
-    sqliteRepo
-      .aggregateSessions(vmHour)
-      .then((agg) => {
-        if (!cancelled) setFocusAgg(agg);
-      })
-      .catch(() => {
-        // 回退内存口径，不让面板报错。
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [native, lastSessionId, vmHour]);
+  // 失败（浏览器模式/首次未就绪）回退内存口径。（竞态+去重）：改用与统计
+  // 面板共享的钩子——写落地信号（dbVersion）补读、双面板单次 IPC、失败回退
+  // 新鲜内存而非旧 SQL 快照。
+  const focusAgg = useFocusAggregate(vmHour);
   // 内存口径统一先按虚拟午夜切分（#12），与 SQL 聚合归日结果一致。
   const memSessions = useMemo(() => splitSessionsByDay(sessions, vmHour), [sessions, vmHour]);
 
   const stats = useMemo(() => {
-    // 以 todayKey 对应当地零点为「现在」：同日比较与累计天数在零点翻转后
-    // 由依赖变化触发重算，结果与用实时墙钟完全一致。
-    const now = dayKeyToDate(todayKey) ?? new Date();
-    const todayFocusSessions = memSessions.filter((s) => {
-      if (s.type !== "focus" || !s.completed) return false; // A-36：轮数与时长统一按「已完成」口径
-      const d = new Date(s.endedAt);
-      return !Number.isNaN(d.getTime()) && isSameDay(d, now);
+    // now 用真实墙钟（不再是零点代理）——同虚拟日比较在每个时刻都正确，
+    // 跨虚拟午夜由 todayKey 依赖变化触发重算。
+    const now = new Date();
+    // 归日锚点从 endedAt 改为 startedAt 的虚拟日键——
+    // 与统计面板 / Rust 聚合「按段起始虚拟日归组」的统一规则一致。此前
+    // 两面板一个按结束、一个按起始，跨午夜段在两处算出不同的「今日时长」。
+    // 分钟=今日实际净专注时长（含未完成段）；轮数（todayFocusCount）保持
+    // 的仅完成口径——「时长」衡量真实投入，「轮数」衡量完整段。
+    const todayKey = virtualDayKey(now, vmHour);
+    const todayFocus = memSessions.filter((s) => {
+      if (s.type !== "focus") return false;
+      const started = new Date(s.startedAt);
+      return !Number.isNaN(started.getTime()) && virtualDayKey(started, vmHour) === todayKey;
     });
     const cum = focusAgg
       ? cumulativeStatsFromAgg(focusAgg, now, analyticsStartDate)
-      : cumulativeStats(memSessions, now, analyticsStartDate);
-    const todayInterrupt = todayInterruptions(interruptions, now);
-    const todayFocusCount = todayFocusSessions.length;
-    const todayFocusMinutes = todayFocusSessions.reduce((acc, s) => acc + s.plannedSeconds, 0) / 60;
+      : cumulativeStats(memSessions, now, analyticsStartDate, vmHour);
+    const todayInterrupt = todayInterruptions(interruptions, now, vmHour);
+    const todayFocusCount = todayFocus.filter((s) => s.completed).length;
+    const todayFocusMinutes = todayFocus.reduce((acc, s) => acc + s.plannedSeconds, 0) / 60;
     return { cum, todayInterrupt, todayFocusCount, todayFocusMinutes };
-  }, [memSessions, interruptions, analyticsStartDate, todayKey, focusAgg]);
+    // todayKey 是跨虚拟午夜的重算触发器（useMemo 内的 new Date() 不直接引用它）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memSessions, interruptions, analyticsStartDate, todayKey, focusAgg, vmHour]);
 
   // 游戏时暂停由 App 层的 GlobalGamePause 统一处理，保证小组件隐藏时
   // 计时器仍会随全屏游戏自动暂停（此处不再重复挂载，避免双重切换）。
@@ -540,7 +556,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
     return null;
   }, [currentTaskId, selectedEventLabel, tasks]);
 
-  /* #101 目标达成时刻：reached 从 false 翻 true 的一瞬，目标行整体 celebrate 一次 */
+  /* 目标达成时刻：reached 从 false 翻 true 的一瞬，目标行整体 celebrate 一次 */
   /* 每日目标：轮数 / 时长双口径，进度与达成判定跟随当前口径。 */
   const activeGoalMode = config.dailyGoalMode ?? "sessions";
   const goalSessions = config.dailyGoalSessions ?? 0;
@@ -549,11 +565,35 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
   const goalDone = activeGoalMode === "minutes" ? Math.round(stats.todayFocusMinutes) : stats.todayFocusCount;
   const goalUnitLabel = activeGoalMode === "minutes" ? tr("分") : tr("轮");
   const goalReached = goalTarget > 0 && goalDone >= goalTarget;
-  /* #101 目标达成时刻：reached 从 false 翻 true 的一瞬，目标行整体 celebrate 一次 */
+  /* 目标达成时刻：reached 从 false 翻 true 的一瞬，目标行整体 celebrate 一次 */
   const goalHit = useTransientFlag(goalReached, 950, "rise");
 
-  /* #112 中断弹层退场：关闭/选中后保留 150ms 播缩放淡出；选中原因先高亮再收起 */
-  const interruptOpen = showInterrupt && isRunning;
+  /* 中断弹层退场：关闭/选中后保留 150ms 播缩放淡出；选中原因先高亮再收起 */
+  /* （暂停态中断）：store 的 interruptPomodoro 已支持暂停中的段；这里提供
+   * 对应的显示条件。布尔 selector 输出稳定（运行中恒 false、暂停中恒 true），
+   * 不会随每秒 tick 重渲整面板。启发式：倒计时剩余 < 满额即视为「暂停在有
+   * 进度的段」（全新段 remaining === planned，不显示）。 */
+  const pausedMidFocus = useAppStore((s) => {
+    if (
+      s.pomodoro.mode !== "focus" ||
+      s.pomodoro.timerMode !== "countdown" ||
+      s.pomodoro.isRunning ||
+      s.pomodoro.remainingSeconds <= 0
+    ) {
+      return false;
+    }
+    // 用**段首计划**（±加时）口径判定「暂停在有进度的段」——此前与
+    // 当前配置 focusMinutes 比较，暂停期间热更配置（如调小时长）会让按钮
+    // 凭空消失/误现。段首计划在暂停瞬间与冻结剩余一同定格，比较稳定。
+    // planned==null 只兼容「暂停段但锚点缺失」的旧快照，无段空闲态
+    // 同样返回 null——必须先确认锚点在位，否则空闲态误显死按钮。
+    const planned = getSegmentPlannedSeconds();
+    return hasFocusSegmentAnchor() && (planned == null || s.pomodoro.remainingSeconds < planned);
+  });
+  // store 的 interruptPomodoro 只接受 focus 段——休息运行中此前按钮
+  // 照常可点但 store no-op（计时继续、无记录、无提示）。
+  const canInterrupt = mode === "focus" && (isRunning || pausedMidFocus) && timerMode === "countdown";
+  const interruptOpen = showInterrupt && (isRunning || pausedMidFocus);
   const interruptVisible = useDelayedUnmount(interruptOpen, animDurations().fxFastMs);
   const interruptClosing = !interruptOpen && interruptVisible;
   const [pickedReason, setPickedReason] = useState<InterruptionReason | null>(null);
@@ -599,14 +639,31 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
     if (selectedEventLabel === ev) selectEvent(null, null);
   };
 
-  const planned = Math.max(1, config.focusMinutes * 60);
-  // 当前阶段的目标时长（分钟）：休息阶段显示对应休息时长，而非固定专注时长。
+  // 进度环分母按当前阶段取时长（此前恒为专注时长——25+5 配置下短休
+  // 开始瞬间环就显示 ~80%）。与 PomodoroMini 的 plannedSecondsFor 同口径；
+  // 正计时（countup）的分母统一为 目标分钟（0 = 跟随专注时长）——
+  // 此前主面板用 focusMinutes、迷你环用恒为 0 的 countupGoalMinutes，
+  // 同一计时器两处呈现语义不同（迷你环永不填充）。
+  const planned = Math.max(
+    1,
+    mode === "shortBreak"
+      ? config.shortBreakMinutes * 60
+      : mode === "longBreak"
+        ? config.longBreakMinutes * 60
+        : timerMode === "countup"
+          ? countupGoalSeconds(config)
+          : config.focusMinutes * 60
+  );
+  // 当前阶段的目标时长（分钟）：休息阶段显示对应休息时长；正计时显示
+  // 正计时目标（0 = 跟随专注时长），而非固定专注时长。
   const targetMinutes =
     mode === "shortBreak"
       ? config.shortBreakMinutes
       : mode === "longBreak"
         ? config.longBreakMinutes
-        : config.focusMinutes;
+        : timerMode === "countup"
+          ? Math.round(countupGoalSeconds(config) / 60)
+          : config.focusMinutes;
 
   const applyConfig = () => {
     // 运行中应用配置**不会**重置当前段（app-store.setPomodoroConfig：只更新配置
@@ -677,6 +734,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
               className={`pomodoro-seg-btn${mode === m ? " active" : ""}`}
               onClick={() => setMode(m)}
               disabled={isRunning || timerMode === "countup"}
+              aria-pressed={mode === m}
               title={isRunning ? tr("计时中无法切换") : timerMode === "countup" ? tr("正计时模式下仅支持专注") : label}
             >
               {label}
@@ -689,6 +747,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
             className={timerMode === "countdown" ? "active" : ""}
             onClick={() => setTimerMode("countdown")}
             disabled={isRunning}
+            aria-pressed={timerMode === "countdown"}
             title={isRunning ? tr("计时中无法切换") : tr("倒计时")}
           >
             {tr("倒计时")}
@@ -698,6 +757,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
             className={timerMode === "countup" ? "active" : ""}
             onClick={() => setTimerMode("countup")}
             disabled={isRunning}
+            aria-pressed={timerMode === "countup"}
             title={isRunning ? tr("计时中无法切换") : tr("正计时")}
           >
             {tr("正计时")}
@@ -736,57 +796,93 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
                     value={eventQuery}
                     onChange={(e) => setEventQuery(e.target.value)}
                     placeholder={tr("搜索或新建事件…")}
+                    aria-label={tr("搜索或新建事件…")}
                     autoFocus
                     data-interactive
                   />
                 </div>
 
-                <div className="pomodoro-event-list" role="listbox" aria-label={tr("选择专注事件")}>
-                  {selectableEvents
-                    .filter((ev) => ev.label.toLowerCase().includes(eventQuery.trim().toLowerCase()))
-                    .map((ev) => {
-                      const active = ev.kind === "task" ? currentTaskId === ev.key : selectedEventLabel === ev.key;
-                      const pick = () => {
-                        selectById(ev.key);
-                        setEventOpen(false);
-                        setEventQuery("");
-                      };
-                      return (
-                        <div
-                          key={`${ev.kind}-${ev.key}`}
-                          role="option"
-                          aria-selected={active}
-                          tabIndex={0}
-                          className={`pomodoro-event-item${active ? " active" : ""}`}
-                          onClick={pick}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              e.preventDefault();
-                              pick();
-                            }
-                          }}
-                        >
-                          <span className="pomodoro-event-item-check">{active && <Check size={11} />}</span>
-                          <span className="pomodoro-event-item-label">{ev.label}</span>
-                          {ev.kind === "custom" && (
-                            /* 真实按钮：与选项本体平级（button 内不能再嵌 button），
-                               键盘可达，删除不再依赖 role=button 假按钮。 */
-                            <button
-                              type="button"
-                              className="pomodoro-chip-x"
-                              aria-label={tr("删除该事件")}
-                              title={tr("删除该事件")}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeCustomEvent(ev.key);
+                {/* 方向键在选项间移动焦点（listbox 键盘模式）：渲染
+                    上限 60 行 + 「还有 N 项」提示，任务数百条时不再全量建 DOM。 */}
+                <div
+                  className="pomodoro-event-list"
+                  role="listbox"
+                  aria-label={tr("选择专注事件")}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+                    e.preventDefault();
+                    const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'));
+                    if (items.length === 0) return;
+                    const idx = items.indexOf(document.activeElement as HTMLElement);
+                    const next =
+                      e.key === "ArrowDown"
+                        ? items[(idx + 1 + items.length) % items.length]
+                        : items[(idx - 1 + items.length) % items.length];
+                    next?.focus();
+                  }}
+                >
+                  {(() => {
+                    const EVENT_LIST_CAP = 60;
+                    const filtered = selectableEvents.filter((ev) =>
+                      ev.label.toLowerCase().includes(eventQuery.trim().toLowerCase())
+                    );
+                    const hidden = Math.max(0, filtered.length - EVENT_LIST_CAP);
+                    const isActiveEv = (ev: { kind: string; key: string }) =>
+                      ev.kind === "task" ? currentTaskId === ev.key : selectedEventLabel === ev.key;
+                    /* （残留）：roving tabindex——仅当前项（无当前项时首项）
+                       进 Tab 序，其余 -1；键盘用户经一个停靠点进入后全程方向键。 */
+                    const anyActive = filtered.slice(0, EVENT_LIST_CAP).some(isActiveEv);
+                    return (
+                      <>
+                        {filtered.slice(0, EVENT_LIST_CAP).map((ev, i) => {
+                          const active = isActiveEv(ev);
+                          const pick = () => {
+                            selectById(ev.key);
+                            setEventOpen(false);
+                            setEventQuery("");
+                          };
+                          return (
+                            <div
+                              key={`${ev.kind}-${ev.key}`}
+                              role="option"
+                              aria-selected={active}
+                              tabIndex={active || (!anyActive && i === 0) ? 0 : -1}
+                              className={`pomodoro-event-item${active ? " active" : ""}`}
+                              onClick={pick}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  pick();
+                                }
                               }}
                             >
-                              <X size={10} />
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
+                              <span className="pomodoro-event-item-check">{active && <Check size={11} />}</span>
+                              <span className="pomodoro-event-item-label">{ev.label}</span>
+                              {ev.kind === "custom" && (
+                                /* 真实按钮：与选项本体平级（button 内不能再嵌 button），
+                                   键盘可达，删除不再依赖 role=button 假按钮。 */
+                                <button
+                                  type="button"
+                                  className="pomodoro-chip-x"
+                                  aria-label={tr("删除该事件")}
+                                  title={tr("删除该事件")}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeCustomEvent(ev.key);
+                                  }}
+                                >
+                                  <X size={10} />
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {hidden > 0 && (
+                          <div className="pomodoro-event-empty">{tr("还有 {n} 项未显示", { n: hidden })}</div>
+                        )}
+                      </>
+                    );
+                  })()}
                   {selectableEvents.length === 0 && (
                     <div className="pomodoro-event-empty">{tr("还没有事件，在下方新建一个吧。")}</div>
                   )}
@@ -855,7 +951,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
         <button className="icon-button" onClick={reset} aria-label={tr("重置")} title={tr("重置")}>
           <RotateCcw size={16} />
         </button>
-        {/* FocusTimer 借鉴（extend/rewind）：运行中 ±5 分钟（倒计时剩余保底 10s） */}
+        {/* （extend/rewind）：运行中 ±5 分钟（倒计时剩余保底 10s） */}
         {isRunning && (
           <>
             <button
@@ -877,7 +973,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
           </>
         )}
         <button className="primary-button" onClick={handleToggle}>
-          {/* #96 图标旋转交叉淡切：key 切换触发重建动画 */}
+          {/* 图标旋转交叉淡切：key 切换触发重建动画 */}
           <span key={isRunning ? "pause" : "play"} className="pb-ico">
             {isRunning ? <Pause size={16} /> : <Play size={16} fill="currentColor" />}
           </span>
@@ -893,12 +989,12 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
             <Square size={16} />
           </button>
         )}
-        {isRunning && timerMode === "countdown" && (
+        {canInterrupt && (
           <button
             className={`icon-button${showInterrupt ? " active" : ""}`}
             onClick={() => setShowInterrupt((v) => !v)}
             aria-label={tr("记录中断")}
-            title={tr("记录中断原因")}
+            title={isRunning ? tr("记录中断原因") : tr("放弃本次专注并记录原因")}
           >
             <Flag size={16} />
           </button>
@@ -946,7 +1042,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
           <ChevronDown size={12} className={`pomodoro-config-caret${showConfig ? " open" : ""}`} />
           <span className="pomodoro-config-toggle">{showConfig ? tr("收起") : tr("展开")}</span>
         </div>
-        {/* 折叠改常驻挂载 + grid-rows 0fr→1fr（同 W-151 范式）：caret 已暗示
+        {/* 折叠改常驻挂载 + grid-rows 0fr→1fr（同 范式）：caret 已暗示
             会动，内容硬切是期望违背；inert 保证收起后不可聚焦、对 AT 隐藏。 */}
         <div className={`pomodoro-config-wrap${showConfig ? " open" : ""}`} inert={!showConfig}>
           <div className="pomodoro-config-clip">
@@ -967,6 +1063,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
                       type="button"
                       className={goalModeDraft === "sessions" ? "active" : ""}
                       onClick={() => setGoalModeDraft("sessions")}
+                      aria-pressed={goalModeDraft === "sessions"}
                     >
                       {tr("轮数")}
                     </button>
@@ -974,12 +1071,14 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
                       type="button"
                       className={goalModeDraft === "minutes" ? "active" : ""}
                       onClick={() => setGoalModeDraft("minutes")}
+                      aria-pressed={goalModeDraft === "minutes"}
                     >
                       {tr("时长")}
                     </button>
                   </div>
                   {goalModeDraft === "sessions" ? (
                     <ConfigStepper
+                      label={tr("每日目标")}
                       value={goalDraft}
                       unit={tr("轮")}
                       min={0}
@@ -988,6 +1087,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
                     />
                   ) : (
                     <ConfigStepper
+                      label={tr("每日目标")}
                       value={goalMinutesDraft}
                       unit={tr("分")}
                       min={0}
@@ -1006,6 +1106,21 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
                     ? tr("按今日专注时长计，0 为不设目标")
                     : tr("设为 0 表示不设目标、隐藏进度条")}
               </p>
+              {/* （救活）：正计时目标此前只有草稿状态、没有任何输入控件，
+                  countupGoalMinutes 永远停留在默认值 0（=跟随专注时长），设置形同虚设。 */}
+              <ConfigStepper
+                label={tr("正计时目标")}
+                value={countupGoalDraft}
+                unit={tr("分")}
+                min={0}
+                max={240}
+                onChange={(v) => setCountupGoalDraft(v)}
+              />
+              <p className="pomodoro-config-hint">
+                {countupGoalDraft > 0
+                  ? tr("正计时每达到该分钟数的整数倍提醒一次")
+                  : tr("正计时目标设为 0 表示跟随专注时长")}
+              </p>
               <div className="pomodoro-config-actions">
                 <label className="pomodoro-config-toggle-inline" title={tr("倒计时结束后自动开始下一轮专注")}>
                   <span>{tr("自动下一轮")}</span>
@@ -1019,7 +1134,7 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
                   {tr("应用")}
                 </button>
               </div>
-              {/* FocusTimer 借鉴：专注环境音（媒体在播时自动让位，见 ambience.ts） */}
+              {/* 专注环境音（媒体在播时自动让位，见 ambience.ts） */}
               <div className="pomodoro-config-field">
                 <span className="pomodoro-config-label">{tr("环境音")}</span>
                 <div className="pomodoro-ambience" role="group" aria-label={tr("环境音")}>
@@ -1078,16 +1193,18 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
                   <button
                     type="button"
                     className={activeGoalMode === "sessions" ? "on" : ""}
-                    onClick={() => setConfig({ dailyGoalMode: "sessions" })}
+                    onClick={() => setConfig({ ...config, dailyGoalMode: "sessions" })}
                     title={tr("按专注轮数计")}
+                    aria-pressed={activeGoalMode === "sessions"}
                   >
                     {tr("轮数")}
                   </button>
                   <button
                     type="button"
                     className={activeGoalMode === "minutes" ? "on" : ""}
-                    onClick={() => setConfig({ dailyGoalMode: "minutes" })}
+                    onClick={() => setConfig({ ...config, dailyGoalMode: "minutes" })}
                     title={tr("按专注时长计")}
+                    aria-pressed={activeGoalMode === "minutes"}
                   >
                     {tr("时长")}
                   </button>
@@ -1153,9 +1270,11 @@ export function PomodoroPanel({ instanceId }: { instanceId: string }) {
 }
 
 function fmtDuration(minutes: number, tr: (s: string) => string): string {
-  if (minutes < 60) return `${Math.round(minutes)}${tr("分")}`;
-  const h = Math.floor(minutes / 60);
-  const m = Math.round(minutes % 60);
+  // 先取整再分支：59.5-59.9 分直接 round 会得「60分」而不是进位「1小时」。
+  const r = Math.round(minutes);
+  if (r < 60) return `${r}${tr("分")}`;
+  const h = Math.floor(r / 60);
+  const m = r % 60;
   // 与 Analytics fmtDur 同约定：中文「75小时24分」，en 由 tr 出「h/m」。
   return m ? `${h}${tr("小时")}${m}${tr("分")}` : `${h}${tr("小时")}`;
 }

@@ -3,12 +3,14 @@
  *
  * 消费方式：settings → 动画 → 动效模式选「增强」后 html 挂 data-fx="1"，
  * 本文件所有规则即时生效；「标准」/「减少动态」/ 系统偏好生效时全部回到
- * 基线（feature-animations.css）样式。收录动效语言：
+ * 基线（feature-animations.css）样式。参考 .dev 的动效语言：
  * Star Border / Shiny Text / Aurora / Dot Grid / Spotlight / Magnet /
  * Blur Text / Letter Pullup / Animated List / Decrypt Text / Count Up /
  * Circular Text / Glow Pulse / Elastic Toggle / Liquid Divider /
  * Ribbed Button / Breathing Bar，全部纯 CSS（+ fx.tsx 少量 JS），
  * 不引入运行时依赖。
+ *
+ * 参考来源：https://www..dev/
  */
 
 /* ────────────────────────────────────────────────
@@ -24,7 +26,7 @@ html[data-fx="1"] {
   --fx-star-1: var(--accent);
   --fx-star-2: var(--accent-2);
   --fx-shine: color-mix(in srgb, var(--ink) 12%, #ffffff);
-  /* 弹性/出 entering 曲线一律消费 A3 契约 token（--ease-spring / --ease-out），
+  /* 弹性/出 entering 曲线一律消费 契约 token（--ease-spring / --ease-out），
      不再定义值相同的本地别名 —— 同一曲线只允许一个 token 名。 */
 }
 
@@ -42,7 +44,7 @@ html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tt-preview-ok {
   z-index: 0;
 }
 
-/* #80 装饰层常驻（默认 opacity:0），data-fx=1 时点亮 —— 切换动效模式时
+/* 装饰层常驻（默认 opacity:0），data-fx=1 时点亮 —— 切换动效模式时
    流光边框以 .35s 渐显渐隐，而不是瞬现/瞬消。
    四.2：侧栏/分段项的伪元素创建从 .active 选择器提升到 data-fx 门——
    原「.active 才创建伪元素」让 opacity:0 起点不存在，点亮/熄灭的渐显
@@ -79,7 +81,7 @@ html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-segmented-item::after,
   transition: opacity var(--dur-spatial-fast, 0.35s) var(--ease-fx, ease);
 }
 
-/* 点亮与旋转分两条（P1 三轮）：旋转是 @property 插值 conic-gradient 的常驻
+/* 点亮与旋转分两条（三轮）：旋转是 @property 插值 conic-gradient 的常驻
    paint 循环（每帧重光栅化 + 双层 mask-composite），额外受 ambientMotion
    氛围总闸门控——闸关时边框静显、不再逐帧重绘；点亮过渡（opacity）保留，
    开关动效模式仍平滑。 */
@@ -105,6 +107,43 @@ html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMot
   to {
     --fx-angle: 360deg;
   }
+}
+
+/* 动画页预览卡 · 增强档示意（AnimationPage fxEnhanced 挂 .fx-demo）：
+   复用 starBorder 的 conic 流光（含 data-fx-off 门控——特效管理里单独
+   关掉 starBorder 时预览同步熄灭，所见即所得）。样式只在动画页挂载期间
+   存在，不复用上方按钮选择器组（避免给 .tm-preview-card 引入按钮基线）。 */
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-preview-card.fx-demo {
+  position: relative;
+  z-index: 0;
+}
+html[data-fx="1"]:not([data-fx-off~="starBorder"]) .tm-preview-card.fx-demo::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.3px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--fx-angle, 0deg),
+    transparent 0deg 8deg,
+    var(--fx-star-1, transparent) 22deg,
+    transparent 40deg 172deg,
+    var(--fx-star-2, transparent) 188deg,
+    transparent 206deg 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 1;
+}
+html[data-fx="1"]:not([data-fx-off~="starBorder"]):not([data-fx-off~="ambientMotion"]) .tm-preview-card.fx-demo::after {
+  animation: fx-star-spin calc(3.4s * var(--fx-scale, 1)) linear infinite;
 }
 
 /* ────────────────────────────────────────────────
@@ -201,7 +240,7 @@ html[data-fx="1"]:not([data-fx-off~="cardHover"]) .widget-card {
 html[data-fx="1"]:not([data-fx-off~="cardHover"]) .widget-card:hover:not(.editing):not(.dragging) {
   /* 增强模式专属放大：比标准的 1.03 更明显，配合双色描边与边缘微光形成「聚焦」感；
      编辑 / 拖拽态不缩放，避免与拖拽位移叠加。
-     P3 三轮评估（::after opacity 范式不适用，留决策记录）：卡片 overflow:hidden
+     三轮评估（::after opacity 范式不适用，留决策记录）：卡片 overflow:hidden
      会裁掉伪元素外扩光晕，外层 bloom（0 0 18px）无法搬到 ::after；box-shadow
      过渡只在 hover 进出各插值 0.35s、稳态零逐帧重绘，与 tt-course 稳态光晕
      （§9，呼吸循环已删）同属可接受终态。heat-cell / cpPulse 的伪元素范式
@@ -350,34 +389,11 @@ html.fx-switching .ctx-item {
 }
 
 /* ────────────────────────────────────────────────
-   8. Circular Text 环形旋转文字（LicensePage 装饰）
-   与粒子文字同属许可证页装饰，统一受 particleText 开关控制。
+   8. Circular Text 环形旋转文字（LicensePage 装饰）已删除
+   （.fx-circ 三条规则 + @keyframes fx-circ-spin）——LicensePage 改用
+   ParticleText 后全语料 0 引用（fx.tsx 的 fx-${mode} 构造器 mode 仅
+   blur/pullup，不产出 circ）。
    ──────────────────────────────────────────────── */
-html[data-fx="1"]:not([data-fx-off~="particleText"]) .fx-circ {
-  width: 92px;
-  height: 92px;
-  margin: 4px auto 14px;
-  opacity: 0.8;
-}
-
-html[data-fx="1"]:not([data-fx-off~="particleText"]) .fx-circ svg {
-  width: 100%;
-  height: 100%;
-  animation: fx-circ-spin calc(16s * var(--fx-scale, 1)) linear infinite;
-}
-
-html[data-fx="1"]:not([data-fx-off~="particleText"]) .fx-circ text {
-  font-size: var(--fs-9-5);
-  font-weight: 600;
-  letter-spacing: 2.4px;
-  fill: var(--muted, rgba(255, 255, 255, 0.6));
-}
-
-@keyframes fx-circ-spin {
-  to {
-    transform: rotate(1turn);
-  }
-}
 
 /* ────────────────────────────────────────────────
    9. 课程块 hover 光晕（稳态）+ 磁性按钮回弹过渡
@@ -526,7 +542,7 @@ html[data-fx="1"]:not([data-fx-off~="hoverGlow"]) .tm-btn-ghost:active {
    14. Liquid Divider 液态分隔线
    分隔线上一粒高光缓慢左右往返，打破静态灰线。
    ──────────────────────────────────────────────── */
-/* #80 液态分隔线光斑常驻（opacity:0），data-fx=1 时点亮渐显 */
+/* 液态分隔线光斑常驻（opacity:0），data-fx=1 时点亮渐显 */
 .tm-divider {
   position: relative;
   overflow: hidden;
@@ -725,7 +741,7 @@ html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-crashlog-item[open] {
 }
 
 /* fx 模式下抑制子层 w-fade-slide-in（widget-anim.css 的标准模式兜底）：
-   此前父子两层 opacity/transform 同时插值，展开瞬间二次淡入叠加（P3 三轮）。
+   此前父子两层 opacity/transform 同时插值，展开瞬间二次淡入叠加（三轮）。
    特异性更高，无论 import 序都生效。 */
 html[data-fx="1"]:not([data-fx-off~="listStagger"]) .tm-crashlog-item[open] > pre {
   animation: none;

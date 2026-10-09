@@ -35,13 +35,17 @@ describe("selectNetworkRows（W-145 网卡选择口径）", () => {
     expect(rows[1]).toMatchObject({ name: "断开的卡", up: false });
   });
 
-  it("select：按名精确命中；名字不存在返回空数组", () => {
+  it("select：按名精确命中；名字不存在返回幽灵行（未连接），空名返回空数组", () => {
     expect(selectNetworkRows([ni("以太网", 7, 8), ni("WLAN", 0, 0)], "select", "WLAN")[0]).toMatchObject({
       name: "WLAN",
       rx: 0,
       tx: 0
     });
-    expect(selectNetworkRows([ni("以太网", 7, 8)], "select", "不存在")).toEqual([]);
+    // 选中的网卡被拔/改名：整节不能静默消失——幽灵行驱动 UI 显示「未连接」。
+    expect(selectNetworkRows([ni("以太网", 7, 8)], "select", "不存在")).toEqual([
+      { name: "不存在", rx: 0, tx: 0, up: false }
+    ]);
+    expect(selectNetworkRows([ni("以太网", 7, 8)], "select", "")).toEqual([]);
   });
 
   it("空列表：任何模式都不炸、返回空数组", () => {

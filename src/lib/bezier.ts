@@ -1,7 +1,7 @@
 /**
- * 三次贝塞尔缓动曲线的纯数学（B3 曲线编辑器的合法性判定与求值）。
+ * 三次贝塞尔缓动曲线的纯数学（曲线编辑器的合法性判定与求值）。
  *
- * 曲线固定端点 P0=(0,0)、P3=(1,1)，用户只操控 P1=(x1,y1)、P2=(x2,y2)。
+ * 曲线固定端点 =(0,0)、=(1,1)，用户只操控 =(x1,y1)、=(x2,y2)。
  * 一条能当 CSS `cubic-bezier()` 用的曲线必须满足两条（CSS 规范判定）：
  *   1. 控制点 X 落在 [0,1]（CSS 规范硬性要求；Y 可越界表达过冲）；
  *   2. x(t) 在 [0,1] 上单调不减——否则同一时间点对应多个进度值，
@@ -130,9 +130,19 @@ export function parseCubicBezier(css: string): BezierPoints | null {
  * 把任意输入规整为合法控制点：非数组 / 长度不为 4 / 含非有限数 / 不合法
  * 曲线一律返回 null（store sanitize 用）。Y 允许在 [-2, 3] 内表达过冲，
  * 超出则视为损坏数据。
+ *
+ * 引用稳定：输入本来就是 4 个原生数字的合法曲线时返回原数组引用——
+ * sanitizeSettings 在每次设置写入都会重跑，若每次都新建数组，订阅方
+ * （SettingsSync 的 useShallow）会看到引用变化，改任何无关设置都触发
+ * 一次 applySettings 全量重放。
  */
 export function sanitizeBezier(v: unknown): BezierPoints | null {
   if (!Array.isArray(v) || v.length !== 4) return null;
+  if (v.every((n) => typeof n === "number")) {
+    const native = v as unknown as BezierPoints;
+    if (v[1] < -2 || v[1] > 3 || v[3] < -2 || v[3] > 3) return null;
+    return isBezierValid(native) ? native : null;
+  }
   const p = v.map((n) => (typeof n === "number" ? n : Number(n)));
   if (p.some((n) => !Number.isFinite(n))) return null;
   const pts: BezierPoints = [p[0], p[1], p[2], p[3]];
@@ -140,7 +150,7 @@ export function sanitizeBezier(v: unknown): BezierPoints | null {
   return isBezierValid(pts) ? pts : null;
 }
 
-/** 编辑器预设：与 feature-animations.css 的 A3 两族曲线一一对应。 */
+/** 编辑器预设：与 feature-animations.css 的 两族曲线一一对应。 */
 export const BEZIER_PRESETS: { id: string; label: string; points: BezierPoints }[] = [
   { id: "spatial", label: "过冲 · 默认", points: [0.38, 1.21, 0.22, 1] },
   { id: "spatial-fast", label: "过冲 · 快", points: [0.42, 1.67, 0.21, 0.9] },

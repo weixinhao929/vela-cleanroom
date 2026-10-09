@@ -4,13 +4,13 @@
 
 ## 1. 技术选型论证
 
-| 决策                  | 备选                        | 选择理由                                                                                                         |
+| 决策 | 备选 | 选择理由 |
 | --------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Tauri 2 而非 Electron | Electron                    | 安装包 6 MB vs 100+ MB；常驻内存减半以上；需要的能力（低层钩子、SMTC、全局快捷键）Rust 生态均有成熟 crate        |
-| React 19 + zustand 5  | Vue/Pinia、Redux            | 组件模型契合"注册表 34 类异构小组件"；zustand selector 订阅 + shallow 比较满足"单实例变更不牵动全桌布"的粒度要求 |
-| SQLite 单库而非多文件 | 纯 localStorage / IndexedDB | 需要事务性整表导入导出、行级并发写与每日备份；localStorage 仅作浏览器模式降级与轻数据镜像                        |
-| ts-rs 生成 IPC 类型   | 手写 TS 接口                | 线协议字段以 Rust 为单一来源，消除手写映射漂移（历史上已发生一次缺字段事故）                                     |
-| zod 校验入口数据      | 只信 TS 类型                | 运行期数据（localStorage/导入文件/远端同步）不可信，schema 与类型同源派生                                        |
+| Tauri 2 而非 Electron | Electron | 安装包约 7.4 MB vs 100+ MB；常驻内存减半以上；需要的能力（低层钩子、SMTC、全局快捷键）Rust 生态均有成熟 crate |
+| React 19 + zustand 5 | Vue/Pinia、Redux | 组件模型契合"注册表 34 类异构小组件"；zustand selector 订阅 + shallow 比较满足"单实例变更不牵动全桌布"的粒度要求 |
+| SQLite 单库而非多文件 | 纯 localStorage / IndexedDB | 需要事务性整表导入导出、行级并发写与每日备份；localStorage 仅作浏览器模式降级与轻数据镜像 |
+| ts-rs 生成 IPC 类型 | 手写 TS 接口 | 线协议字段以 Rust 为单一来源，消除手写映射漂移（历史上已发生一次缺字段事故） |
+| zod 校验入口数据 | 只信 TS 类型 | 运行期数据（localStorage/导入文件/远端同步）不可信，schema 与类型同源派生 |
 
 ## 2. 软件设计
 
@@ -35,13 +35,13 @@
 
 ### 3.1 ER 概览
 
-```text
+`text
 tasks 1───∞ pomodoro_sessions (task_id, 弱关联：任务删除不级联)
 deadlines（独立聚合根）
 pomodoro_interruptions（独立事实表，按 ended_at 查询）
 settings（KV：设置快照 / widget 布局镜像 / lsmirror:*）
 tags（预留）
-```
+`
 
 设计取向：
 
@@ -52,7 +52,7 @@ tags（预留）
 
 ### 3.2 演进策略
 
-v1→v10 全部为幂等增量迁移，按版本数组顺序执行：v1–v6 为 `ADD COLUMN ... NOT NULL DEFAULT` 或数据规范化改写（v6 重写脏时间戳），v7/v8 新增通知历史与剪贴板历史表，v9 增加按天累计流量表 `net_traffic_daily`，v10 给剪贴板历史补 `files` 列。旧版本文件可直接升级，无需停机迁移脚本。完整 DDL 见 [DEPLOYMENT.md §5](DEPLOYMENT.md#5-数据库结构)。
+v1→v11 全部为幂等增量迁移，按版本数组顺序执行：v1–v6 为 `ADD COLUMN ... NOT NULL DEFAULT` 或数据规范化改写（v6 重写脏时间戳），v7/v8 新增通知历史与剪贴板历史表，v9 增加按天累计流量表 `net_traffic_daily`，v10 给剪贴板历史补 `files` 列。旧版本文件可直接升级，无需停机迁移脚本。完整 DDL 见 [DEPLOYMENT.md §5](DEPLOYMENT.md#5-数据库结构)。
 
 ## 4. 核心技术剖析
 
@@ -74,8 +74,8 @@ Chromium 对后台 WebView 节流至 ~1 分钟，直接 interval 走秒必然漂
 
 ### 4.5 设计令牌与视觉机制
 
-- **主题**：3 预设（默认 / 终端——id 仍为 `retro`，曾名「复古」/ 自定义）× system/dark/light，`lib/theme-engine.ts` 的 `applySettings` 是唯一写入方。自定义档由 `customColors`（底色 + 文字色）经 `deriveCustomTokens` 派生全套 token，含文字极性联防：背景亮度极性与当前明暗档相反时自动翻转文字色，任何组合下保证可读。
-- **动效令牌**：`--anim-dur[-fast|-slow]` 由 theme-engine 按动效三档写入 `:root`；`src/lib/durations.ts` 是 JS 侧动效时长单一真源——读取这三个 token、按与 `feature-animations.css` 同一组乘数派生 `--dur-fx-*` / `--dur-spatial-*` / `--dur-dock-spring`，JS 动画与 CSS 过渡同源同缩放（收口前两侧各写各的、都不跟随三档）。
+- **主题**：2 套内置预设（默认 / 终端——id 仍为 `retro`）+ 自定义派生档（由 `customColors` 派生，不计入预设数）× system/dark/light，`lib/theme-engine.ts` 的 `applySettings` 是唯一写入方。自定义档由 `customColors`（底色 + 文字色）经 `deriveCustomTokens` 派生全套 token，含文字极性联防：背景亮度极性与当前明暗档相反时自动翻转文字色，任何组合下保证可读。
+- **动效令牌**：`--anim-dur[-fast|-slow]` 由 theme-engine 按动效三档写入 `:root`；`src/lib/durations.ts` 是 JS 侧动效时长单一真源——读取这三个 token、按与 `feature-animations.css` 同一组乘数派生 `--dur-fx-*` / `--dur-spatial-*` / `--dur-dock-spring`，JS 动画与 CSS 过渡同源同缩放（收口前两侧各写各的、都不跟随三档）；该约束由 `lint:anim` 链中的 `check-js-anim` 静态守护（motion 弹簧须显式豁免、rAF 自调度循环须带 reduce-motion/visibility 健康信号）。主题切换水墨过渡时长经 `extra.themeInkDurationMs`（300–3000ms，默认 1400）注入 `lib/theme-ink.ts`；hex 颜色统一经 `normalizeHexColor6` 归一（3/4/8 位与 rgb()/rgba() 收敛 #rrggbb，防明暗极性误判）。
 - **令牌门禁**：`lint:anim`（will-change / transitions / fx 门控规范 + Tier1 布局属性动画 strict）配 `scripts/anim-token-baseline.json` 基线棘轮——存量违规登记在册、只减不增，升级为阻断级；`lint:sizes`（`check-size-tokens.mjs`）禁 `--fs-*` / `--rad-*` 之外的裸 px 字号与圆角；`lint:tokens`（`check-css-tokens.mjs`）扫描全部 `var(--x)` 引用与四类定义处（CSS 声明 / @property / setProperty / style 对象键）对账，引用未定义 token 即失败——「白字白底」类事故均属此模式且平时全绿不可见。
 - **视觉机制**：
   - `ThemeTooltip`（`components/ThemeTooltip.tsx`）：document 级委托接管原生 `title=`——命中后立即摘除（防系统样式白框，mouseout 还原，无障碍语义不变），350ms hover-intent 后以主题令牌浮层渲染；`pointer-events: none` 不破坏桌面层点击穿透，模块级单例幂等安装（设置窗与桌面层多 Host 共用）。
@@ -87,16 +87,16 @@ Chromium 对后台 WebView 节流至 ~1 分钟，直接 interval 走秒必然漂
 
 ### 5.1 渐近改进（本轮审计落地项）
 
-| 热点               | 原                          | 现                 | 触发频率            |
+| 热点 | 原 | 现 | 触发频率 |
 | ------------------ | --------------------------- | ------------------ | ------------------- |
-| 时区校验           | O(z) 次 ICU 构造/s          | O(1) 缓存命中      | 每秒                |
-| 趋势/热图桶查找    | O(n×d)                      | O(n+d)             | 打开统计面板        |
-| 习惯热力图         | O(cells×habits)             | O(Σkeys)           | 每次打卡            |
-| 日历重复展开       | O(cells×anchors) 正则       | O(anchors) 预解析  | 月视图渲染          |
-| 课程表列表分桶     | O(7n+Σk·logk)/渲染          | O(n log n) memo 化 | 每 30s tick         |
-| 批量删/排序 IPC    | N 次往返                    | 1 次（单事务）     | 清空已完成/拖拽排序 |
-| 粒子动画 DOM 读    | 3n/帧（≈36 万次/s@2000 粒） | 1/帧               | 动画期              |
-| mousemove 布局抖动 | ≤3 次强制 reflow/事件       | ≤1 次              | 指针移动            |
+| 时区校验 | O(z) 次 ICU 构造/s | O(1) 缓存命中 | 每秒 |
+| 趋势/热图桶查找 | O(n×d) | O(n+d) | 打开统计面板 |
+| 习惯热力图 | O(cells×habits) | O(Σkeys) | 每次打卡 |
+| 日历重复展开 | O(cells×anchors) 正则 | O(anchors) 预解析 | 月视图渲染 |
+| 课程表列表分桶 | O(7n+Σk·logk)/渲染 | O(n log n) memo 化 | 每 30s tick |
+| 批量删/排序 IPC | N 次往返 | 1 次（单事务） | 清空已完成/拖拽排序 |
+| 粒子动画 DOM 读 | 3n/帧（≈36 万次/s@2000 粒） | 1/帧 | 动画期 |
+| mousemove 布局抖动 | ≤3 次强制 reflow/事件 | ≤1 次 | 指针移动 |
 
 ### 5.2 结构性预算
 
@@ -107,8 +107,8 @@ Chromium 对后台 WebView 节流至 ~1 分钟，直接 interval 走秒必然漂
 
 ### 5.3 内存
 
-音频可视化 Float32Array 复用 + DPR 缓存；涂鸦撤销栈截断 20 张 PNG dataURL（F-5，峰值数十 MB → 受控）；粒子池固定分配；崩溃日志环形上限 50 条、文本截断 2000 字符。会话/打断记录 500/300 条滚动截断，超长期统计走 SQL 聚合（FromAgg 口径）不受截断影响。
+音频可视化 Float32Array 复用 + DPR 缓存；涂鸦撤销栈截断 20 张 PNG dataURL（峰值数十 MB → 受控）；粒子池固定分配；崩溃日志环形上限 50 条、文本截断 2000 字符。会话/打断记录 500/300 条滚动截断，超长期统计走 SQL 聚合（FromAgg 口径）不受截断影响。
 
 ## 6. 测试策略
 
-领域纯函数（统计/reducer/CSV/校验）注入固定时间戳直测；store 水合合并语义以命令名 mock 的 invoke + 真实适配器验证；面板冒烟测试守护渲染不抛错；Rust 侧覆盖迁移/仓储/xlsx 解析/任务栏状态引擎。基线：tsc + eslint(0 警告) + vitest（133 个测试文件 · 1254 用例）+ cargo test（主 crate 360 通过 + 8 ignore，`cargo test -p velatap` 另 22 通过；2026-09-27 实测全绿）方可合入；动效规范由 `lint:anim` 静态脚本把关，令牌断链由 `lint:tokens`、字号/圆角裸 px 由 `lint:sizes` 把关，i18n 由 `lint:i18n` 把关。
+领域纯函数（统计/reducer/CSV/校验）注入固定时间戳直测；store 水合合并语义以命令名 mock 的 invoke + 真实适配器验证；面板冒烟测试守护渲染不抛错；Rust 侧覆盖迁移/仓储/xlsx 解析/任务栏状态引擎。基线：tsc + eslint(0 警告) + vitest（194 个测试文件 · 1837 用例）+ cargo test（主 crate 476 通过 + 8 ignore，`cargo test -p velatap` 另 19 通过；2026-10-08 实测全绿）方可合入；动效规范由 `lint:anim` 静态脚本把关，令牌断链由 `lint:tokens`、字号/圆角裸 px 由 `lint:sizes` 把关，i18n 由 `lint:i18n` 把关。

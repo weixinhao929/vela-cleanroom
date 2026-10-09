@@ -1,0 +1,18 @@
+[package]
+name = "vela-symbolize"
+version = "0.1.0"
+description = "Vela crash sidecar symbolizer (dev-side tool; NOT shipped in installers)"
+authors = ["浩浩浩"]
+license = "MIT"
+edition = "2021"
+publish = false
+
+# [CRASH-DUMP]（借鉴 #S15-16）开发侧符号化工具。独立 workspace 成员
+# （与 velatap 同款待遇）：tauri build 只构建根包，本工具不会被打进安装包、
+# 也不会被 bundler 当作应用二进制 patch；需要时 `cargo run -p vela-symbolize`。
+[dependencies]
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_System_Diagnostics_Debug",
+] }

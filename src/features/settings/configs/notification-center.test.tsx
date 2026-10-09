@@ -79,6 +79,17 @@ describe("NotificationCenterConfig · 已添加小组件逐个开关通知", () 
     expect(screen.queryByRole("switch", { name: "倒计时结束" })).toBeNull();
     expect(screen.queryByRole("switch", { name: "新邮件" })).toBeNull();
     expect(screen.queryByRole("switch", { name: "番茄钟提醒" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "便签提醒" })).toBeNull();
+  });
+
+  it("便签实例出现「便签提醒」行；开关写 sources.note（N3 补漏）", async () => {
+    const user = userEvent.setup();
+    seed([instance("inst-notes", "notes")], [{ id: "t-notif", type: "notifications" }]);
+    render(<NotificationCenterConfig />);
+    const sw = screen.getByRole("switch", { name: "便签提醒" });
+    expect(sw).toBeInTheDocument();
+    await user.click(sw);
+    expect(useSettingsStore.getState().notifications.sources.note).toBe(false);
   });
 
   it("杂项面板条目也算「已添加」：面板里有倒计时组件 → 出现倒计时来源行", () => {

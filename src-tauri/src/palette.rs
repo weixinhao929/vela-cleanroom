@@ -6,7 +6,7 @@
 //!
 //! 管线设计（色彩学常量与量化策略属通用技术，规格见工作区对标分析 §4.3）：
 //!  1. 缩到 ≤112×112——只要色彩分布，细节无关；
-//!  2. RGB555 量化直方图（每通道 5bit，32³ 桶），每桶累计真实通道均值作代表色
+//! 2. 量化直方图（每通道 5bit，32³ 桶），每桶累计真实通道均值作代表色
 //!     （桶中心色会系统性偏离实际像素）；
 //!  3. sRGB → Oklab → 彩度 / 色相；
 //!  4. 过滤近灰（chroma < 0.028）与过黑过白（L ∉ [0.12, 0.94]）；
@@ -83,7 +83,7 @@ fn linear_to_srgb(v: f64) -> u8 {
     (s * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// sRGB → Oklab（Björn Ottosson 参考实现的系数）。
+/// sRGB → Oklab（Björn Ottosson 系数）。
 pub fn rgb_to_oklab(c: Rgb8) -> Oklab {
     let r = srgb_to_linear(c.r);
     let g = srgb_to_linear(c.g);

@@ -1,5 +1,5 @@
-//! W-153 网络流量历史记录器：按天累计本机收发流量，落 SQLite
-//! `net_traffic_daily`（迁移 v9），并驱动流量/网速阈值系统通知（W-170）。
+//! 网络流量历史记录器：按天累计本机收发流量，落 SQLite
+//! `net_traffic_daily`（迁移 v9），并驱动流量/网速阈值系统通知。
 //!
 //! # 为什么独立于 sys:stats 采样线程
 //! 广播采样受 presence 空闲降载（锁屏/挂机暂停）与前端可见性门控影响——
@@ -7,7 +7,7 @@
 //! `GetIfTable2` 级别的刷新（sysinfo `Networks` 私有实例），代价可忽略，
 //! 且不受降载影响：只要进程活着，流量就进当日账。
 //!
-//! # 记账模型（对照经典网速工具的 HistoryTrafficFile）
+//! # 记账模型（对照 经典网速工具的 HistoryTrafficFile）
 //! - 应用只统计自己运行期间的增量；启动时把库里当日行载入内存作为基数，
 //!   之后内存值是当日权威值，`pending` 是尚未落库的增量；
 //! - 每 60s 把 pending 以 `rx = rx + excluded.rx` 的增量 UPSERT 合并进库，
@@ -17,16 +17,16 @@
 //! - 计数器回落（网卡禁用/重置）checked_sub 归 0；跨睡眠窗口（实测间隔
 //!   > 120s）整窗丢弃，睡眠期间计数器本就无增量，安全。
 //!
-//! # 按进程流量（P2-9）的边界
+//! # 按进程流量的边界
 //! Windows 无非驱动的每进程字节计数（ETW Kernel-Network 需要管理员会话，
-//! 经典网速工具自己也没做）。本文件交付连接级替代：`system::get_tcp_
+//! 经典网速工具 自己也没做）。本文件交付连接级替代：`system::get_tcp_
 //! connections` 给出带 PID/进程名的 TCP 连接表；字节级按进程统计若未来
 //! 立项，需评估提权或驱动方案，不在本模块承诺。
 
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use sysinfo::Networks;
 use tauri::Manager;
 use ts_rs::TS;
@@ -37,10 +37,10 @@ const SAMPLE_SECS: u64 = 10;
 const FLUSH_EVERY_TICKS: u32 = 6;
 /// 超过该实测窗口长度的样本整窗丢弃（睡眠唤醒、系统挂起）。
 const MAX_WINDOW_SECS: u64 = 120;
-/// 历史保留天数（约一年，经典网速工具同量级）。
+/// 历史保留天数（约一年，经典网速工具 同量级）。
 const RETAIN_DAYS: i64 = 366;
 
-/// W-170 阈值告警配置：前端经 `set_net_alerts` 推送，原子读写无锁。
+/// 阈值告警配置：前端经 `set_net_alerts` 推送，原子读写无锁。
 #[derive(Default)]
 pub struct NetAlertConfig {
     pub speed_enabled: AtomicBool,
@@ -98,7 +98,7 @@ fn today_key() -> String {
 }
 
 /// 从库载入当日行到内存（启动时调用；应用不运行期间的流量本来就记不到，
-/// 与经典网速工具一致只统计运行期）。
+/// 与 经典网速工具 一致只统计运行期）。
 fn load_today(rec: &TrafficRecorder, conn: &rusqlite::Connection) {
     let day = today_key();
     let row: Option<(i64, i64)> = conn
@@ -137,7 +137,7 @@ fn flush_pending(
 }
 
 /// 清理：保留 `RETAIN_DAYS` 天，并删除「未来日期」行（系统时钟被拨快又拨回
-/// 的脏数据，经典网速工具同款防护）。
+/// 的脏数据，经典网速工具 MormalizeData 同款防护）。
 fn cleanup(conn: &rusqlite::Connection, today: &str) {
     let _ = conn.execute(
         "DELETE FROM net_traffic_daily WHERE day < date(?1, ?2)",
@@ -152,14 +152,13 @@ fn cleanup(conn: &rusqlite::Connection, today: &str) {
 /// 单个采样帧：差分入账 + 跨日归档 + 通知判定。任何 panic 由外层
 /// catch_unwind 兜住，线程不退出。
 fn sample_tick(app: &tauri::AppHandle, rec: &TrafficRecorder) {
-    let elapsed = rec
-        .last_sample
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .map(|p| p.elapsed().as_secs())
-        .unwrap_or(0);
+    let prev_instant = *rec.last_sample.lock().unwrap_or_else(|p| p.into_inner());
     let mut networks = rec.networks.lock().unwrap_or_else(|p| p.into_inner());
     networks.refresh(true);
+    // 计量点在 refresh 之后（system.rs 同款口径）：计数器差分窗口横跨整个
+    // refresh 调用，若 elapsed 只量「上次结束 → 本次开始」，差分流量摊到
+    // 偏短窗口会让网速告警的 rate 偏高、误触发。
+    let elapsed = prev_instant.map(|p| p.elapsed().as_secs()).unwrap_or(0);
     *rec.last_sample.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now());
 
     // 窗口有效性：首帧无基线；跨睡眠窗口整窗丢弃。
@@ -233,11 +232,14 @@ fn sample_tick(app: &tauri::AppHandle, rec: &TrafficRecorder) {
             }
         }
     }
-    // G-8：跨日翻转时顺手清一次通知/剪贴板过期行——写路径顺手清理只覆盖
+    // 跨日翻转时顺手清一次通知/剪贴板过期行——写路径顺手清理只覆盖
     // 「有新数据」的表；长期不产生新通知/复制的场景里，过期行靠这里回收。
+    // 自身的保留期清理也随跨日执行（此前仅首拍一次，连续运行数月跨过
+    // RETAIN_DAYS 后过期行持续累积）。
     if day_changed {
         if let Some(state) = app.try_state::<crate::AppState>() {
             if let Ok(conn) = crate::db::lock_db(&state.db) {
+                cleanup(&conn, &today);
                 if let Err(e) = crate::repositories::NotificationRepo::cleanup(&conn) {
                     log::debug!("daily notification cleanup: {e}");
                 }
@@ -248,7 +250,7 @@ fn sample_tick(app: &tauri::AppHandle, rec: &TrafficRecorder) {
         }
     }
 
-    // W-170 阈值通知。
+    // 阈值通知。
     check_alerts(app, rec, sum_bytes, elapsed);
 }
 
@@ -305,6 +307,24 @@ fn check_alerts(
     }
 }
 
+/// 显式退出路径的当日冲账：`run_exit_cleanup` 随后 `process::exit`
+/// 直接终结采样线程，线程尾部的冲账代码没有机会执行——主线程在这里把
+/// pending 增量（≤ 一个落库周期）先行落库。与采样线程的周期落库用同一
+/// swap 语义：每字节增量只被一侧取走，无重复记账。
+pub fn flush_for_exit(app: &tauri::AppHandle) {
+    let _serial = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(rec) = current_recorder() else {
+        return;
+    };
+    let day = rec.day.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let prx = rec.pending_rx.swap(0, Ordering::SeqCst);
+    let ptx = rec.pending_tx.swap(0, Ordering::SeqCst);
+    if !archive_to_db(app, &day, prx, ptx) {
+        rec.pending_rx.fetch_add(prx, Ordering::SeqCst);
+        rec.pending_tx.fetch_add(ptx, Ordering::SeqCst);
+    }
+}
+
 /// 把一段增量归档进指定日期行（跨日归档与周期落库共用）。
 /// 返回是否成功；失败由调用方把增量退回 pending。
 fn archive_to_db(app: &tauri::AppHandle, day_key: &str, rx: u64, tx: u64) -> bool {
@@ -319,26 +339,93 @@ fn archive_to_db(app: &tauri::AppHandle, day_key: &str, rx: u64, tx: u64) -> boo
     false
 }
 
-/// 启动记录器：载入当日行 + 清理过期/未来日期行 + 起常驻线程。
-pub fn start_traffic_recorder(app: tauri::AppHandle) {
-    let alerts = Arc::new(NetAlertConfig::default());
-    let rec = TrafficRecorder::new(alerts.clone());
+/* ------------------------------------------------------------------ */
+/* 开关与生命周期（照 taskbar_net 模式：意图原子量 + 设置表持久化 +      */
+/* 生命周期锁 + 可 join 的分片睡眠线程）。                              */
+/* 常驻采样线程是后台行为，默认**关**（与任务栏网速条 / IP 自动定位同为 */
+/* opt-in）：不开启就没有 10s 唤醒采样、没有周期落库、也没有常驻线程—— */
+/* 「偷偷跑占内存」的顾虑从根上消除。关闭时线程退出前把未落库增量冲账， */
+/* 不丢数据。                                                           */
+/* ------------------------------------------------------------------ */
+
+/// 设置表键（settings 表，与任务栏网速条同款持久化通道）。
+const SETTING_KEY: &str = "net:history:enabled";
+static STATS_ENABLED: AtomicBool = AtomicBool::new(false);
+/// 生命周期转换（写库 + 起/停线程）串行锁：快开快关不交错。
+static LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
+/// 告警配置单例：set_net_alerts（经 tauri State）与采样线程共享同一实例。
+static ALERTS: OnceLock<Arc<NetAlertConfig>> = OnceLock::new();
+
+struct Sampler {
+    rec: Arc<TrafficRecorder>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// 采样线程持有句柄（None = 未在跑）。
+static SAMPLER: Mutex<Option<Sampler>> = Mutex::new(None);
+
+fn read_enabled_setting(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return false;
+    };
+    // 纯 SELECT 走只读连接池（约定）。
+    let Ok(conn) = state.read_db.acquire() else {
+        return false;
+    };
+    crate::repositories::SettingsRepo::get(&conn, SETTING_KEY)
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+fn write_enabled_setting(app: &tauri::AppHandle, enabled: bool) {
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        if let Ok(conn) = crate::db::lock_db(&state.db) {
+            // 写失败静默会让本次开关在重启后回退，必须留痕。
+            if let Err(e) =
+                crate::repositories::SettingsRepo::set(&conn, SETTING_KEY, &enabled.to_string())
+            {
+                log::warn!("traffic stats setting persist failed: {e}");
+            }
+        }
+    }
+}
+
+/// 起采样线程（调用方持有 LIFECYCLE_LOCK；已在跑则幂等返回）。
+/// 每次开启都从库重载当日行 + 清理过期行，从干净状态恢复（跨「关闭期」
+/// 的重启语义等价于应用刚启动）。
+fn start_sampler_locked(app: &tauri::AppHandle) {
+    let mut guard = SAMPLER.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.is_some() {
+        return;
+    }
+    let alerts = ALERTS
+        .get()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(NetAlertConfig::default()));
+    let rec = Arc::new(TrafficRecorder::new(alerts));
     if let Some(state) = app.try_state::<crate::AppState>() {
         if let Ok(conn) = crate::db::lock_db(&state.db) {
             load_today(&rec, &conn);
             cleanup(&conn, &today_key());
         }
     }
-    app.manage(alerts.clone());
-    app.manage(rec);
-    std::thread::spawn(move || {
-        // 首个 tick 立即跑（建立计数基线），之后按采样周期循环；
-        // 单帧 panic 只丢一帧，线程不退出。
-        loop {
-            {
-                let state = app.state::<TrafficRecorder>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let handle = {
+        let app = app.clone();
+        let rec = rec.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                // 首个 tick 立即跑（建立计数基线），之后按采样周期循环；
+                // 单帧 panic 只丢一帧，线程不退出。
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    sample_tick(&app, &state)
+                    sample_tick(&app, rec.as_ref())
                 }));
                 if let Err(p) = result {
                     let msg = p
@@ -348,10 +435,62 @@ pub fn start_traffic_recorder(app: tauri::AppHandle) {
                         .unwrap_or_else(|| "unknown".into());
                     log::error!("traffic recorder tick panic: {msg}");
                 }
+                // 分片睡眠（100ms）：关闭开关 ≤1 分片 + 当拍采样内退出。
+                for _ in 0..(SAMPLE_SECS * 10) {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
             }
-            std::thread::sleep(std::time::Duration::from_secs(SAMPLE_SECS));
-        }
+            // 退出前冲账：未落库增量写入当日行，关闭开关不丢已产生流量。
+            let day = rec.day.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let prx = rec.pending_rx.swap(0, Ordering::SeqCst);
+            let ptx = rec.pending_tx.swap(0, Ordering::SeqCst);
+            if !archive_to_db(&app, &day, prx, ptx) {
+                // 冲账失败把增量退回（下一周期/下次开启仍有账可续）。
+                rec.pending_rx.fetch_add(prx, Ordering::SeqCst);
+                rec.pending_tx.fetch_add(ptx, Ordering::SeqCst);
+            }
+        })
+    };
+    *guard = Some(Sampler {
+        rec,
+        stop,
+        handle: Some(handle),
     });
+}
+
+/// 停采样线程（调用方持有 LIFECYCLE_LOCK；阻塞 join ≤1 个睡眠分片）。
+fn stop_sampler_locked() {
+    let taken = SAMPLER.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(mut s) = taken {
+        s.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = s.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// 当前采样器（未开启为 None）。查询命令用它拿当日内存权威值。
+fn current_recorder() -> Option<Arc<TrafficRecorder>> {
+    SAMPLER
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .map(|s| s.rec.clone())
+}
+
+/// 应用启动初始化：注册告警配置；上次退出时开关为开 → 恢复采样线程。
+pub fn init_traffic_recorder(app: &tauri::AppHandle) {
+    let alerts = Arc::new(NetAlertConfig::default());
+    let _ = ALERTS.set(alerts.clone());
+    app.manage(alerts);
+    if read_enabled_setting(app) {
+        let _serial = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        STATS_ENABLED.store(true, Ordering::SeqCst);
+        start_sampler_locked(app);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -384,10 +523,14 @@ pub async fn get_traffic_summary(
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
+    // 开关未开：没有采样器就没有「今日内存权威值」，明确报错（前端开关关
+    // 状态下也不请求本命令）。
+    let Some(rec) = current_recorder() else {
+        return Err("流量统计未开启".into());
+    };
     // async + spawn_blocking：库里查询要走写库互斥锁（备份/导入可能持有数秒），
-    // 同步命令会把它搬上主线程冻结全部窗口（与 commands.rs R1 约定一致）。
+    // 同步命令会把它搬上主线程冻结全部窗口（与 commands.rs 约定一致）。
     tauri::async_runtime::spawn_blocking(move || {
-        let rec = app.state::<TrafficRecorder>();
         // 与跨日翻转竞态的安全快照：翻转线程在 day 锁内重置 today_* 原子，这里
         // 也必须在同一把锁内一并读出 day + today 计数——否则可能拿到「旧日 +
         // 已清零的 today」错位组合（午夜一瞬，月合计漏掉刚归档的旧行）。
@@ -399,11 +542,13 @@ pub async fn get_traffic_summary(
                 rec.today_tx.load(Ordering::SeqCst),
             )
         };
-        let month_prefix = &today[..7];
+        // day 键由本模块 today_key() 生成（YYYYMMDD，恒 ≥7 字符），get 而非
+        // 裸切片防御异常来源（DB 回填/测试桩）造成的短串 panic。
+        let month_prefix = today.get(..7).unwrap_or(&today);
         let mut month_rx = 0u64;
         let mut month_tx = 0u64;
         if let Some(state) = app.try_state::<crate::AppState>() {
-            // 纯 SELECT 走 WAL 读连接：不与备份/导入的写事务互锁（C-1 模式）。
+            // 纯 SELECT 走 WAL 读连接：不与备份/导入的写事务互锁（模式）。
             if let Ok(conn) = state.read_db.acquire() {
                 // 只累计「非今日」的行：今日以内存为准（库内今日行滞后 ≤60s）。
                 let q = |sql: &str| -> u64 {
@@ -515,6 +660,43 @@ pub fn set_net_alerts(
         Ordering::Relaxed,
     );
     Ok(())
+}
+
+/// 查询流量统计总开关（设置页渲染用；以内存态为准，启动时由持久化值同步）。
+#[tauri::command]
+pub fn get_traffic_stats_enabled(window: tauri::Window) -> Result<bool, String> {
+    crate::require_trusted(&window)?;
+    Ok(STATS_ENABLED.load(Ordering::SeqCst))
+}
+
+/// 流量统计总开关：写库持久化 + 起/停采样线程。
+///
+/// async：写库若同步做会撞上备份/导入持有写锁数秒的窗口期把全部窗口冻住
+/// （约定）；整个转换（写库 + 起/停线程）在 LIFECYCLE_LOCK 下的同一次
+/// spawn_blocking 里串行完成，快开快关不交错。
+#[tauri::command]
+pub async fn set_traffic_stats_enabled(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    // 窗口闸门：起/停后台线程是真实系统副作用，只允许受信窗口驱动。
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let _serial = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        STATS_ENABLED.store(enabled, Ordering::SeqCst);
+        write_enabled_setting(&app, enabled);
+        if enabled {
+            start_sampler_locked(&app);
+        } else {
+            stop_sampler_locked();
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("traffic stats lifecycle failed: {e}"))?
 }
 
 #[cfg(test)]

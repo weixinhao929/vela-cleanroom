@@ -1,6 +1,6 @@
-//! [DOUBLE-TAP]（ZTools 借鉴 #13）双击修饰键呼出命令面板。
+//! [DOUBLE-TAP]双击修饰键呼出命令面板。
 //!
-//! ZTools 支持双击修饰键（如 Ctrl·Ctrl、Alt·Alt）唤起主窗（doubleTapManager，
+//! 同类启动器 支持双击修饰键（如 Ctrl·Ctrl、Alt·Alt）唤起主窗（doubleTapManager，
 //! 基于 uiohook）。Vela 落地为 WH_KEYBOARD_LL 键盘钩子（此前只有鼠标 LL 钩子）：
 //! 350ms 窗口内**两次独立按下**同一族修饰键（左/右视为同族）且中间没有别的
 //! 键 → 分派 toggle-palette（与全局热键同一条 dispatch 路径，含唤醒黑名单）。
@@ -22,13 +22,13 @@ use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 
 /// 双击判定窗口（ms）。
 const DOUBLE_TAP_WINDOW_MS: u64 = 350;
-/// 持续关闭这么多个复查周期（2s/次）后真正卸钩（B-1/D-8：默认关的功能
+/// 持续关闭这么多个复查周期（2s/次）后真正卸钩（默认关的功能
 /// 不该常驻系统键盘钩子；短暂抖动不反复装卸）。
 const UNHOOK_AFTER_DISABLED_TICKS: u32 = 5;
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(false);
-/// 触发键族：0 = "ctrl"，1 = "alt"（钩子回调零锁读取，B-1）。
+/// 触发键族：0 = "ctrl"，1 = "alt"（钩子回调零锁读取）。
 static KEY_KIND: AtomicU8 = AtomicU8::new(0);
 /// 钩子线程句柄（Some = 已安装）。装卸都走这把锁，杜绝双钩竞态。
 static HOOK_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
@@ -52,7 +52,7 @@ pub fn key_kind_of(code: u8) -> &'static str {
 }
 
 /// 进程启动时预埋 AppHandle + 配置刷新线程（lib.rs setup 调用）。
-/// B-1/D-8：钩子不再无条件安装——首次读到 enabled=true 才装；持续关闭
+/// 钩子不再无条件安装——首次读到 enabled=true 才装；持续关闭
 /// 一段时间后卸载（此前默认关也在启动时装上 WH_KEYBOARD_LL，全系统
 /// 每次按键都路过本进程回调）。
 pub fn init(app: AppHandle) {
@@ -62,6 +62,9 @@ pub fn init(app: AppHandle) {
         .spawn(move || {
             let mut disabled_ticks: u32 = 0;
             loop {
+                // （missed-wakeup）：代数先于配置读取——变更若落在「读取
+                // 之后、进入等待之前」，wait_for_change_since 立即返回。
+                let seen = crate::settings_mirror::generation();
                 let (enabled, kind) = read_config(&app);
                 ENABLED.store(enabled, Ordering::SeqCst);
                 KEY_KIND.store(kind, Ordering::SeqCst);
@@ -75,10 +78,13 @@ pub fn init(app: AppHandle) {
                         disabled_ticks = 0;
                     }
                 }
-                // B-2：变更即醒（写路径广播），禁用态 2s 兜底（驱动卸钩计时）、
+                // 变更即醒（写路径广播），禁用态 2s 兜底（驱动卸钩计时）、
                 // 启用态 30s 兜底——替代每 2s 的 SQLite 轮询。
                 let fallback = if enabled { 30_000 } else { 2_000 };
-                crate::settings_mirror::wait_for_change(Duration::from_millis(fallback));
+                crate::settings_mirror::wait_for_change_since(
+                    seen,
+                    Duration::from_millis(fallback),
+                );
             }
         })
         .ok();
@@ -102,7 +108,7 @@ pub fn is_family_modifier(vk: u32, family: &str) -> bool {
 }
 
 fn read_config(app: &AppHandle) -> (bool, u8) {
-    // A-4：镜像读取收敛到 settings_mirror 单一助手。
+    // 镜像读取收敛到 settings_mirror 单一助手。
     let Some(v) = crate::settings_mirror::read_json(app) else {
         return (false, 0);
     };
@@ -145,22 +151,27 @@ mod win {
         if !super::ENABLED.load(Ordering::Acquire) || code < 0 {
             return CallNextHookEx(None, code, wparam, lparam);
         }
-        let msg = wparam.0 as u32;
-        if matches!(msg, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP) {
-            let info = lparam.0 as *const KBDLLHOOKSTRUCT;
-            if !info.is_null() {
-                let vk = (*info).vkCode;
-                let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
-                // B-1：钩子回调内零锁——键族经 AtomicU8 缓存读取。
-                let family = super::key_kind_of(super::KEY_KIND.load(Ordering::Relaxed));
-                if is_family_modifier(vk, family) {
-                    handle_family_event(down);
-                } else {
-                    // 任何其它键打断候选。
-                    TAP.with(|t| *t.borrow_mut() = None);
+        //panic 穿越 extern "system" 钩子回调是 UB——对齐 global_input
+        // /widget 钩子已设防的基线，处理体包 catch_unwind（现实 panic 面近零，
+        // 纯护栏统一）。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let msg = wparam.0 as u32;
+            if matches!(msg, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP) {
+                let info = lparam.0 as *const KBDLLHOOKSTRUCT;
+                if !info.is_null() {
+                    let vk = (*info).vkCode;
+                    let down = matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN);
+                    // 钩子回调内零锁——键族经 AtomicU8 缓存读取。
+                    let family = super::key_kind_of(super::KEY_KIND.load(Ordering::Relaxed));
+                    if is_family_modifier(vk, family) {
+                        handle_family_event(down);
+                    } else {
+                        // 任何其它键打断候选。
+                        TAP.with(|t| *t.borrow_mut() = None);
+                    }
                 }
             }
-        }
+        }));
         CallNextHookEx(None, code, wparam, lparam)
     }
 
@@ -226,7 +237,9 @@ mod win {
             let mut msg = MSG::default();
             loop {
                 let r = GetMessageW(&mut msg, None, 0, 0);
-                if !r.as_bool() {
+                // GetMessageW 出错返回 -1：as_bool() 对 -1 为真，旧判定会拿旧
+                // msg 无限重复派发。0（WM_QUIT）与 -1（错误）都跳出循环。
+                if r.0 == 0 || r.0 == -1 {
                     break;
                 }
                 if msg.message == 0x0012 {

@@ -1,5 +1,5 @@
 /**
- * 跨层共用 UI 原语（A-2）：Stepper / Segmented / Toggle 从
+ * 跨层共用 UI 原语：Stepper / Segmented / Toggle 从
  * features/settings/shared.tsx 上移至此——此前 widget 层（就地配置弹层、
  * 亮度组件、灵动岛配置面板）为借这三个控件反向 import features/settings，
  * 造成目录级双向耦合。实现原样迁移，行为零变化；设置页侧经 shared.tsx
@@ -22,13 +22,13 @@ export function Stepper({
   value: number;
   suffix: string;
   onChange: (v: number) => void;
-  /** B9：可选边界——越界时按钮禁用，不再静默无效。 */ min?: number;
+  /** 可选边界——越界时按钮禁用，不再静默无效。 */ min?: number;
   max?: number;
 }) {
   const tr = useT();
   const [text, setText] = useState(String(value));
   const [focused, setFocused] = useState(false);
-  /* #82 数值弹跳：+/- 或外部改值时给 wrap 挂一次 num-pop（类先摘再挂以重触发） */
+  /* 数值弹跳：+/- 或外部改值时给 wrap 挂一次 num-pop（类先摘再挂以重触发） */
   const [numPop, setNumPop] = useState(false);
   const prevValue = useRef(value);
   useEffect(() => {
@@ -42,7 +42,7 @@ export function Stepper({
   useEffect(() => {
     if (!focused) setText(String(value));
   }, [value, focused]);
-  /* B12：非法输入（非数字）回退时给一次 shake 反馈，替代静默回退。 */
+  /* 非法输入（非数字）回退时给一次 shake 反馈，替代静默回退。 */
   const [invalid, setInvalid] = useState(false);
   const commit = () => {
     const n = Number(text);
@@ -168,7 +168,12 @@ export function Segmented<T extends string>({
   const outer = "999px";
   const inner = "7px";
   const pillRadius = `${isFirst ? outer : inner} ${isLast ? outer : inner} ${isLast ? outer : inner} ${isFirst ? outer : inner}`;
-  /* B7：radiogroup 语义 + 方向键切换（此前是可点击 div，键盘完全不可达）。 */
+  /* 方向键此前只 onChange、DOM 焦点留在旧项——
+     roving tabindex 的焦点与 aria-checked 脱节，键盘连按时第二次按键不再
+     发出（焦点丢了）。参照 WidgetGallery 芯片巡览范式：逐项挂 ref，切换后
+     把焦点移到新项（onChange 语义不变）。 */
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  /* radiogroup 语义 + 方向键切换（此前是可点击 div，键盘完全不可达）。 */
   return (
     <div className="tm-segmented" role="radiogroup" ref={wrapRef}>
       {pill &&
@@ -191,6 +196,9 @@ export function Segmented<T extends string>({
         return (
           <div
             key={o.id}
+            ref={(el) => {
+              itemRefs.current[i] = el;
+            }}
             className={`tm-segmented-item${value === o.id ? " active" : ""}`}
             onClick={() => onChange(o.id)}
             role="radio"
@@ -199,12 +207,14 @@ export function Segmented<T extends string>({
             onKeyDown={(e) => {
               if (e.key === "ArrowRight" || e.key === "ArrowDown") {
                 e.preventDefault();
-                const next = options[(i + 1) % options.length];
-                onChange(next.id);
+                const next = (i + 1) % options.length;
+                onChange(options[next].id);
+                itemRefs.current[next]?.focus();
               } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
                 e.preventDefault();
-                const prev = options[(i - 1 + options.length) % options.length];
-                onChange(prev.id);
+                const prev = (i - 1 + options.length) % options.length;
+                onChange(options[prev].id);
+                itemRefs.current[prev]?.focus();
               }
             }}
           >

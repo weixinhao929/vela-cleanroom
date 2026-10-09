@@ -5,7 +5,7 @@
 //      必须显式声明豁免理由才允许存在。
 //   2. [告警] rAF 自调度循环健康度：自调度循环（回调里再次 rAF 引用自身）
 //      体内应出现 prefersReducedMotion / document.hidden / visibilitychange
-//      任一健康信号（C11 实时性），或行内「raf: ok <理由>」豁免（计时数据、
+// 任一健康信号（实时性），或行内「raf: ok <理由>」豁免（计时数据、
 //      一次性 FLIP 等非动画循环）。启发式有误报可能，故为告警级不阻断。
 import fs from "node:fs";
 import path from "node:path";

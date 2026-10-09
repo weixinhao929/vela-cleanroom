@@ -1,4 +1,4 @@
-/* [SUPER-PANEL]（ZTools 借鉴 #11）长按右键取词面板（独立小窗，无装饰置顶）。 */
+/* [SUPER-PANEL]长按右键取词面板（独立小窗，无装饰置顶）。 */
 .super-panel {
   position: fixed;
   inset: 0;
@@ -84,7 +84,19 @@ html[data-reduce-motion="1"] .super-panel {
   outline: none;
 }
 
-/* A4 按压态：state-layer 加深一档（与 ctx-item:active 同范式）。 */
+/* 键盘巡览高亮（ArrowUp/Down 移动 active 项）——与 :hover 同配方；
+   焦点恒在面板容器上，动作按钮自身不吃焦点环。 */
+.super-panel-item.active {
+  background: var(--surface-active, rgba(255, 255, 255, 0.08));
+}
+
+/* 面板容器每次取词经 focus() 接管焦点（role=dialog 初始焦点）——
+   程序化焦点不画环，巡览有 active 高亮表达。 */
+.super-panel:focus {
+  outline: none;
+}
+
+/* 按压态：state-layer 加深一档（与 ctx-item:active 同范式）。 */
 .super-panel-item:active {
   background: color-mix(in srgb, var(--ink) var(--state-layer-pressed, 0.12), transparent);
 }

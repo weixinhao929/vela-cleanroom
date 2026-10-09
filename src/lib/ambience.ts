@@ -1,15 +1,17 @@
 /**
- * W-055 白噪音/专注音效：Web Audio 实时合成，无需音频资源文件。
+ * 白噪音/专注音效：Web Audio 实时合成，无需音频资源文件。
  *
  * 四种场景全部由噪声源 + 滤波器 + 幅度包络组合而成：
- *  - rain   雨声：白噪过低通 + 轻微幅度起伏，模拟持续雨幕。
- *  - cafe   咖啡厅：棕噪（能量更低沉）过带通 + 缓慢波动，像远处人声嗡鸣。
- *  - fire   篝火：棕噪打底 + 随机爆裂脉冲（每 0.2~1.2s 一次）。
- *  - white  白噪：原始白噪声，均匀掩蔽。
+ *  - rain 雨声：白噪过低通 + 轻微幅度起伏，模拟持续雨幕。
+ *  - cafe 咖啡厅：棕噪（能量更低沉）过带通 + 缓慢波动，像远处人声嗡鸣。
+ *  - fire 篝火：棕噪打底 + 随机爆裂脉冲（每 0.2~1.2s 一次）。
+ *  - white 白噪：原始白噪声，均匀掩蔽。
  *
  * 单例管理：全局只允许一路氛围音，切换场景即重建节点图。
  * AudioContext 必须由用户手势创建/恢复（各浏览器自动播放策略）。
  */
+
+import { invoke } from "./tauri";
 
 export type AmbienceKind = "rain" | "cafe" | "fire" | "white";
 
@@ -88,11 +90,64 @@ interface AmbienceNodes {
 
 let active: AmbienceNodes | null = null;
 
-/* FocusTimer 借鉴（媒体在播时抑制白噪音）：用户意图与实际播放解耦——
+/* （媒体在播时抑制白噪音）：用户意图与实际播放解耦——
  * 检测到任何媒体在播时淡出氛围音，全部停了再淡入恢复。desired 保存
  * 用户最后的播放意图，抑制解除时按它重建节点图。 */
 let mediaInhibited = false;
 let desired: { kind: AmbienceKind; volume: number; playing: boolean } | null = null;
+
+/* 无手势环境下（抑制恢复由 media:snapshot 事件驱动，
+ * 不是用户交互）新建的 AudioContext 可能被自动播放策略停在 suspended——
+ * ctx 静默但 active 非 null，UI 会谎报「播放中」。两道补丁：
+ *  1. isAmbiencePlaying 以 ctx.state === "running" 为准（真正出声才算）；
+ *  2. resume 失败时挂「待手势恢复」：下一次用户交互（pointerdown/keydown，
+ *     捕获式一次性）补一次 resume。 */
+let pendingGestureResume = false;
+let gestureArmed = false;
+
+function armGestureResume(): void {
+  if (gestureArmed || typeof window === "undefined") return;
+  gestureArmed = true;
+  const onGesture = () => {
+    window.removeEventListener("pointerdown", onGesture, true);
+    window.removeEventListener("keydown", onGesture, true);
+    gestureArmed = false;
+    if (!pendingGestureResume) return;
+    const ctx = active?.ctx;
+    if (!ctx || ctx.state === "closed") {
+      pendingGestureResume = false;
+      return;
+    }
+    void ctx
+      .resume()
+      .then(() => {
+        // 仍失败（策略更严的环境）保持待恢复，等下一次手势。
+        pendingGestureResume = ctx.state !== "running";
+        if (pendingGestureResume) armGestureResume();
+      })
+      .catch(() => {
+        pendingGestureResume = true;
+        armGestureResume();
+      });
+  };
+  window.addEventListener("pointerdown", onGesture, true);
+  window.addEventListener("keydown", onGesture, true);
+}
+
+/** 建图后统一走这里恢复 ctx：失败挂手势重试，不再静默吞掉。 */
+function resumeCtx(ctx: AudioContext): void {
+  void ctx
+    .resume()
+    .then(() => {
+      pendingGestureResume = ctx.state !== "running";
+    })
+    .catch(() => {
+      pendingGestureResume = true;
+    })
+    .finally(() => {
+      if (pendingGestureResume) armGestureResume();
+    });
+}
 
 /**
  * 设置媒体抑制态（lib 层媒体联动：媒体在播 → true）。
@@ -107,9 +162,9 @@ export function setAmbienceMediaInhibited(inhibited: boolean): void {
     stopNodes();
   } else if (desired?.playing) {
     active = build(desired.kind, desired.volume);
-    void active.ctx.resume().catch(() => {
-      // 需要手势的环境保持静默，UI 状态由调用方回读
-    });
+    // 事件驱动的恢复没有用户手势：resume 可能被自动播放策略拒绝，
+    // 走统一入口挂「待手势恢复」（见 resumeCtx）。
+    resumeCtx(active.ctx);
   }
 }
 
@@ -130,6 +185,16 @@ export function startAmbienceMediaGuard(): () => void {
   if (!isTauri) return () => {};
   let un: (() => void) | null = null;
   let disposed = false;
+  /* media:snapshot 只在变化时到达——守卫挂载时音乐已在播的话没有
+   * 首帧事件，抑制要等到下一次播放态变化才触发（恰是守卫要防的场景：
+   * 音乐播放中开白噪音会同时出声）。启动先拉一次快照建初始态。 */
+  void invoke<{ playing: boolean } | null>("get_system_media_info")
+    .then((m) => {
+      if (!disposed) setAmbienceMediaInhibited(!!m?.playing);
+    })
+    .catch(() => {
+      /* 初始态拉取失败：只损失初始抑制，事件链路照常 */
+    });
   void import("@tauri-apps/api/event")
     .then(({ listen }) =>
       listen<{ playing: boolean } | null>("media:snapshot", (e) => {
@@ -151,6 +216,9 @@ export function startAmbienceMediaGuard(): () => void {
 
 function stopNodes() {
   if (!active) return;
+  // 图即将拆除：待手势恢复的补重试失去目标（ctx 350ms 后 close），
+  // 手势监听里对 closed ctx 的守卫会自行清零，这里先复位意图。
+  pendingGestureResume = false;
   const { ctx, master, crackleTimer, swellTimer } = active;
   if (crackleTimer !== null) window.clearInterval(crackleTimer);
   if (swellTimer !== null) window.clearInterval(swellTimer);
@@ -273,17 +341,20 @@ export function setAmbiencePlaying(kind: AmbienceKind, volume: number, playing: 
   // 用户意图先行记录：媒体抑制解除后按它恢复（#8 的解耦核心）。
   desired = { kind, volume, playing };
   stopNodes();
+  pendingGestureResume = false;
   if (!playing || mediaInhibited) return false;
   active = build(kind, volume);
-  void active.ctx.resume().catch(() => {
-    // 某些环境 resume 需要手势；静默失败，UI 状态由调用方回读。
-  });
+  // 用户手势路径（番茄面板开关）resume 通常直接放行；个别策略严的环境
+  // 走统一入口挂「待手势恢复」。
+  resumeCtx(active.ctx);
   return true;
 }
 
-/** 查询环境音当前是否播放中。O(1)。 */
+/** 查询环境音当前是否**真正出声**（ctx 处于 running 才算——
+ * suspended 时虽持有节点图但被自动播放策略静默，此前谎报播放中。
+ * resume 在途的短暂窗口按未播放处理，成功后调用方重读即翻转）。 */
 export function isAmbiencePlaying(): boolean {
-  return active !== null;
+  return active !== null && active.ctx.state === "running";
 }
 
 /**

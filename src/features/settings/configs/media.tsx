@@ -9,7 +9,10 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { pickFilePath } from "../../../lib/file-dialog";
 import { useT } from "../../../i18n-lite";
 import { confirmDialog } from "../../../components/PromptDialog";
-import { useSettingsStore } from "../../../store/settings-store";
+import { useSettingsStore, type MediaBehaviorSettings } from "../../../store/settings-store";
+import { useMediaSessions } from "../../../lib/media-sessions";
+import { useSliderDraft } from "../../../lib/use-slider-draft";
+import { useTauriEvent } from "../../../lib/use-tauri-event";
 import type { WidgetConfig } from "../../../widget/widget-config";
 import {
   evictGalleryFiles,
@@ -31,6 +34,12 @@ export function MusicConfig({
   showLayout?: boolean;
 }) {
   const tr = useT();
+  /* 频谱四滑杆（高度/频带/灵敏度/平滑）拖动期只进草稿、松手
+     （onCommitEnd）一次 update()——此前逐 input 事件全量走配置写回链。 */
+  const visualHeight = useSliderDraft((v) => update({ visualHeight: v }));
+  const bandCount = useSliderDraft((v) => update({ bandCount: v }));
+  const gain = useSliderDraft((v) => update({ gain: v }));
+  const smoothing = useSliderDraft((v) => update({ smoothing: v }));
   return (
     <>
       {/* nowplaying 类型布局被组件锁定为「正在播放」卡片，展示该选项只会误导。 */}
@@ -106,12 +115,13 @@ export function MusicConfig({
         </div>
         <Slider
           label="可视化高度"
-          value={(config.visualHeight as number) || 64}
+          value={visualHeight.draft ?? ((config.visualHeight as number) || 64)}
           min={10}
           max={100}
           step={5}
           suffix="%"
-          onChange={(v) => update({ visualHeight: v })}
+          onChange={visualHeight.slide}
+          onCommitEnd={visualHeight.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -121,12 +131,13 @@ export function MusicConfig({
         </div>
         <Slider
           label="频带数"
-          value={(config.bandCount as number) || 64}
+          value={bandCount.draft ?? ((config.bandCount as number) || 64)}
           min={16}
           max={96}
           step={8}
           suffix={tr("根")}
-          onChange={(v) => update({ bandCount: v })}
+          onChange={bandCount.slide}
+          onCommitEnd={bandCount.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -136,12 +147,13 @@ export function MusicConfig({
         </div>
         <Slider
           label="灵敏度"
-          value={(config.gain as number) ?? 1}
+          value={gain.draft ?? (config.gain as number) ?? 1}
           min={0.5}
           max={3}
           step={0.1}
           suffix="×"
-          onChange={(v) => update({ gain: v })}
+          onChange={gain.slide}
+          onCommitEnd={gain.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -151,11 +163,12 @@ export function MusicConfig({
         </div>
         <Slider
           label="平滑度"
-          value={(config.smoothing as number) ?? 0.5}
+          value={smoothing.draft ?? (config.smoothing as number) ?? 0.5}
           min={0}
           max={1}
           step={0.05}
-          onChange={(v) => update({ smoothing: v })}
+          onChange={smoothing.slide}
+          onCommitEnd={smoothing.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -198,7 +211,7 @@ export function MusicConfig({
 /**
  * 「正在播放」独立类型（nowplaying）的设置段。卡片布局被组件锁定、不渲染
  * 频谱——此前借用 MusicConfig 展示的一排频谱字段对它全是死控件，这里只收
- * 真正生效的卡片开关（对齐同类媒体浮窗设置页的项位）。
+ * 真正生效的卡片开关（对齐同类媒体浮窗 媒体浮窗设置页的项位）。
  * 独占播放是全局媒体行为（general.media，App 单向推送 Rust watcher）：
  * 此处与卡片右键菜单读写同一份 store（双入口同源，灵动岛设置同款模式）。
  */
@@ -211,9 +224,7 @@ export function NowPlayingConfig({
 }) {
   const tr = useT();
   const media = useSettingsStore((s) => s.general.media);
-  const setGeneral = useSettingsStore((s) => s.setGeneral);
   const pauseOthers = media?.pauseOthers ?? false;
-  const blocked = media?.blockedSessions ?? [];
   const focusPause = media?.focusPause === true;
   return (
     <>
@@ -221,13 +232,13 @@ export function NowPlayingConfig({
         title={tr("独占播放")}
         desc={tr("某播放源开播时自动暂停其余在播播放源")}
         on={pauseOthers}
-        onChange={(v) => setGeneral({ media: { pauseOthers: v, blockedSessions: blocked, focusPause } })}
+        onChange={(v) => patchMediaBehavior({ pauseOthers: v })}
       />
       <SettingToggleRow
         title={tr("专注时暂停音乐")}
         desc={tr("专注开始自动暂停在播媒体，结束或休息时智能恢复（别的播放器在播则不顶掉）")}
         on={focusPause}
-        onChange={(v) => setGeneral({ media: { pauseOthers, blockedSessions: blocked, focusPause: v } })}
+        onChange={(v) => patchMediaBehavior({ focusPause: v })}
       />
       <SettingToggleRow
         title={tr("标题与歌手居中")}
@@ -266,6 +277,83 @@ export function NowPlayingConfig({
   );
 }
 
+/**
+ * （同型）：general.media 是整节替换切片（setGeneral → sync:settings
+ * 广播 → 各窗 applySettings 整对象覆盖）。写前必须现取最新基底再合并本次
+ * 变更——渲染闭包快照会把在途的跨窗写入（如桌面层右键「隐藏播放源」的
+ * blockedSessions）整节回退。设置页两个分区与卡片右键菜单（MusicWidget
+ * 内联同款）三入口统一口径。
+ */
+function patchMediaBehavior(patch: Partial<MediaBehaviorSettings>): void {
+  const { setGeneral, general } = useSettingsStore.getState();
+  setGeneral({ media: { ...general.media, ...patch } });
+}
+
+/**
+ * 全局媒体行为（general.media）的常规页常驻分区。此前唯一表单入口
+ * 挂在「正在播放」实例配置页——删光音频监控/正在播放小组件后，「独占播放」
+ * 等全局行为仍在 Rust watcher 里持续生效，却没有任何 UI 能关掉（设置搜索
+ * 也搜不到）。与实例配置页、卡片右键菜单读写同一份 store（三入口同源）。
+ * 黑名单复用共享会话订阅（Rust 的 media:sessions 已扩投到设置窗）。
+ */
+export function MediaBehaviorConfig() {
+  const tr = useT();
+  const media = useSettingsStore((s) => s.general.media);
+  const pauseOthers = media?.pauseOthers ?? false;
+  const focusPause = media?.focusPause === true;
+  const blockedIds = media?.blockedSessions ?? [];
+  const { sessions } = useMediaSessions(true);
+  const setBlocked = (list: string[]) => patchMediaBehavior({ blockedSessions: list });
+  /* 播放源按「可见 → 已隐藏」排序：隐藏入口常用在前，已隐藏项沉底便于恢复。 */
+  const ordered = [...sessions].sort((a, b) => Number(!!a.blocked) - Number(!!b.blocked));
+  return (
+    <>
+      <SettingToggleRow
+        title={tr("独占播放")}
+        desc={tr("某播放源开播时自动暂停其余在播播放源")}
+        on={pauseOthers}
+        onChange={(v) => patchMediaBehavior({ pauseOthers: v })}
+      />
+      <SettingToggleRow
+        title={tr("专注时暂停音乐")}
+        desc={tr("专注开始自动暂停在播媒体，结束或休息时智能恢复（别的播放器在播则不顶掉）")}
+        on={focusPause}
+        onChange={(v) => patchMediaBehavior({ focusPause: v })}
+      />
+      {ordered.length > 0 && (
+        <>
+          <div className="tm-setting-row">
+            <div className="tm-setting-text">
+              <span className="tm-setting-title">{tr("隐藏播放源")}</span>
+              <span className="tm-setting-desc">{tr("被隐藏的应用不参与会话选择，也不被媒体功能打扰")}</span>
+            </div>
+          </div>
+          {ordered.map((s) => (
+            <div className="tm-setting-row" key={s.id}>
+              <div className="tm-setting-text">
+                <span className="tm-setting-title">
+                  {s.name}
+                  {s.blocked ? ` · ${tr("已隐藏")}` : ""}
+                </span>
+                <span className="tm-setting-desc">{s.playing ? tr("正在播放") : s.id}</span>
+              </div>
+              <button
+                className="tm-btn-secondary"
+                onClick={() =>
+                  s.blocked ? setBlocked(blockedIds.filter((b) => b !== s.id)) : setBlocked([...blockedIds, s.id])
+                }
+              >
+                {s.blocked ? tr("恢复") : tr("隐藏")}
+              </button>
+            </div>
+          ))}
+        </>
+      )}
+      <p className="tm-note">{tr("这些是全局媒体行为，对所有正在播放/音频监控小组件生效。")}</p>
+    </>
+  );
+}
+
 export function GalleryConfig({
   config,
   update,
@@ -278,13 +366,22 @@ export function GalleryConfig({
   const tr = useT();
   const [photos, setPhotos] = useState<GalleryPhoto[]>(() => loadGallery(instanceId)?.photos ?? []);
   const [urlText, setUrlText] = useState("");
+  /* 链接输入的行内错误提示（非法 URL / 重复添加），输入即清除。 */
+  const [urlError, setUrlError] = useState<string | null>(null);
+  /* 间距滑杆走草稿、松手一次 update()。 */
+  const gap = useSliderDraft((v) => update({ gap: v }));
 
   /** 写回 localStorage 并广播：本窗口走 CustomEvent，设置窗 ↔ 桌面层跨窗
       口走 Tauri 事件（与 widget-config 的 sync:widget-config 同一套路）。
-      G12：写入统一经 trimGallery 截断（与桌面组件同上限），被挤出的本地
-      导入图连带清理磁盘副本。 */
-  const commit = (list: GalleryPhoto[]) => {
-    const { kept, evicted } = trimGallery(list);
+      写入统一经 trimGallery 截断（与桌面组件同上限），被挤出的本地
+      导入图连带清理磁盘副本。
+      (a)：写前现读权威 loadGallery 为基底再应用本次变更（对齐
+      ShortcutsConfig「写前现读」口径）——渲染闭包里的 photos 在确认
+      对话框 / 文件选择等异步间隙可能已被桌面侧删除更新，拿它当基底整表
+      写回会把已删图片复活。 */
+  const commit = (apply: (base: GalleryPhoto[]) => GalleryPhoto[]) => {
+    const base = loadGallery(instanceId)?.photos ?? [];
+    const { kept, evicted } = trimGallery(apply(base));
     evictGalleryFiles(evicted);
     setPhotos(kept);
     persistGallery(instanceId, kept);
@@ -294,20 +391,47 @@ export function GalleryConfig({
     }
   };
 
-  // G12：装载时收敛导入/备份恢复带入的超量列表。commit 稳定性无意义
+  /* (b)：监听外部变更（桌面图库组件删除图片后 GalleryWidget 广播同款
+      CustomEvent + sync:gallery）重读列表，保持本地面与权威存储一致。 */
+  useEffect(() => {
+    const onExternal = (e: Event) => {
+      if ((e as CustomEvent).detail === instanceId) setPhotos(loadGallery(instanceId)?.photos ?? []);
+    };
+    window.addEventListener("focus-desk:gallery-changed", onExternal);
+    return () => window.removeEventListener("focus-desk:gallery-changed", onExternal);
+  }, [instanceId]);
+  useTauriEvent<{ instanceId: string }>("sync:gallery", (payload) => {
+    if (payload?.instanceId === instanceId) setPhotos(loadGallery(instanceId)?.photos ?? []);
+  });
+
+  // 装载时收敛导入/备份恢复带入的超量列表。commit 稳定性无意义
   // （组件无其它提交源），只随 instanceId 跑一次。
   useEffect(() => {
     const res = loadGallery(instanceId);
     if (!res || res.evicted.length === 0) return;
     evictGalleryFiles(res.evicted);
-    commit(res.photos);
+    commit(() => res.photos);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId]);
 
   const addUrl = () => {
-    const u = urlText.trim();
-    if (!u) return;
-    commit([...photos, { id: crypto.randomUUID(), url: u, label: tr("图片") }]);
+    const text = urlText.trim();
+    if (!text) return;
+    /* ShortcutsConfig 同款归一化——无 scheme 的裸域名补 https://，
+       归一化后仍解析失败 / 与现有图片按 url 去重时行内提示，不入库。 */
+    const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`;
+    try {
+      new URL(url);
+    } catch {
+      setUrlError(tr("请输入有效的图片链接"));
+      return;
+    }
+    const base = loadGallery(instanceId)?.photos ?? [];
+    if (base.some((p) => p.url === url)) {
+      setUrlError(tr("该图片链接已存在，请勿重复添加"));
+      return;
+    }
+    commit((list) => [...list, { id: crypto.randomUUID(), url, label: tr("图片") }]);
     setUrlText("");
   };
 
@@ -320,8 +444,8 @@ export function GalleryConfig({
       });
       if (!picked) return;
       const res = await invoke<{ path: string; thumb: string | null }>("gallery_import_file", { path: picked });
-      commit([
-        ...photos,
+      commit((list) => [
+        ...list,
         {
           id: crypto.randomUUID(),
           url: convertFileSrc(res.path),
@@ -337,7 +461,7 @@ export function GalleryConfig({
 
   const removePhoto = async (id: string) => {
     const victim = photos.find((p) => p.id === id);
-    /* B1：本地导入的图片会连同磁盘文件一起物理删除（不可恢复），必须确认。 */
+    /* 本地导入的图片会连同磁盘文件一起物理删除（不可恢复），必须确认。 */
     if (victim?.storedPath) {
       const ok = await confirmDialog({
         title: tr("删除图片"),
@@ -347,7 +471,7 @@ export function GalleryConfig({
       });
       if (!ok) return;
     }
-    commit(photos.filter((p) => p.id !== id));
+    commit((list) => list.filter((p) => p.id !== id));
     if (victim?.storedPath && isTauri()) {
       void invoke("gallery_delete_file", { path: victim.storedPath }).catch(() => {});
     }
@@ -379,12 +503,13 @@ export function GalleryConfig({
         </div>
         <Slider
           label="间距"
-          value={(config.gap as number) || 8}
+          value={gap.draft ?? ((config.gap as number) || 8)}
           min={2}
           max={24}
           step={2}
           suffix="px"
-          onChange={(v) => update({ gap: v })}
+          onChange={gap.slide}
+          onCommitEnd={gap.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -428,18 +553,24 @@ export function GalleryConfig({
         <input
           className="tm-text-input"
           value={urlText}
-          onChange={(e) => setUrlText(e.target.value)}
+          onChange={(e) => {
+            setUrlText(e.target.value);
+            setUrlError(null);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter") addUrl();
           }}
           placeholder={tr("粘贴图片 URL…")}
           aria-label={tr("添加图片链接")}
+          aria-invalid={urlError ? true : undefined}
           data-interactive
         />
         <button className="tm-btn-secondary" onClick={addUrl} data-interactive>
           {tr("添加链接")}
         </button>
       </div>
+      {/* 非法 / 重复链接的行内提示（复用条件输入的错误文案样式）。 */}
+      {urlError && <span className="auto-cond-error">{urlError}</span>}
       {photos.length > 0 && (
         <div className="tm-shortcut-list">
           {photos.map((p) => (
@@ -464,9 +595,12 @@ export function GalleryConfig({
   );
 }
 
-/** 系统栏可选条目（与 SystemBarWidget 的 ITEM_KEYS 对齐；顺序即渲染顺序）。 */
+/** 速写小组件配置：默认画笔大小与导出质量（JPEG 质量百分比）。 */
 export function SketchConfig({ config, update }: { config: WidgetConfig; update: (p: Partial<WidgetConfig>) => void }) {
   const tr = useT();
+  /* 画笔大小 / 导出质量两滑杆走草稿、松手一次 update()。 */
+  const defaultBrushSize = useSliderDraft((v) => update({ defaultBrushSize: v }));
+  const exportQuality = useSliderDraft((v) => update({ exportQuality: Math.round(v * 100) / 100 }));
   return (
     <>
       <div className="tm-setting-row">
@@ -476,12 +610,13 @@ export function SketchConfig({ config, update }: { config: WidgetConfig; update:
         </div>
         <Slider
           label="默认画笔大小"
-          value={(config.defaultBrushSize as number) || 3}
+          value={defaultBrushSize.draft ?? ((config.defaultBrushSize as number) || 3)}
           min={1}
           max={20}
           step={1}
           suffix="px"
-          onChange={(v) => update({ defaultBrushSize: v })}
+          onChange={defaultBrushSize.slide}
+          onCommitEnd={defaultBrushSize.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -523,12 +658,13 @@ export function SketchConfig({ config, update }: { config: WidgetConfig; update:
         </div>
         <Slider
           label="JPEG 导出质量"
-          value={(config.exportQuality as number) || 0.92}
+          value={exportQuality.draft ?? ((config.exportQuality as number) || 0.92)}
           min={0.5}
           max={1}
           step={0.02}
           suffix=""
-          onChange={(v) => update({ exportQuality: Math.round(v * 100) / 100 })}
+          onChange={exportQuality.slide}
+          onCommitEnd={exportQuality.commitEnd}
         />
       </div>
     </>

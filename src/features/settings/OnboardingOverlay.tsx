@@ -7,13 +7,14 @@
  * 常规页保留「新手引导」重新入口（setExtra({onboarded:false}) 即可重看）。
  * 出场走 0.2s 淡出：先本地 closing 态播完退场再翻存储位，避免整层瞬删。
  */
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Bell, ChevronLeft, ChevronRight, Keyboard, LayoutGrid, Sparkles, X } from "lucide-react";
 import { prefersReducedMotion } from "../../lib/anim";
 import { animDurations } from "../../lib/durations";
 import { useT } from "../../i18n-lite";
 import { useSettingsStore } from "../../store/settings-store";
 import { isShortcutBound } from "../../lib/shortcuts";
+import { CHEATSHEET_HOTKEY_DISPLAY } from "../../components/ShortcutCheatsheet";
 
 /** 引导步骤定义（图标 + i18n 键）。文案键在 i18n.ts 登记。 */
 const STEPS = [
@@ -44,7 +45,8 @@ export function OnboardingOverlay() {
   const tr = useT();
   const onboarded = useSettingsStore((s) => s.extra.onboarded);
   /* 全局快捷键实时值：引导文案里的键位占位符按当前绑定注入（停用显示
-     「已停用」），改键后引导不再撒谎。 */
+     「已停用」），改键后引导不再撒谎。速查表呼出键不走设置表（固定
+     Ctrl+?），与 ShortcutCheatsheet 共享同一展示常量。 */
   const shortcuts = useSettingsStore((s) => s.shortcuts);
   const accelText = (accel: string): string => (isShortcutBound(accel) ? accel : tr("已停用"));
   const stepBody = (body: string): string =>
@@ -53,36 +55,83 @@ export function OnboardingOverlay() {
       .replace("{note}", accelText(shortcuts["quick-note"]))
       .replace("{palette}", accelText(shortcuts["toggle-palette"]))
       .replace("{layer}", accelText(shortcuts["toggle-layer"]))
-      .replace("{cheat}", "Ctrl+?");
+      .replace("{cheat}", CHEATSHEET_HOTKEY_DISPLAY);
   const [step, setStep] = useState(0);
   /* 步进方向（1 前进 / -1 后退）：内容舞台按方向滑入，替代此前的硬切。 */
   const [dir, setDir] = useState(1);
   const [closing, setClosing] = useState(false);
+  /* 焦点陷阱 + 关闭归还（PromptDialog 同款骨架的内联实现）。 */
+  const rootRef = useRef<HTMLDivElement>(null);
+  const prevFocusRef = useRef<HTMLElement | null>(null);
   const go = (delta: number) => {
     setDir(delta);
     setStep((i) => Math.min(STEPS.length - 1, Math.max(0, i + delta)));
   };
 
+  // 打开时记住层外焦点；引导结束（onboarded 翻真 → 本层不再渲染）或组件卸载
+  // 时归还——此前焦点跌落 body，键盘用户需重新 Tab 定位。记录时排除层内元素
+  // （主按钮 autoFocus 可能在 effect 前已把焦点移进本层，记它等于没记）。
+  useEffect(() => {
+    if (onboarded) return;
+    const ae = document.activeElement;
+    if (ae instanceof HTMLElement && !rootRef.current?.contains(ae)) prevFocusRef.current = ae;
+    return () => {
+      const prev = prevFocusRef.current;
+      prevFocusRef.current = null;
+      if (prev && prev.isConnected) prev.focus({ preventScroll: true });
+    };
+  }, [onboarded]);
+
   // Esc = 跳过引导（capture 抢先，避免同窗其它 Esc 处理器连锁关闭）。此前
   // 引导对 Esc 无反应，与全应用「Esc 关弹层」心智相悖。
+  // onboarded=true 时本层已死但组件仍挂载（下方 return null）：守卫必须放在
+  // effect 里——否则捕获监听常驻，吞掉整个设置窗的 Esc，且每次按键都触发
+  // finish() 的全量落盘 + 跨窗同步。
+  // Tab = 焦点陷阱（PromptDialog/WidgetPicker 同款）：循环限制在引导卡内，
+  // 不逃逸到背后的设置页。
   useEffect(() => {
+    if (onboarded) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
-      e.preventDefault();
-      setClosing(true);
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        e.preventDefault();
+        setClosing(true);
+        return;
+      }
+      if (e.key !== "Tab" || !rootRef.current) return;
+      const focusables = Array.from(
+        rootRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((el) => !el.hasAttribute("disabled"));
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !rootRef.current.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !rootRef.current.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, []);
+  }, [onboarded]);
 
   // 退场动画播完再写存储位（父级随 onboarded=true 卸载本层）。
   // 三.1：等待时长与 CSS（.tm-onb.is-closing 的 --dur-fx）同源取值，原固定
   // 200ms 与速度档脱钩；reduce-motion 命中时 CSS 已把退场压为瞬跳，直接翻
-  // 存储位不再空等（useDelayedUnmount 的 F3 立即卸载规则同口径）。
+  // 存储位不再空等（useDelayedUnmount 的 立即卸载规则同口径）。
+  // finish 仅在当前值非 true 时写：他窗/常规页重置入口与退场动画竞态时避免
+  // 重复全量落盘 + 跨窗同步（setExtra 每次都整快照写 localStorage/SQLite）。
   useEffect(() => {
     if (!closing) return;
-    const finish = () => useSettingsStore.getState().setExtra({ onboarded: true });
+    const finish = () => {
+      if (useSettingsStore.getState().extra.onboarded) return;
+      useSettingsStore.getState().setExtra({ onboarded: true });
+    };
     if (prefersReducedMotion()) {
       finish();
       return;
@@ -100,6 +149,7 @@ export function OnboardingOverlay() {
 
   return (
     <div
+      ref={rootRef}
       className={`tm-onb${closing ? " is-closing" : ""}`}
       role="dialog"
       aria-modal="true"

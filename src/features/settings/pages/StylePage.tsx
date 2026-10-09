@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 设置页 · 样式页：2 主题预设（每个自带深 / 浅两套，由「主题模式」选档）、
  * 明暗模式、主色、圆角、模糊与背景玻璃色等外观参数；另设「壁纸」区——
  * 选择壁纸文件夹后可从中一键更换桌面壁纸（Rust SPI_SETDESKWALLPAPER，
@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import {
   AppWindow,
   Check,
+  Droplets,
   FolderOpen,
   History,
   Image as ImageIcon,
@@ -15,6 +16,7 @@ import {
   Monitor,
   Moon,
   Pipette,
+  RotateCw,
   Square,
   StretchHorizontal,
   Sun,
@@ -35,6 +37,8 @@ import {
   type ThemePreset
 } from "../../../store/settings-store";
 import {
+  PRESET_DEFAULT_OPACITY,
+  UI_FONT_STACKS,
   cancelDeferNextThemeApply,
   deferNextThemeApply,
   cancelDeferNextFloatingThemeApply,
@@ -56,39 +60,76 @@ import {
   resolveGalleryManifestUrl,
   type GalleryPreset
 } from "../../../lib/preset-gallery";
-import { extractPalette, type ExtractedPalette } from "../../../domain/palette-extract";
+import { extractPalette, paletteToCustomColors, type ExtractedPalette } from "../../../domain/palette-extract";
 import { copyText } from "../../../lib/clipboard";
+import { listStylePresets } from "../../../lib/style-presets";
 
 /** 壁纸候选拓展名（list_directory 结果按此过滤）。 */
 const IMAGE_EXT = /\.(jpe?g|png|bmp|gif|webp|jfif)$/i;
 /** 文件夹网格一次加载的缩略图上限（Rust 批量命令每批 ≤32）。 */
 const FOLDER_GRID_CAP = 30;
+/** Rust read_image_thumbnails 的单批硬上限（wallpaper.rs take(32)）。 */
+const THUMB_BATCH = 32;
 
 /** list_directory 返回项的本页所需字段。 */
 type DirEntry = { name: string; path: string; is_dir: boolean };
 
-/** 批量取缩略图（Rust read_image_thumbnails，单批 ≤32 张 320px PNG）。 */
+/* 模块级缩略图缓存（path → 320px PNG dataURL）。每次应用壁纸都会把该路径
+   去重置顶进 recentWallpapers → stripPaths 重排 → 若无缓存则 30+ 张全量
+   重新 IPC + 解码一遍，且网格整体闪回占位符。缓存命中后只补拉新增路径，
+   已解码的图直接复用；容量上限防长会话无限膨胀（约 5 个文件夹的量）。 */
+const THUMB_CACHE_CAP = 160;
+const thumbCache = new Map<string, string>();
+
+function cacheThumb(path: string, url: string): void {
+  if (thumbCache.has(path)) return;
+  thumbCache.set(path, url);
+  if (thumbCache.size > THUMB_CACHE_CAP) {
+    const oldest = thumbCache.keys().next().value;
+    if (oldest !== undefined) thumbCache.delete(oldest);
+  }
+}
+
+/** 批量取缩略图（Rust read_image_thumbnails，单批 ≤32 张 320px PNG）。
+ *  路径表超 32 条时自动分批合并结果——页面级合批（最近使用 + 文件夹去重）
+ *  后总数可达 35，不分批则第 33 张起静默无缩略图。键按排序归一（recent
+ *  置顶重排不触发重拉），缓存命中的条目同步先行供图，仅补拉缺失路径，
+ *  完成后增量合并（不清空既有条目，失败时保留缓存）。 */
 function useThumbnails(paths: string[]): Record<string, string> {
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  const key = useMemo(() => paths.join("|"), [paths]);
+  const key = useMemo(() => [...paths].sort().join("|"), [paths]);
   useEffect(() => {
-    if (!isTauri() || !key) {
-      setThumbs({});
-      return;
+    const list = key ? key.split("|") : [];
+    // 先同步吐缓存命中（换页/重排回来时无占位符闪断）。
+    const cached: Record<string, string> = {};
+    for (const p of list) {
+      const hit = thumbCache.get(p);
+      if (hit) cached[p] = hit;
     }
+    setThumbs(cached);
+    const pending = list.filter((p) => !thumbCache.has(p));
+    if (!isTauri() || pending.length === 0) return;
     let disposed = false;
-    const list = key.split("|");
-    invoke<(string | null)[]>("read_image_thumbnails", { paths: list })
-      .then((res) => {
+    const batches: string[][] = [];
+    for (let i = 0; i < pending.length; i += THUMB_BATCH) batches.push(pending.slice(i, i + THUMB_BATCH));
+    Promise.all(batches.map((batch) => invoke<(string | null)[]>("read_image_thumbnails", { paths: batch })))
+      .then((results) => {
         if (disposed) return;
-        const map: Record<string, string> = {};
-        list.forEach((p, i) => {
-          if (res[i]) map[p] = res[i] as string;
+        const fresh: Record<string, string> = {};
+        batches.forEach((batch, bi) => {
+          batch.forEach((p, i) => {
+            const url = results[bi]?.[i];
+            if (url) {
+              cacheThumb(p, url);
+              fresh[p] = url;
+            }
+          });
         });
-        setThumbs(map);
+        if (Object.keys(fresh).length > 0) setThumbs((prev) => ({ ...prev, ...fresh }));
       })
       .catch(() => {
-        if (!disposed) setThumbs({});
+        // 拉取失败：保留已供的缓存条目（此前整体清空，网络/IO 抖动一次全网格
+        // 闪占位符）；未命中的路径下次键变化自然重试。
       });
     return () => {
       disposed = true;
@@ -98,22 +139,24 @@ function useThumbnails(paths: string[]): Record<string, string> {
 }
 
 /**
- * 壁纸缩略图条（「最近使用」与「从文件夹选择」共用）：一次批量取图，
+ * 壁纸缩略图条（「最近使用」与「从文件夹选择」共用）：缩略图由页面级
+ * useThumbnails 统一拉取注入（两条 strip 的路径合批去重，同图不重复解码），
  * 点击任一张即应用为桌面壁纸；当前生效的壁纸带勾徽。系统把壁纸转码成
  * TranscodedWallpaper 时无法按路径精确匹配，此时回退匹配「最近经 Vela
  * 应用的一张」（调用方传入的 current 已做该归一）。
  */
 function WallpaperStrip({
   paths,
+  thumbs,
   current,
   onPick
 }: {
   paths: string[];
+  thumbs: Record<string, string>;
   current: string;
   onPick: (path: string) => void;
 }) {
   const tr = useT();
-  const thumbs = useThumbnails(paths);
   return (
     <div className="tm-wallpaper-strip">
       {paths.map((p) => {
@@ -159,7 +202,7 @@ function WallpaperStrip({
 }
 
 export function StylePage() {
-  // F2（审计）：字段级订阅——外观页只消费样式相关标量与 setter。
+  // 字段级订阅——外观页只消费样式相关标量与 setter。
   const s = useSettingsStore(
     useShallow((st) => ({
       preset: st.preset,
@@ -230,9 +273,12 @@ export function StylePage() {
     const effSt = st.floatingThemeMode !== "follow" ? { ...st, themeMode: st.floatingThemeMode } : st;
     deferNextThemeApply();
     deferNextFloatingThemeApply();
+    /* [INK-DUR]：播放时长走设置滑条（默认 1400ms ≈ 原自适应中值）。 */
+    const inkDur = st.extra.themeInkDurationMs;
     /* 兜底：onCovered 依赖 rAF/transition 推进，窗口隐藏 / 系统节流 / 动画被打断
        时可能永不触发——defer 标志会一直武装，把之后每一次主题应用都吞掉（主题
-       卡旧色直到下一次变更）。限时 1.8s 未覆盖即取消接管立即上色。 */
+       卡旧色直到下一次变更）。限时（时长 + 800ms 余量）未覆盖即取消接管立即
+       上色——failsafe 必须盖过播放时长，否则长时长档会被中途掐断换肤。 */
     let covered = false;
     const failsafe = window.setTimeout(() => {
       if (covered) return;
@@ -242,7 +288,7 @@ export function StylePage() {
       const cur = useSettingsStore.getState();
       const eff = cur.floatingThemeMode !== "follow" ? { ...cur, themeMode: cur.floatingThemeMode } : cur;
       applySettings(eff, themeEnvOf(eff), eff.general.reduceEffects);
-    }, 1800);
+    }, inkDur + 800);
     const rect = container.getBoundingClientRect();
     const tokens = resolveEffectiveTokens(effSt.preset, effSt.themeMode, effSt.customColors);
     let started = false;
@@ -260,6 +306,7 @@ export function StylePage() {
           accent: /^#[0-9a-f]{3,8}$/i.test(s.primaryColor) ? s.primaryColor : tokens.accent
         },
         opacity: st.settingsWindowOpacity / 100,
+        durationMs: inkDur,
         onCovered: () => {
           if (covered) return;
           covered = true;
@@ -286,7 +333,16 @@ export function StylePage() {
 
   /* ---- 壁纸区状态 ---- */
   const wpInfo = useWallpaperStore((w) => w.info);
+  /* [INK-DUR]：主题切换水墨时长滑条（300–3000ms，拖动防抖落盘）。 */
+  const inkDurationMs = useSettingsStore((st) => st.extra.themeInkDurationMs);
+  const setExtraDebounced = useSettingsStore((st) => st.setExtraDebounced);
   const [folderImages, setFolderImages] = useState<string[]>([]);
+  /* 文件夹内图片总数（slice 前）——网格只展示前 FOLDER_GRID_CAP 张，
+     截断时用真实总数提示「共 N 张，显示前 30 张」，避免误导只有 30 张。 */
+  const [folderTotal, setFolderTotal] = useState(0);
+  /* 文件夹枚举的刷新 nonce：文件夹内容在会话中变化（新下载图片等）时点
+     「刷新」重列，不必重选文件夹。 */
+  const [folderNonce, setFolderNonce] = useState(0);
   // 「当前壁纸」判定：路径精确匹配；系统把壁纸转码成 TranscodedWallpaper 时
   // 回退匹配「最近经 Vela 应用的一张」（recent[0]）。
   const transcoded = !!wpInfo && /TranscodedWallpaper/i.test(wpInfo.path);
@@ -309,25 +365,42 @@ export function StylePage() {
   useEffect(() => {
     if (!isTauri() || !s.wallpaperFolder) {
       setFolderImages([]);
+      setFolderTotal(0);
       return;
     }
     let disposed = false;
     invoke<DirEntry[]>("list_directory", { path: s.wallpaperFolder, showHidden: false })
       .then((list) => {
         if (disposed) return;
-        const imgs = list
-          .filter((e) => !e.is_dir && IMAGE_EXT.test(e.name))
-          .map((e) => e.path)
-          .slice(0, FOLDER_GRID_CAP);
-        setFolderImages(imgs);
+        const imgs = list.filter((e) => !e.is_dir && IMAGE_EXT.test(e.name)).map((e) => e.path);
+        setFolderTotal(imgs.length);
+        setFolderImages(imgs.slice(0, FOLDER_GRID_CAP));
       })
       .catch(() => {
-        if (!disposed) setFolderImages([]);
+        if (!disposed) {
+          setFolderImages([]);
+          setFolderTotal(0);
+        }
       });
     return () => {
       disposed = true;
     };
-  }, [s.wallpaperFolder]);
+  }, [s.wallpaperFolder, folderNonce]);
+
+  /* 页面级合批缩略图：最近使用 + 文件夹两条 strip 的路径去重后一次拉取
+     （此前两条 strip 各自 IPC，同一张图在两边时重复解码一次）。 */
+  const stripPaths = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const p of [...s.recentWallpapers, ...folderImages]) {
+      if (p && !seen.has(p)) {
+        seen.add(p);
+        out.push(p);
+      }
+    }
+    return out;
+  }, [s.recentWallpapers, folderImages]);
+  const stripThumbs = useThumbnails(stripPaths);
 
   // 应用壁纸：Rust SPI 真实切换 + 登记「最近使用」（去重置顶、最多 5 张）。
   const applyWallpaper = async (path: string) => {
@@ -344,9 +417,10 @@ export function StylePage() {
   // 「浏览照片」：从任意目录挑一张（不限于壁纸文件夹），应用后同样进最近使用。
   const browseWallpaper = async () => {
     try {
+      // 过滤器补 jfif（IMAGE_EXT 认它，Windows 相机导出常见，此前选不了）。
       const path = await pickFilePath({
         title: tr("选择壁纸图片"),
-        filters: [{ name: tr("图片"), extensions: ["jpg", "jpeg", "png", "bmp", "gif", "webp"] }]
+        filters: [{ name: tr("图片"), extensions: ["jpg", "jpeg", "png", "bmp", "gif", "webp", "jfif"] }]
       });
       if (path) void applyWallpaper(path);
     } catch {
@@ -456,7 +530,7 @@ export function StylePage() {
 
       <section className="tm-section">
         <div className="tm-section-title">{tr("主题")}</div>
-        {/* B2 行规范示范：三段式（leading 图标芯片 + title/subtitle + trailing） */}
+        {/* 行规范示范：三段式（leading 图标芯片 + title/subtitle + trailing） */}
         <SettingRow title="主题模式" desc="选择应用的外观主题" icon={SunMoon}>
           <Segmented<ThemeMode>
             value={s.themeMode}
@@ -471,13 +545,13 @@ export function StylePage() {
             ]}
           />
         </SettingRow>
-        {/* [SPLIT-THEME]（借鉴 CSH #13）：浮窗（设置窗/速记窗）独立明暗档——
+        {/* [SPLIT-THEME]：浮窗（设置窗/速记窗）独立明暗档——
             以改写后的快照在本窗重放同一主题引擎，桌面层不受影响。 */}
         <SettingRow title="浮窗深浅" desc="设置窗口与速记窗的独立明暗档（桌面小组件层不受影响）" icon={AppWindow}>
           <Segmented<"follow" | "light" | "dark">
             value={s.floatingThemeMode}
             onChange={(m) => {
-              // P2-3：与相邻的主题模式控件同款水墨接管——arm 后由下方 ink
+              // 与相邻的主题模式控件同款水墨接管——arm 后由下方 ink
               // effect 统一 defer（全局写 + FloatingThemeSync 覆盖重放），
               // 覆盖满后携带分体快照上色；此前这里是先行硬切，同一页双标。
               armThemeInk();
@@ -501,6 +575,19 @@ export function StylePage() {
               armThemeInk();
               s.resetPrimaryColor();
             }}
+          />
+        </SettingRow>
+        {/* [INK-DUR]：切换动效时长滑条——调小更快、调大更舒展；双击回默认。 */}
+        <SettingRow title="主题切换动效" desc="切换主题 / 明暗 / 主色时水墨晕开的时长（越小越快）" icon={Droplets}>
+          <Slider
+            label="主题切换动效"
+            value={inkDurationMs}
+            min={300}
+            max={3000}
+            step={50}
+            suffix="ms"
+            defaultValue={1400}
+            onChange={(v) => setExtraDebounced({ themeInkDurationMs: v })}
           />
         </SettingRow>
       </section>
@@ -529,6 +616,7 @@ export function StylePage() {
             </div>
             <WallpaperStrip
               paths={s.recentWallpapers}
+              thumbs={stripThumbs}
               current={currentWallpaper}
               onPick={(x) => void applyWallpaper(x)}
             />
@@ -536,16 +624,38 @@ export function StylePage() {
         )}
         {s.wallpaperFolder && (
           <div className="tm-setting-row tm-setting-row-stack">
-            <div className="tm-setting-text">
-              <span className="tm-setting-title">{tr("从文件夹选择")}</span>
-              <span className="tm-setting-desc">
-                {folderImages.length > 0
-                  ? `${s.wallpaperFolder} · ${folderImages.length} ${tr("张图片")}`
-                  : tr("该文件夹中没有可用图片")}
-              </span>
+            <div className="tm-setting-row-head">
+              <div className="tm-setting-text">
+                <span className="tm-setting-title">{tr("从文件夹选择")}</span>
+                <span className="tm-setting-desc">
+                  {folderImages.length > 0
+                    ? `${s.wallpaperFolder} · ${
+                        /* 截断时展示真实总数（整句模板，避免拼接式破坏英文语序）。 */
+                        folderTotal > FOLDER_GRID_CAP
+                          ? tr("共 {n} 张图片，显示前 {cap} 张", { n: folderTotal, cap: FOLDER_GRID_CAP })
+                          : tr("{n} 张图片", { n: folderTotal })
+                      }`
+                    : tr("该文件夹中没有可用图片")}
+                </span>
+              </div>
+              {/* 刷新：重列文件夹（新下载 / 删除的图片即时反映，此前只在
+                  重选文件夹时才重新枚举）。 */}
+              <button
+                className="tm-btn-secondary tm-wallpaper-refresh"
+                onClick={() => setFolderNonce((v) => v + 1)}
+                data-interactive
+              >
+                <RotateCw size={13} />
+                {tr("刷新")}
+              </button>
             </div>
             {folderImages.length > 0 && (
-              <WallpaperStrip paths={folderImages} current={currentWallpaper} onPick={(x) => void applyWallpaper(x)} />
+              <WallpaperStrip
+                paths={folderImages}
+                thumbs={stripThumbs}
+                current={currentWallpaper}
+                onPick={(x) => void applyWallpaper(x)}
+              />
             )}
           </div>
         )}
@@ -560,25 +670,43 @@ export function StylePage() {
 
       <section className="tm-section">
         <SettingRow title="界面缩放" desc="调整界面整体大小" icon={ZoomIn}>
-          <Slider label="界面缩放" value={s.zoom} min={60} max={160} step={5} suffix="%" onChange={s.setZoom} />
+          <Slider
+            label="界面缩放"
+            value={s.zoom}
+            min={60}
+            max={160}
+            step={5}
+            suffix="%"
+            defaultValue={100}
+            onChange={s.setZoom}
+          />
         </SettingRow>
         <SettingRow title="字体" desc="选择界面字体" icon={Type}>
           <Dropdown
             value={s.font}
             onChange={s.setFont}
             options={[
-              { id: "系统", label: "系统默认" },
-              { id: "Segoe UI", label: "Segoe UI" },
-              { id: "Microsoft YaHei", label: "微软雅黑" },
-              { id: "PingFang SC", label: "苹方" },
-              { id: "Noto Sans SC", label: "思源黑体" },
-              { id: "Outfit", label: "Outfit" },
-              { id: "JetBrains Mono", label: "JetBrains Mono" }
+              { id: "系统", label: "系统默认", fontFamily: UI_FONT_STACKS["系统"] },
+              { id: "Segoe UI", label: "Segoe UI", fontFamily: UI_FONT_STACKS["Segoe UI"] },
+              { id: "Microsoft YaHei", label: "微软雅黑", fontFamily: UI_FONT_STACKS["Microsoft YaHei"] },
+              { id: "PingFang SC", label: "苹方", fontFamily: UI_FONT_STACKS["PingFang SC"] },
+              { id: "Noto Sans SC", label: "思源黑体", fontFamily: UI_FONT_STACKS["Noto Sans SC"] },
+              { id: "Outfit", label: "Outfit", fontFamily: UI_FONT_STACKS.Outfit },
+              { id: "JetBrains Mono", label: "JetBrains Mono", fontFamily: UI_FONT_STACKS["JetBrains Mono"] }
             ]}
           />
         </SettingRow>
         <SettingRow title="字号" desc="调整文字大小" icon={Type}>
-          <Slider label="字号" value={s.fontSize} min={80} max={140} step={5} suffix="%" onChange={s.setFontSize} />
+          <Slider
+            label="字号"
+            value={s.fontSize}
+            min={80}
+            max={140}
+            step={5}
+            suffix="%"
+            defaultValue={100}
+            onChange={s.setFontSize}
+          />
         </SettingRow>
       </section>
 
@@ -597,6 +725,8 @@ export function StylePage() {
             max={100}
             step={1}
             suffix="%"
+            /* 默认值跟随当前预设的玻璃质感档（PRESET_DEFAULT_OPACITY）。 */
+            defaultValue={PRESET_DEFAULT_OPACITY[s.preset] ?? 55}
             onChange={s.setWidgetOpacity}
           />
         </SettingRow>
@@ -608,14 +738,33 @@ export function StylePage() {
             max={40}
             step={2}
             suffix="px"
+            defaultValue={24}
             onChange={s.setCornerRadius}
           />
         </SettingRow>
         <SettingRow title="间距" desc="小组件内部边距" icon={StretchHorizontal}>
-          <Slider label="间距" value={s.spacing} min={4} max={48} step={2} suffix="px" onChange={s.setSpacing} />
+          <Slider
+            label="间距"
+            value={s.spacing}
+            min={4}
+            max={48}
+            step={2}
+            suffix="px"
+            defaultValue={16}
+            onChange={s.setSpacing}
+          />
         </SettingRow>
         <SettingRow title="毛玻璃模糊" desc="小组件背景模糊强度（0 为实心）" icon={Wind}>
-          <Slider label="毛玻璃模糊" value={s.blur} min={0} max={60} step={2} suffix="px" onChange={s.setBlur} />
+          <Slider
+            label="毛玻璃模糊"
+            value={s.blur}
+            min={0}
+            max={60}
+            step={2}
+            suffix="px"
+            defaultValue={32}
+            onChange={s.setBlur}
+          />
         </SettingRow>
       </section>
 
@@ -630,6 +779,7 @@ export function StylePage() {
             max={100}
             step={1}
             suffix="%"
+            defaultValue={100}
             onChange={s.setSettingsWindowOpacity}
           />
         </SettingRow>
@@ -646,7 +796,7 @@ export function StylePage() {
   );
 }
 
-/** [PALETTE-IMG]（借鉴 ClassSoftwareHub #12）：从任意图片提取主题色板——
+/** [PALETTE-IMG]：从任意图片提取主题色板——
  *  选图 → Rust 缩略图（320px dataURL）→ canvas 解码 → median-cut（domain
  *  纯函数）→ 7 档梯度；点击复制 hex，基准色可一键设为界面主色。 */
 function ImagePaletteSection() {
@@ -656,8 +806,13 @@ function ImagePaletteSection() {
   /* 五.8 复制反馈态：最近复制的色块 hex + 回退定时器。 */
   const [copiedHex, setCopiedHex] = useState<string | null>(null);
   const copiedTimer = useRef(0);
+  /* 复制反馈定时器补卸载清理——设置页 lazy 化后换页卸载更频繁，
+     迟到的 setCopiedHex(null) 会打到已卸载组件（setState-after-unmount）。 */
+  useEffect(() => () => window.clearTimeout(copiedTimer.current), []);
   const armInk = armThemeInk;
   const setPrimaryColor = useSettingsStore((st) => st.setPrimaryColor);
+  const setPreset = useSettingsStore((st) => st.setPreset);
+  const setCustomColors = useSettingsStore((st) => st.setCustomColors);
 
   const pickAndExtract = async () => {
     setError(null);
@@ -710,9 +865,9 @@ function ImagePaletteSection() {
             <span className="tm-setting-desc">{tr("点击色块复制 hex；中间档为基准色")}</span>
           </div>
           <div className="tm-palette-strip">
-            {palette.shades.map((hex) => (
+            {palette.shades.map((hex, i) => (
               <button
-                key={hex}
+                key={`${hex}-${i}`}
                 className={`tm-palette-swatch${copiedHex === hex ? " copied" : ""}`}
                 style={{ background: hex }}
                 title={hex}
@@ -742,6 +897,20 @@ function ImagePaletteSection() {
             >
               {tr("设为主色")} {palette.seed.hex}
             </button>
+            {/* 整组套用：梯度两端作深浅双档底/文字色 + 基准色作主色，一次
+                切到自定义主题（三个 setter 同一点击内提交，React 批处理成
+                单次渲染 → 水墨只晕一场）。 */}
+            <button
+              className="tm-btn-secondary"
+              onClick={() => {
+                armInk();
+                setPreset("custom");
+                setCustomColors(paletteToCustomColors(palette));
+                setPrimaryColor(palette.seed.hex);
+              }}
+            >
+              {tr("套用为自定义主题")}
+            </button>
           </div>
         </div>
       )}
@@ -749,7 +918,7 @@ function ImagePaletteSection() {
   );
 }
 
-/** [GALLERY]（借鉴 ClassSoftwareHub #9）：在线预设画廊——GitHub 仓库当内容
+/** [GALLERY]：在线预设画廊——GitHub 仓库当内容
  *  后端，manifest + sha256 强校验下载，导入走既有预设包链路。 */
 function PresetGallerySection() {
   const tr = useT();
@@ -760,6 +929,19 @@ function PresetGallerySection() {
   const [busy, setBusy] = useState(false);
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /* 已安装标记：画廊包装的是小组件样式预设（style-presets），同名即已装
+     （导入同名跳过，重复点击是无效操作）——按钮置灰 + 成功色徽标。安装
+     成功后即时补录；跨窗删除/导入的漂移在 items 变化时重算。 */
+  const [installedNames, setInstalledNames] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setInstalledNames(new Set(listStylePresets().map((p) => p.name)));
+  }, [items]);
+
+  /* 跨窗同步跟随：另一窗口改了画廊源（广播进 store）时本地 draft 对齐，
+     否则输入框停留旧值、加载按旧源发请求（此前 useState 初值只取一次）。 */
+  useEffect(() => {
+    setDraft(extra.presetGallerySource);
+  }, [extra.presetGallerySource]);
 
   const commit = () => {
     const v = draft.trim();
@@ -789,6 +971,8 @@ function PresetGallerySection() {
     try {
       const r = await installGalleryPreset(manifestUrl, preset);
       pushAppToast(tr("预设已安装"), `${r.added} ${tr("项新增")} · ${r.skipped} ${tr("项跳过")}`, "info");
+      // 安装成功即补录（added>0 才真正入库；同名跳过时本就已在集合里）。
+      if (r.added > 0) setInstalledNames((prev) => new Set(prev).add(preset.name));
     } catch (e) {
       setError(`${tr("安装失败：")}${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -840,9 +1024,14 @@ function PresetGallerySection() {
                     <span className="tm-gallery-name">{p.name}</span>
                     {p.desc && <span className="tm-gallery-desc">{p.desc}</span>}
                     {p.size > 0 && <span className="tm-gallery-size">{fmtSize(p.size)}</span>}
+                    {installedNames.has(p.name) && <span className="tm-gallery-installed">{tr("已安装")}</span>}
                   </div>
-                  <button className="tm-btn-primary" disabled={installingId !== null} onClick={() => void install(p)}>
-                    {installingId === p.id ? tr("安装中…") : tr("安装")}
+                  <button
+                    className="tm-btn-primary"
+                    disabled={installingId !== null || installedNames.has(p.name)}
+                    onClick={() => void install(p)}
+                  >
+                    {installingId === p.id ? tr("安装中…") : installedNames.has(p.name) ? tr("已安装") : tr("安装")}
                   </button>
                 </div>
               ))}

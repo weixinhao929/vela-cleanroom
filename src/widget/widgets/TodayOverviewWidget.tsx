@@ -29,17 +29,18 @@ import { useWidgetConfig } from "../widget-config";
 import { loadWidgetConfig, CHANGE_EVENT } from "../widget-config";
 import { useWidgetStore } from "../widget-store";
 import { sanitizeTimetableData, sessionsInWeek } from "../timetable";
-import { fetchJson } from "../../lib/network";
 import { isOnline } from "../../lib/online-status";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
 import { useNow } from "../../lib/use-now";
+import { splitSessionsByDay, virtualDayKey } from "../../domain/analytics";
 import { listCalendarEventsOnDayAcrossInstances } from "./calendar-shared";
 import { useTauriEvent } from "../../lib/use-tauri-event";
-import { WEATHER_CACHE_KEY, weatherCacheSlot, writeCurrentWeatherSlot } from "./weather-cache";
+import { fetchJsonShared } from "./weather-shared";
+import { WEATHER_CACHE_KEY, weatherCacheSlot, isWeatherSlotFresh, writeCurrentWeatherSlot } from "./weather-cache";
 
 const WEEKDAY_CN = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
-/* W-042 复用天气组件的离线缓存（key / 坐标槽格式取自 weather-cache，与 WeatherWidget 同源）。 */
+/* 复用天气组件的离线缓存（key / 坐标槽格式取自 weather-cache，与 WeatherWidget 同源）。 */
 type WeatherCacheSnapshot = {
   weather?: { temperature?: number; weathercode?: number };
   forecast?: { temperature_2m_max?: number[]; temperature_2m_min?: number[] } | null;
@@ -66,7 +67,7 @@ function readWeatherCache(
   }
 }
 
-/** W-040 按时段问候语。 */
+/** 按时段问候语。 */
 function greetingByHour(hour: number): string {
   if (hour >= 5 && hour < 11) return "早上好";
   if (hour >= 11 && hour < 13) return "中午好";
@@ -75,7 +76,7 @@ function greetingByHour(hour: number): string {
   return "夜深了";
 }
 
-/** F5 今日概览：聚合"今日课程 + 待办 + 截止日期 + 天气"，一屏掌握。 */
+/** 今日概览：聚合"今日课程 + 待办 + 截止日期 + 天气"，一屏掌握。 */
 export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
   const tr = useT();
   const safeTimeout = useSafeTimeout();
@@ -94,7 +95,7 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
   const showDeadlines = config.showDeadlines !== false;
   const showWeather = config.showWeather !== false;
   const showTimetable = config.showTimetable !== false;
-  /* W-038 今日专注统计开关；W-040 问候语开关与自定义文本；W-041 各区块条数上限。 */
+  /* 今日专注统计开关；问候语开关与自定义文本；各区块条数上限。 */
   const showFocus = config.showFocus !== false;
   const showGreeting = config.showGreeting !== false;
   const customGreeting = typeof config.greeting === "string" ? config.greeting.trim() : "";
@@ -145,21 +146,32 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
       m.setHours(0, 0, 0, 0);
       return m;
     };
-    const days = Math.floor((mondayOf(today).getTime() - mondayOf(start).getTime()) / 86400000);
+    // round 吸收 DST 时区午夜差的 ±1h（同 timetable.weekNumberFor 的修复）。
+    const days = Math.round((mondayOf(today).getTime() - mondayOf(start).getTime()) / 86400000);
     const week = Math.floor(days / 7) + 1;
     if (!Number.isFinite(week) || week < 1 || week > timetableData.totalWeeks) return [];
     return sessionsInWeek(timetableData.sessions, week).filter((s) => s.day === todayDay);
   }, [timetableData, today, todayDay]);
 
   /* ---- 今日待办（未完成） ---- */
-  const pendingTasks = useMemo(() => tasks.filter((t) => !t.completed), [tasks]);
+  // 与 TodoMini「今日剩余」同口径：无截止或截止不晚于今日日末才算今日待办，
+  // 未来截止的任务不混入（此前全量计数，两处数字对不上）。
+  const pendingTasks = useMemo(() => {
+    const dayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).getTime();
+    return tasks.filter((t) => {
+      if (t.completed) return false;
+      if (!t.dueAt) return true;
+      const due = new Date(t.dueAt).getTime();
+      return Number.isNaN(due) || due < dayEnd;
+    });
+  }, [tasks, today]);
 
   /* ---- 今日习惯（置顶优先） ---- */
   const todayKeyStr = habitTodayKey();
   const todayHabits = useMemo(() => [...habits.filter((h) => h.pinned), ...habits.filter((h) => !h.pinned)], [habits]);
   const doneHabitCount = useMemo(() => habits.filter((h) => h.done[todayKeyStr]).length, [habits, todayKeyStr]);
 
-  /* W-039 快捷添加：回车即入列，复用 addTask。 */
+  /* 快捷添加：回车即入列，复用 addTask。 */
   const [quickTitle, setQuickTitle] = useState("");
   const submitQuick = () => {
     const title = quickTitle.trim();
@@ -168,15 +180,28 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
     setQuickTitle("");
   };
 
-  /* W-038 今日专注：当天已完成专注段的轮数与总时长。 */
-  const focusStats = useMemo(() => {
-    const dayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    const list = sessions.filter((s) => s.type === "focus" && s.completed && s.startedAt.slice(0, 10) === dayKey);
-    const secs = list.reduce((acc, s) => acc + (s.plannedSeconds || 0), 0);
-    return { rounds: list.length, minutes: Math.round(secs / 60) };
-  }, [sessions, today]);
+  // 统计日界（0/2/4）：今日专注的归日口径与统计/番茄钟面板共用。
+  const vmHour = useSettingsStore((s) => s.extra.virtualMidnightHour ?? 0);
 
-  /* #105 勾选完成后行退场：被移除的待办保留 240ms 播收拢淡出，后续行随收拢平滑上移 */
+  /* 今日专注：当天专注段的轮数与总时长。：与统计/番茄钟面板同
+     口径——先按虚拟午夜切分、按**片起始**的虚拟日归属（秒数按片分摊，
+     尊重统计日界 0/2/4；此前对原始会话整段归起始日，跨午夜段在三个组件
+     算出不同的「今天」）；轮数仅计完成片（splitSessionsByDay 已把非首片
+     completed 置 false，与 SQL 聚合的首片口径一致）；分钟为实际净
+     专注时长（含未完成段）。 */
+  const focusStats = useMemo(() => {
+    const todayKey = virtualDayKey(today, vmHour);
+    const list = splitSessionsByDay(sessions, vmHour).filter((s) => {
+      if (s.type !== "focus") return false;
+      const started = new Date(s.startedAt);
+      return !Number.isNaN(started.getTime()) && virtualDayKey(started, vmHour) === todayKey;
+    });
+    const secs = list.reduce((acc, s) => acc + (s.plannedSeconds || 0), 0);
+    const rounds = list.filter((s) => s.completed).length;
+    return { rounds, minutes: Math.round(secs / 60) };
+  }, [sessions, today, vmHour]);
+
+  /* 勾选完成后行退场：被移除的待办保留 240ms 播收拢淡出，后续行随收拢平滑上移 */
   const [closingTaskIds, setClosingTaskIds] = useState<string[]>([]);
   const prevPendingRef = useRef<string[]>([]);
   useEffect(() => {
@@ -224,7 +249,7 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
       .slice(0, maxDeadlines);
   }, [deadlines, maxDeadlines]);
 
-  /* ---- 今日天气（W-042 优先读天气组件缓存，无缓存再发一次轻量请求） ---- */
+  /* ---- 今日天气（优先读天气组件缓存；缓存缺失或超过 1h 未更新时后台补拉） ---- */
   const [weather, setWeather] = useState<{ temp: number; code: number; hi: number | null; lo: number | null } | null>(
     null
   );
@@ -233,41 +258,93 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
   const city = useSettingsStore((s) => s.extra.weatherCity);
   useEffect(() => {
     if (!showWeather) return;
-    // 缓存命中（含高低温）即不再请求网络；每 60s 重读一次以拿到天气组件的新快照。
+    /* 缓存新鲜度与重试门槛：卡片在运行时槽位恒新鲜，本组件不发包；卡片不在
+     * （如只放了今日概览）时旧缓存此前会**无限期**展示（温度/高低温停在数天
+     * 前，且只在无缓存时才拉过一次）。现在超 1h 视为过期→后台补拉一次，期间
+     * 继续显示旧值；失败至少隔 5min 再试（与天气磁贴同策略）。 */
+    const FRESH_MS = 60 * 60 * 1000;
+    const RETRY_MS = 5 * 60 * 1000;
+    let controller: AbortController | undefined;
+    let fetching = false;
+    let lastTry = 0;
     const read = () => {
       const cached = readWeatherCache(lat, lon);
       if (cached) setWeather(cached);
-      return cached;
+      let raw = "";
+      try {
+        raw = localStorage.getItem(WEATHER_CACHE_KEY) ?? "";
+      } catch {
+        raw = "";
+      }
+      if (!cached || !isWeatherSlotFresh(raw, lat, lon, FRESH_MS)) ensureFresh();
     };
-    const hit = read();
-    const id = window.setInterval(read, 60_000);
-    let controller: AbortController | undefined;
-    if (!hit && isOnline()) {
+    const ensureFresh = () => {
+      const now = Date.now();
+      if (fetching || now - lastTry < RETRY_MS || !isOnline()) return;
+      lastTry = now;
+      fetching = true;
       controller = new AbortController();
-      fetchJson<{ current_weather?: { temperature?: number; weathercode?: number; windspeed?: number } }>(
-        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&timezone=auto`,
+      fetchJsonShared<{
+        current_weather?: { temperature?: number; weathercode?: number; windspeed?: number };
+        daily?: {
+          time?: string[];
+          weathercode?: number[];
+          temperature_2m_max?: number[];
+          temperature_2m_min?: number[];
+        };
+      }>(
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+          `&current_weather=true&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1`,
         { retries: 1, signal: controller.signal }
       )
         .then((data) => {
-          if (data?.current_weather?.temperature != null) {
-            const code = data.current_weather.weathercode ?? 0;
-            setWeather({ temp: data.current_weather.temperature, code, hi: null, lo: null });
-            // 回写共享「当前天气」槽：同坐标的天气磁贴 / 天气站可直接复用，
-            // 不再对同一 lat/lon 各发一次请求。
-            writeCurrentWeatherSlot(lat, lon, {
+          if (data?.current_weather?.temperature == null) return;
+          const code = data.current_weather.weathercode ?? 0;
+          const d = data.daily;
+          const hi = d?.temperature_2m_max?.[0];
+          const lo = d?.temperature_2m_min?.[0];
+          setWeather({
+            temp: data.current_weather.temperature,
+            code,
+            hi: hi != null ? hi : null,
+            lo: lo != null ? lo : null
+          });
+          // 回写共享槽：同坐标的天气磁贴 / 天气站可直接复用；带上当日 hi/lo
+          // 的最小预报面，卡片不在运行时高低温不再停留旧值。
+          writeCurrentWeatherSlot(
+            lat,
+            lon,
+            {
               temperature: data.current_weather.temperature,
               weathercode: code,
               windspeed: data.current_weather.windspeed ?? 0
-            });
-          }
+            },
+            d?.time && d.time.length > 0
+              ? {
+                  forecast: {
+                    time: d.time,
+                    weathercode: d.weathercode ?? [],
+                    temperature_2m_max: d.temperature_2m_max ?? [],
+                    temperature_2m_min: d.temperature_2m_min ?? []
+                  }
+                }
+              : undefined
+          );
         })
-        .catch(() => {});
-    }
+        .catch(() => {})
+        .finally(() => {
+          fetching = false;
+        });
+    };
+    read();
+    const id = window.setInterval(read, 60_000);
     return () => {
       window.clearInterval(id);
       controller?.abort();
     };
-  }, [lat, lon, showWeather, cfgVersion]);
+    // 天气只依赖自身输入——cfgVersion（全局配置事件计数）此前也在依赖
+    // 里，画布上任意其他小组件改配置都会重建本定时器并立即 read()。
+  }, [lat, lon, showWeather]);
 
   const WIcon = weather ? weatherIcon(weather.code) : null;
   const doneCount = tasks.filter((t) => t.completed).length;
@@ -279,7 +356,9 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
       <div className="today-overview-head">
         <div className="today-overview-date">
           <strong>
-            {today.getMonth() + 1}月{today.getDate()}日
+            {/* 日期整句走 tr() 模板键（此前直接拼接
+                「{m}月{d}日」落在 i18n 门禁盲区，英文模式仍显示中文）。 */}
+            {tr("{m} 月 {d} 日", { m: today.getMonth() + 1, d: today.getDate() })}
           </strong>
           <span>{tr(WEEKDAY_CN[today.getDay()])}</span>
         </div>
@@ -297,10 +376,10 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
         )}
       </div>
 
-      {/* W-040 问候语 */}
+      {/* 问候语 */}
       {showGreeting && <div className="today-overview-greeting">{greeting}</div>}
 
-      {/* W-038 今日专注统计 */}
+      {/* 今日专注统计 */}
       {showFocus && (
         <section className="today-overview-block today-overview-focus">
           <div className="today-overview-block-head">
@@ -323,7 +402,7 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
             </span>
             <span className="today-overview-block-meta" key={doneCount}>
               {doneCount}/{tasks.length} ·{" "}
-              {tr(pendingTasks.length === 0 ? "全部完成" : "剩余 {n} 项").replace("{n}", String(pendingTasks.length))}
+              {pendingTasks.length === 0 ? tr("全部完成") : tr("剩余 {n} 项", { n: pendingTasks.length })}
             </span>
           </div>
           <div className="today-overview-tasks">
@@ -333,7 +412,7 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
               <>
                 {pendingTasks.slice(0, maxTasks).map((t, i) => (
                   <div className="today-overview-task" key={t.id} style={{ ["--sti" as string]: i }}>
-                    {/* W-037 行内勾选：概览里直接完成待办 */}
+                    {/* 行内勾选：概览里直接完成待办 */}
                     <button
                       className="today-overview-check"
                       onClick={() => toggleTask(t.id)}
@@ -345,7 +424,7 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
                     <span className="today-overview-task-title">{t.title}</span>
                   </div>
                 ))}
-                {/* #105 退场帧：勾选完成的行收拢淡出，后续行随高度收拢平滑上移 */}
+                {/* 退场帧：勾选完成的行收拢淡出，后续行随高度收拢平滑上移 */}
                 {closingTasks.map((t) => (
                   <div className="today-overview-task is-closing" key={`closing-${t.id}`}>
                     <CheckCircle2 size={13} className="today-overview-dot" />
@@ -354,18 +433,19 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
                 ))}
                 {pendingTasks.length > maxTasks && (
                   <span className="today-overview-empty">
-                    {tr("还有 {n} 项未显示").replace("{n}", String(pendingTasks.length - maxTasks))}
+                    {tr("还有 {n} 项未显示", { n: pendingTasks.length - maxTasks })}
                   </span>
                 )}
               </>
             )}
           </div>
-          {/* W-039 快捷添加待办 */}
+          {/* 快捷添加待办 */}
           <div className="today-overview-quickadd">
             <input
               value={quickTitle}
               onChange={(e) => setQuickTitle(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && submitQuick()}
+              /* IME 组合期 Enter（确认候选词）不当作提交。 */
+              onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && submitQuick()}
               placeholder={tr("快速添加待办…")}
               data-interactive
             />
@@ -413,7 +493,7 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
             })}
             {todayHabits.length > maxTasks && (
               <span className="today-overview-empty">
-                {tr("还有 {n} 项未显示").replace("{n}", String(todayHabits.length - maxTasks))}
+                {tr("还有 {n} 项未显示", { n: todayHabits.length - maxTasks })}
               </span>
             )}
           </div>
@@ -440,9 +520,12 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
                   <Timer size={13} className="today-overview-dot" />
                   <span className="today-overview-task-title">{s.name}</span>
                   <span className="today-overview-task-extra">
+                    {/* 节次复用课表词典既有键
+                        「第 {n} 节」「第 {a}-{b} 节」（模板字符串直拼落在
+                        i18n 门禁盲区，英文模式仍显示中文）。 */}
                     {s.startSection === s.endSection
-                      ? `第${s.startSection}节`
-                      : `第${s.startSection}-${s.endSection}节`}
+                      ? tr("第 {n} 节", { n: s.startSection })
+                      : tr("第 {a}-{b} 节", { a: s.startSection, b: s.endSection })}
                     {s.location ? ` · ${s.location}` : ""}
                   </span>
                 </div>
@@ -475,7 +558,9 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
                     style={event.color ? { color: event.color } : undefined}
                   />
                   <span className="today-overview-task-title">{event.text}</span>
-                  <span className="today-overview-task-extra">{event.time || tr("全天")}</span>
+                  <span className="today-overview-task-extra">
+                    {event.time ? (event.endTime ? `${event.time}–${event.endTime}` : event.time) : tr("全天")}
+                  </span>
                 </div>
               ))
             )}
@@ -497,7 +582,20 @@ export function TodayOverviewWidget({ instanceId }: { instanceId: string }) {
               todayDeadlines.map(({ d, dueMs }, i) => {
                 const overdue = dueMs < Date.now();
                 const diff = dueMs - Date.now();
-                const label = overdue ? tr("已逾期") : diff < 60 * 60 * 1000 ? tr("不足 1 小时") : tr("今天");
+                // 标签按日历日判定：23:00 输入「3小时后」（次日 02:00 到期）在
+                // 24h 窗口内，此前纯时长差一律显示「今天」，跨天不翻「明天」。
+                const due = new Date(dueMs);
+                const sameDay =
+                  due.getFullYear() === today.getFullYear() &&
+                  due.getMonth() === today.getMonth() &&
+                  due.getDate() === today.getDate();
+                const label = overdue
+                  ? tr("已逾期")
+                  : !sameDay
+                    ? tr("明天")
+                    : diff < 60 * 60 * 1000
+                      ? tr("不足 1 小时")
+                      : tr("今天");
                 return (
                   <div
                     className={`today-overview-task${overdue ? " overdue" : ""}`}
@@ -523,7 +621,7 @@ function weatherIcon(code: number) {
   if (code <= 2) return CloudSun;
   if (code === 3) return Cloudy;
   if (code >= 51 && code <= 67) return CloudRain;
-  if (code >= 71 && code <= 77) return Snowflake;
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return Snowflake;
   if (code >= 95) return Zap;
   return Cloud;
 }

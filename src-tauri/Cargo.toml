@@ -11,9 +11,12 @@ name = "focus_desk_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 # 任务栏注入 DLL（velatap.dll）作为独立 cdylib 成员：主包默认构建/测试
-# 不含它（cargo 在含 [package] 的根目录只跑根包），CI 单独 `-p velatap`。
+# 不含它（cargo 在含 [package] 的根目录只跑根包），CI backend job 对三个
+# 成员显式 `-p velatap -p taskbar_common -p vela-symbolize` 跑 clippy/test。
+# vela-symbolize（崩溃旁车符号化工具）同款待遇：开发侧工具，不随安装包分发。
+# taskbar_common：主进程与 velatap 共享的线协议/白名单小 crate（P3-1）。
 [workspace]
-members = ["crates/taskbar_tap"]
+members = ["crates/taskbar_tap", "crates/taskbar_common", "crates/vela-symbolize"]
 resolver = "2"
 
 # R9：release 编译调优。本应用是常驻后台的桌面小组件层——稳态采样/命中
@@ -24,10 +27,20 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
+# [CRASH-DUMP]（借鉴 #S15-16）带符号发布档：默认 release 不出 PDB
+# （debug=false + strip），官方构建改用本档出包（体积换符号），PDB 私有归档
+# 供 vela-symbolize 符号化用户端崩溃；普通本地构建不受影响。
+[profile.release-with-symbols]
+inherits = "release"
+debug = 1
+strip = "none"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# P3-1：与 velatap DLL 共享的线协议/服务端白名单（见 crates/taskbar_common）。
+taskbar_common = { path = "crates/taskbar_common" }
 tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
@@ -37,7 +50,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# BentoDesk 借鉴 #12：样式预设包（.zip）读写。最小 feature 集（仅 deflate）。
+# 借鉴 #S4-12：样式预设包（.zip）读写。最小 feature 集（仅 deflate）。
 zip = { version = "2", default-features = false, features = ["deflate"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -67,7 +80,7 @@ ts-rs = "12.0.1"
 sha2 = "0.10"
 # D-1：更新清单 Ed25519 签名验证（离线公钥内嵌 update_sig.rs）
 ed25519-dalek = "2"
-# 编码哈希工具（借鉴 ClassSoftwareHub #2）：文件流式同时计算四种哈希。
+# 编码哈希工具（借鉴 #S6-2）：文件流式同时计算四种哈希。
 md-5 = "0.10"
 sha1 = "0.10"
 notify = "6"
@@ -78,12 +91,12 @@ url = "2"
 # tauri-winrt-notification，这里直接引用以拿到 on_activated 进程内激活
 # 回调（见 os_notify.rs），不引入新依赖树。
 tauri-winrt-notification = "0.7"
-# Win32_System_WinRT：TB-STATE 的 RoGetActivationFactory(ShellViewCoordinator)
+# Win32_System_WinRT：RoGetActivationFactory(ShellViewCoordinator)
 # （搜索 / 任务视图状态源，需求 §5.3 / §5.4 检测落点）。
 # Media：MediaPlaybackAutoRepeatMode（repeat 循环控制，media.rs）。
 # UI_Notifications(+Management)/UI/ApplicationModel：sysnotify.rs 的
 # UserNotificationListener 系统通知监听（一.1；AppInfo 在 ApplicationModel）。
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Power", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Media_Control", "Media", "Win32_System_Com", "Storage_Streams", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_Graphics_Dxgi", "Win32_Storage_FileSystem", "Win32_Devices_Bluetooth", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Devices_FunctionDiscovery", "Win32_System_Performance", "Win32_Security_Cryptography", "Win32_Devices_Display", "Win32_System_Wmi", "Win32_System_Variant", "Win32_UI_Accessibility", "Win32_Graphics_Dwm", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_WinRT", "UI_Notifications", "UI_Notifications_Management", "UI", "ApplicationModel", "Win32_UI_Shell_PropertiesSystem", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Power", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Media_Control", "Media", "Win32_System_Com", "Storage_Streams", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_Graphics_Dxgi", "Win32_Storage_FileSystem", "Win32_Devices_Bluetooth", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Devices_FunctionDiscovery", "Win32_System_Performance", "Win32_Security_Cryptography", "Win32_Devices_Display", "Win32_System_Wmi", "Win32_System_Variant", "Win32_UI_Accessibility", "Win32_Graphics_Dwm", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_WinRT", "UI_Notifications", "UI_Notifications_Management", "UI", "ApplicationModel", "Win32_UI_Shell_PropertiesSystem", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Networking_WinInet", "Win32_System_Kernel", "Win32_UI_HiDpi"] }
 winreg = "0.52"
 # #[implement] 宏展开引用 ::windows_core 路径（COM 回调实现需要）。
 windows-core = "0.61"

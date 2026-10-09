@@ -30,6 +30,16 @@ type PromptOptions = {
   placeholder?: string;
   /** 输入框初始值（用于重命名等场景）。 */
   initialValue?: string;
+  /** 允许空串提交（重命名「留空恢复默认」类语义）：提交结果为 ""；缺省
+   *  false——空输入只聚焦不提交（添加视图等必填场景的既有行为）。 */
+  allowEmpty?: boolean;
+  /** 输入长度上限（浏览器原生 maxLength，按 UTF-16 码元计）：超长在输入时
+   *  即被挡下，而非提交后静默截断（用户读作「改名丢字」）。
+   *  已知语义差：原生 maxLength 按 UTF-16 计（emoji 各占 2，上限 24 时
+   *  只能输 12 枚），共享重命名入口的提交兜底则按 Unicode 码点截断——刻意
+   *  不放宽到 48：那会让 48 个拉丁字符输入后被静默截回 24（复活 修掉的
+   *  问题），两害取其轻，emoji 用户提前触顶更可解释。 */
+  maxLength?: number;
 };
 
 type ConfirmOptions = {
@@ -50,10 +60,28 @@ type AlertOptions = {
   confirmLabel?: string;
 };
 
+/** choiceDialog 的单个选项：label 展示、value 回传（调用方拿 value 分派）。 */
+export type DialogChoice = {
+  label: string;
+  value: string;
+  /** 危险选项标红（与 confirm 的 danger 同语言）。 */
+  danger?: boolean;
+};
+
+type ChoiceOptions = {
+  title: string;
+  /** 选项列表上方的补充说明（可选）。 */
+  message?: string;
+  choices: DialogChoice[];
+  /** 取消按钮文案，默认「取消」。 */
+  cancelLabel?: string;
+};
+
 type DialogState =
   | { kind: "prompt"; opts: PromptOptions; resolve: (v: string | null) => void }
   | { kind: "confirm"; opts: ConfirmOptions; resolve: (v: boolean) => void }
-  | { kind: "alert"; opts: AlertOptions; resolve: () => void };
+  | { kind: "alert"; opts: AlertOptions; resolve: () => void }
+  | { kind: "choice"; opts: ChoiceOptions; resolve: (v: string | null) => void };
 
 let currentListeners: ((s: DialogState | null) => void)[] = [];
 /** 当前展示中的对话框（用于被顶替时按「取消」结算前一个 Promise）。 */
@@ -67,7 +95,7 @@ function setDialog(s: DialogState | null) {
   const prev = currentDialog;
   currentDialog = s;
   if (prev && prev !== s) {
-    if (prev.kind === "prompt") prev.resolve(null);
+    if (prev.kind === "prompt" || prev.kind === "choice") prev.resolve(null);
     else if (prev.kind === "confirm") prev.resolve(false);
     else prev.resolve();
   }
@@ -86,6 +114,11 @@ export function alertDialog(opts: AlertOptions): Promise<void> {
   return new Promise<void>((resolve) => setDialog({ kind: "alert", opts, resolve }));
 }
 
+/** 单选列表对话框：点某项 resolve 其 value；Esc / 遮罩 / 取消 resolve null。 */
+export function choiceDialog(opts: ChoiceOptions): Promise<string | null> {
+  return new Promise<string | null>((resolve) => setDialog({ kind: "choice", opts, resolve }));
+}
+
 export function PromptDialogHost() {
   const [state, setState] = useState<DialogState | null>(null);
   const [value, setValue] = useState("");
@@ -93,7 +126,7 @@ export function PromptDialogHost() {
   const boxRef = useRef<HTMLDivElement>(null);
   const tr = useT();
 
-  /* #57 统一弹层退场：关闭后仍渲染 fxFast（--dur-fx-fast，标准档 150ms）播
+  /* 统一弹层退场：关闭后仍渲染 fxFast（--dur-fx-fast，标准档 150ms）播
      .is-closing 淡出再卸载；时长与 global.css 的 fd-prompt-*-out keyframes
      同源（animDurations），期间保留最后一份对话框快照供退场渲染
      （pointer-events 已被 CSS 关闭）。 */
@@ -119,7 +152,7 @@ export function PromptDialogHost() {
     [state]
   );
 
-  // 每次打开输入弹窗时写入初值，并在下一帧聚焦 + 全选，便于直接覆盖重命名（#B-2）。
+  // 每次打开输入弹窗时写入初值，并在下一帧聚焦 + 全选，便于直接覆盖重命名（#）。
   useEffect(() => {
     if (state?.kind === "prompt") {
       setValue(state.opts.initialValue ?? "");
@@ -130,7 +163,7 @@ export function PromptDialogHost() {
     }
   }, [state]);
 
-  /* B4（可达性）：confirm/alert 打开时把焦点移入对话框（默认落在「取消」，
+  /* （可达性）：confirm/alert 打开时把焦点移入对话框（默认落在「取消」，
      危险操作需一次有意识的 Tab 才会到达确认键，防误触）。 */
   useEffect(() => {
     if (!state || state.kind === "prompt") return;
@@ -161,13 +194,20 @@ export function PromptDialogHost() {
     if (!state) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // 分层关闭：输入框右键弹出的编辑菜单（ctx-menu）开着时，第一下 Esc
+        // 只关菜单（ContextMenuHost 的 document 捕获处理器随后接手）——这里
+        // stopPropagation 会拦掉它，把菜单留成无主浮层。
+        if (document.querySelector(".ctx-menu")) return;
         e.stopPropagation();
         if (state.kind === "prompt") closePrompt(null);
-        else if (state.kind === "confirm") state.resolve(false);
+        else if (state.kind === "choice") {
+          state.resolve(null);
+          setDialog(null);
+        } else if (state.kind === "confirm") state.resolve(false);
         else state.resolve();
-        setDialog(null);
+        if (state.kind !== "prompt") setDialog(null);
       } else if (e.key === "Enter" && state.kind === "confirm") {
-        /* B4：焦点已在某个按钮上时交给原生激活（焦点在「取消」上按 Enter
+        /* 焦点已在某个按钮上时交给原生激活（焦点在「取消」上按 Enter
            必须是取消而非确定——旧实现恒等于确定，属误触风险）。 */
         const ae = document.activeElement;
         if (ae instanceof HTMLButtonElement && boxRef.current?.contains(ae)) return;
@@ -175,7 +215,7 @@ export function PromptDialogHost() {
         state.resolve(true);
         setDialog(null);
       } else if (e.key === "Tab" && boxRef.current) {
-        /* B4：简易焦点陷阱——Tab 在对话框内循环，不逃逸到背景页面。 */
+        /* 简易焦点陷阱——Tab 在对话框内循环，不逃逸到背景页面。 */
         const focusables = Array.from(
           boxRef.current.querySelectorAll<HTMLElement>("button, input, [tabindex]:not([tabindex='-1'])")
         ).filter((el) => !el.hasAttribute("disabled"));
@@ -199,9 +239,10 @@ export function PromptDialogHost() {
   if (!visible || !dlg) return null;
 
   const overlayHandler = (e: ReactPointerEvent) => {
-    // 按下遮罩空白处即关（统一 pointerdown 按下语义）：prompt/confirm 视为取消，alert 视为关闭。
+    // 按下遮罩空白处即关（统一 pointerdown 按下语义）：prompt/confirm/choice 视为取消，alert 视为关闭。
     if (e.target !== e.currentTarget) return;
     if (dlg.kind === "prompt") closePrompt(null);
+    else if (dlg.kind === "choice") dlg.resolve(null);
     else if (dlg.kind === "confirm") dlg.resolve(false);
     else dlg.resolve();
     setDialog(null);
@@ -211,7 +252,7 @@ export function PromptDialogHost() {
     const { opts } = dlg;
     const submit = () => {
       const v = value.trim();
-      if (!v) {
+      if (!v && !opts.allowEmpty) {
         inputRef.current?.focus();
         return;
       }
@@ -233,8 +274,13 @@ export function PromptDialogHost() {
             className="fd-prompt-input"
             value={value}
             placeholder={opts.placeholder}
+            maxLength={opts.maxLength}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
+              /* IME 组词期（isComposing）的 Enter/Esc 属于输入法会话——
+                 确认候选词的 Enter 若照常 submit()，中文用户打拼音按回车
+                 选字会带着半截拼音直接提交（重命名主路径必现）。 */
+              if (e.nativeEvent.isComposing) return;
               if (e.key === "Enter") submit();
               else if (e.key === "Escape") closePrompt(null);
             }}
@@ -286,6 +332,55 @@ export function PromptDialogHost() {
               data-interactive
             >
               {opts.confirmLabel ?? tr("确定")}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // choice：单选列表（选项整宽按钮 + 取消）。选中项 resolve value。
+  if (dlg.kind === "choice") {
+    const { opts } = dlg;
+    return (
+      <div className={`fd-prompt-overlay${closing ? " is-closing" : ""}`} onPointerDown={overlayHandler}>
+        <div
+          ref={boxRef}
+          className={`fd-prompt${closing ? " is-closing" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-label={opts.title}
+        >
+          <div className="fd-prompt-title">{opts.title}</div>
+          {opts.message && <div className="fd-prompt-message">{opts.message}</div>}
+          <div className="fd-prompt-choices" role="listbox" aria-label={opts.title}>
+            {opts.choices.map((c) => (
+              <button
+                key={c.value}
+                type="button"
+                role="option"
+                aria-selected={false}
+                className={`fd-prompt-choice${c.danger ? " danger" : ""}`}
+                onClick={() => {
+                  dlg.resolve(c.value);
+                  setDialog(null);
+                }}
+                data-interactive
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <div className="fd-prompt-actions">
+            <button
+              className="fd-prompt-btn"
+              onClick={() => {
+                dlg.resolve(null);
+                setDialog(null);
+              }}
+              data-interactive
+            >
+              {opts.cancelLabel ?? tr("取消")}
             </button>
           </div>
         </div>

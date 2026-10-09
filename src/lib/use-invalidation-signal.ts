@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/exhaustive-deps */
 /**
- * C-9：把「失效信号」依赖模式收敛为具名 hook。
+ * 把「失效信号」依赖模式收敛为具名 hook。
  *
  * 这类 effect/memo 的真实重跑条件是**数据版本**（rev / store 引用 / 计数），
  * 而不是闭包里顺手用到的全部值——写法上要么把整串闭包塞进依赖（放大重跑

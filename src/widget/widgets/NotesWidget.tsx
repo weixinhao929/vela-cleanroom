@@ -39,6 +39,7 @@ import {
   parseNotesImport,
   downloadTextFile,
   absorbQuickNoteOrphan,
+  subscribeNotes,
   type Note,
   type TrashNote
 } from "../notes-store";
@@ -46,6 +47,7 @@ import { extractTags, renderMiniMd } from "../../lib/mini-md";
 import { useIncrementalList } from "../../lib/use-incremental-list";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
 import { animDurations } from "../../lib/durations";
+import { uiZoom } from "../../lib/ui-zoom";
 import { promptDialog, alertDialog } from "../../components/PromptDialog";
 import { parseNaturalDateTime } from "../../lib/natural-date";
 import { useDelayedRemoval } from "../../lib/use-confirm-remove";
@@ -74,7 +76,7 @@ function relTime(iso: string, tr: (s: string) => string, now = Date.now()): stri
   return `${Math.floor(hours / 24)}${tr(" 天前")}`;
 }
 
-/** W-062 便签颜色调色板（id 同时是 data-color 取值）。 */
+/** 便签颜色调色板（id 同时是 data-color 取值）。 */
 const NOTE_COLORS = [
   { id: "amber", label: "琥珀", hex: "#f59e0b" },
   { id: "green", label: "青绿", hex: "#10b981" },
@@ -89,7 +91,7 @@ function noteAccentHex(color?: string): string | undefined {
   return color ? NOTE_COLORS.find((c) => c.id === color)?.hex : undefined;
 }
 
-/** W-063：切换某一行的任务清单勾选状态并写回文本。 */
+/** 切换某一行的任务清单勾选状态并写回文本。 */
 function toggleTaskLine(text: string, lineIndex: number): string {
   const lines = text.split("\n");
   const line = lines[lineIndex];
@@ -119,15 +121,16 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
   const showTagBar = config.showTagBar !== false;
   const [query, setQuery] = useState("");
   const [tagFilter, setTagFilter] = useState<string | null>(null);
-  // W-062：当前打开调色板的便签 id。
+  // 当前打开调色板的便签 id。
   const [paletteFor, setPaletteFor] = useState<string | null>(null);
-  // W-066：组件内回收站面板。
+  // 组件内回收站面板。
   const [trashOpen, setTrashOpen] = useState(false);
-  const [trash, setTrash] = useState<TrashNote[]>([]);
+  // 初始即读一次（此前初始空数组、只在打开面板时才加载——徽标挂载后恒不显示）。
+  const [trash, setTrash] = useState<TrashNote[]>(() => loadTrash(instanceId));
   // 彻底删除 / 清空不可恢复：两段式确认（2 秒内再点才执行，超时自动退出）。
   const [purgeConfirmId, setPurgeConfirmId] = useState<string | null>(null);
   const [emptyConfirm, setEmptyConfirm] = useState(false);
-  // W-064：拖拽排序状态。
+  // 拖拽排序状态。
   const dragIdRef = useRef<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
@@ -187,16 +190,38 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
     saveNotes(instanceId, notes);
   }, [notes, instanceId]);
 
+  /* 外部写入对账：回收站恢复便签 / 提醒到点清除 remindAt / 超上限裁剪
+     都只写存储并 notifyNotesChanged；若不回读，本组件下一次任意编辑会把
+     旧内存态整表覆写回去——恢复的便签被永久抹掉（双重不可逆）。内容一致
+     时返回 cur 短路，避免自身保存触发的通知形成回写循环。 */
+  useEffect(() => {
+    return subscribeNotes(() => {
+      setNotes((cur) => {
+        const stored = loadNotes(instanceId);
+        if (JSON.stringify(stored) === JSON.stringify(cur)) return cur;
+        return stored;
+      });
+      // 回收站徽标跟随外部写入（速记/回收站恢复/其他窗口删除）一起刷新。
+      setTrash(loadTrash(instanceId));
+    });
+  }, [instanceId]);
+
   // 速记兜底桶吸收：Ctrl+Alt+Q 在没有任何便签组件时写进固定桶，这里在
   // 第一块便签组件挂载时把孤儿便签搬进本实例（黑洞修复，见 notes-store）。
   useEffect(() => {
     if (absorbQuickNoteOrphan(instanceId) > 0) setNotes(loadNotes(instanceId));
   }, [instanceId]);
 
-  // W-067：速记窗口保存后广播 sync:notes，这里实时合并。
+  // 速记窗口保存后广播 sync:notes，这里实时合并。
   useTauriEvent<{ instanceId: string; notes: Note[] }>("sync:notes", (payload) => {
     if (payload?.instanceId !== instanceId || !Array.isArray(payload.notes)) return;
-    setNotes(payload.notes);
+    // 逐项形状过滤：畸形元素若直入 state，下方保存 effect 会把它整表覆写进
+    // localStorage，污染持久层。
+    const clean = payload.notes.filter(
+      (n): n is Note => !!n && typeof n === "object" && typeof n.id === "string" && typeof n.text === "string"
+    );
+    setNotes(clean);
+    setTrash(loadTrash(instanceId));
   });
 
   const minOrder = useMemo(() => notes.reduce((m, n) => Math.min(m, n.order ?? 0), 0), [notes]);
@@ -230,12 +255,12 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
     setEditingId(null);
   };
 
-  // W-063：任务清单勾选写回正文（不改 updatedAt，避免排序跳动）。
+  // 任务清单勾选写回正文（不改 updatedAt，避免排序跳动）。
   const toggleTask = (id: string, lineIndex: number) => {
     setNotes((list) => list.map((n) => (n.id === id ? { ...n, text: toggleTaskLine(n.text, lineIndex) } : n)));
   };
 
-  // W-062：设置便签颜色（undefined = 恢复默认）。
+  // 设置便签颜色（undefined = 恢复默认）。
   const setColor = (id: string, color: string | undefined) => {
     setNotes((list) => list.map((n) => (n.id === id ? { ...n, color, updatedAt: n.updatedAt } : n)));
     setPaletteFor(null);
@@ -285,7 +310,7 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
     setNotes((list) => list.map((n) => (n.id === id ? { ...n, pinned: !n.pinned, updatedAt: n.updatedAt } : n)));
   };
 
-  /* ---- DeskOrder 借鉴 #8：便签定时提醒（自然语言输入 → notes-reminders 到点通知）。 ---- */
+  /* ---- 便签定时提醒（自然语言输入 → notes-reminders 到点通知）。 ---- */
   const setRemind = async (note: Note) => {
     const input = await promptDialog({
       title: tr("设置提醒"),
@@ -313,7 +338,7 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
     );
   };
 
-  // W-064：手动拖拽排序。以「显示顺序」（置顶优先 + order）为基准移动，
+  // 手动拖拽排序。以「显示顺序」（置顶优先 + order）为基准移动，
   // 落点为「拖拽项移动到目标项之前」，随后按显示顺序重写 order 序列。
   const dropOn = (targetId: string) => {
     const dragId = dragIdRef.current;
@@ -340,7 +365,7 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
     });
   };
 
-  // W-066：回收站面板。事件处理器里直接用当前值：updater 内嵌套 setState +
+  // 回收站面板。事件处理器里直接用当前值：updater 内嵌套 setState +
   // 同步读 localStorage 属渲染期副作用，StrictMode 下双跑重复 I/O。
   const openTrash = () => {
     const next = !trashOpen;
@@ -377,7 +402,7 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
     setTrash([]);
   };
 
-  // W-065：导出 / 导入。
+  // 导出 / 导入。
   const exportAll = () => {
     const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-");
     downloadTextFile(`vela-notes-${stamp}.md`, exportNotesMarkdown(notes));
@@ -402,7 +427,7 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
 
   /* 置顶重排 FLIP（动画机会 #16）：置顶切换前记录各便签位置，
      DOM 更新后对位移项做反向 transform 再过渡回 0 —— 元素本身
-     不重挂载，位移动画连续；transform 瞬态结束于 none，符合 G-4。 */
+     不重挂载，位移动画连续；transform 瞬态结束于 none，符合 。 */
   const notePositions = useRef(new Map<string, number>());
   const captureNotePositions = () => {
     notePositions.current.clear();
@@ -414,10 +439,14 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
     const prev = notePositions.current;
     if (prev.size === 0) return;
     const nodes = scrollNodeRef.current?.querySelectorAll<HTMLElement>(".widget-note") ?? [];
+    /* dy 来自两次 gBCR 的视觉差，而 transform 写在布局层——先除回
+       uiZoom（lib/anim 的 flipReorder 同款换算），否则缩放 ≠100% 时回弹
+       过冲 zoom 倍。 */
+    const z = uiZoom();
     for (const el of nodes) {
       const before = prev.get(el.dataset.noteId ?? "");
       if (before == null) continue;
-      const dy = before - el.getBoundingClientRect().top;
+      const dy = (before - el.getBoundingClientRect().top) / z;
       if (Math.abs(dy) < 2) continue;
       el.style.transition = "none";
       el.style.transform = `translateY(${dy}px)`;
@@ -479,7 +508,9 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+            /* IME 组合期的 Enter 是「确认候选词」不是
+               提交（WidgetCanvas.tsx 同款守卫），漏判会把拼音串存成便签。 */
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               add();
             }
@@ -536,7 +567,7 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
                   value={editText}
                   onChange={(e) => setEditText(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       saveEdit(n.id);
                     }
@@ -680,7 +711,7 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
         </div>
       )}
 
-      {/* W-066 组件内回收站 */}
+      {/* 组件内回收站 */}
       {trashOpen && (
         <div className="widget-notes-trash">
           <div className="widget-notes-trash-head">
@@ -696,23 +727,27 @@ export function NotesWidget({ instanceId }: { instanceId: string }) {
           {trash.length === 0 ? (
             <div className="widget-notes-trash-empty">{tr("回收站为空")}</div>
           ) : (
-            trash.slice(0, 12).map((t) => (
-              <div className="widget-notes-trash-row" key={t.id}>
-                <span className="widget-notes-trash-text">{t.text.slice(0, 60) || tr("（空便签）")}</span>
-                <button title={tr("恢复")} aria-label={tr("恢复")} onClick={() => doRestore(t.id)} data-interactive>
-                  <ArchiveRestore size={12} />
-                </button>
-                <button
-                  className={`danger${purgeConfirmId === t.id ? " confirming" : ""}`}
-                  title={purgeConfirmId === t.id ? tr("再次点击确认删除") : tr("彻底删除")}
-                  aria-label={purgeConfirmId === t.id ? tr("再次点击确认删除") : tr("彻底删除")}
-                  onClick={() => doPurge(t.id)}
-                  data-interactive
-                >
-                  {purgeConfirmId === t.id ? <X size={12} /> : <Trash2 size={12} />}
-                </button>
-              </div>
-            ))
+            <>
+              {trash.slice(0, 12).map((t) => (
+                <div className="widget-notes-trash-row" key={t.id}>
+                  <span className="widget-notes-trash-text">{t.text.slice(0, 60) || tr("（空便签）")}</span>
+                  <button title={tr("恢复")} aria-label={tr("恢复")} onClick={() => doRestore(t.id)} data-interactive>
+                    <ArchiveRestore size={12} />
+                  </button>
+                  <button
+                    className={`danger${purgeConfirmId === t.id ? " confirming" : ""}`}
+                    title={purgeConfirmId === t.id ? tr("再次点击确认删除") : tr("彻底删除")}
+                    aria-label={purgeConfirmId === t.id ? tr("再次点击确认删除") : tr("彻底删除")}
+                    onClick={() => doPurge(t.id)}
+                    data-interactive
+                  >
+                    {purgeConfirmId === t.id ? <X size={12} /> : <Trash2 size={12} />}
+                  </button>
+                </div>
+              ))}
+              {/* 12 条后面还有时给出余量提示——静默截断会让后面的便签看似不存在。 */}
+              {trash.length > 12 && <div className="widget-notes-trash-empty">+{trash.length - 12} …</div>}
+            </>
           )}
         </div>
       )}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * 长列表增量渲染（P1）。
+ * 长列表增量渲染。
  *
  * 为什么不用「固定行高虚拟滚动」：便签 / 书签的行高是内容驱动的（正文
  * 可换行、Markdown 渲染、编辑态会展开 textarea），固定行高方案会算错
@@ -24,6 +24,10 @@ export interface IncrementalListOptions {
   step?: number;
   /** 距底部多少像素时触发扩容。 */
   threshold?: number;
+  /** 窗口重置键：变化时回到首屏窗口（如文件浏览的换目录）。提供后**长度
+   *  变化不再触发重置**（仅钳制）——调用方以显式键控重置，20s 轮询 /
+   *  实时同步替换同长度数组不会把深滚动位置闪回首屏。 */
+  resetKey?: string | number;
 }
 
 export interface IncrementalList<T> {
@@ -40,7 +44,7 @@ export interface IncrementalList<T> {
 }
 
 /**
- * 长列表增量渲染 hook（P1，「窗口只增不减 + 滚到底再扩」策略）。
+ * 长列表增量渲染 hook（「窗口只增不减 + 滚到底再扩」策略）。
  *
  * 为什么不用固定行高虚拟滚动：便签/书签的行高是内容驱动的（换行、Markdown、
  * 编辑态展开），测量式方案复杂度远超收益。本实现首屏只挂 `initial` 条，
@@ -56,34 +60,42 @@ export interface IncrementalList<T> {
  * @throws 无。
  *
  * @example
- * ```tsx
+ * `tsx
  * const { items, scrollRef, remaining } = useIncrementalList(notes, { initial: 30 });
  * <div ref={scrollRef}>{items.map(renderRow)}{remaining > 0 && <button onClick={loadMore}>…</button>}</div>
- * ```
+ * `
  */
 export function useIncrementalList<T>(
   source: T[],
-  { initial = 40, step = 40, threshold = 240 }: IncrementalListOptions = {}
+  { initial = 40, step = 40, threshold = 240, resetKey }: IncrementalListOptions = {}
 ): IncrementalList<T> {
   const [limit, setLimit] = useState(initial);
   const nodeRef = useRef<HTMLElement | null>(null);
   const total = source.length;
 
-  // 列表规模变化时的窗口策略（P2 三轮细分）：
+  // 列表规模变化时的窗口策略（三轮细分）：
   //  - 总数减少（删一条便签/书签、条目完成）：只把已扩容窗口钳到新总数，
   //    不回缩——此前任何 total 变化都重置回 initial，已滚动扩容到几百条的
   //    列表删一条就瞬间卸载大半（滚动位置被 clamp，视觉上「列表闪一下」）。
   //  - 总数增大（切换筛选 / 新增）：回首屏窗口，避免筛选后仍挂着上万行。
-  // 依赖 total 而非数组引用：仅内容原地更新时不该重置用户已展开的窗口。
+  //  依赖 total 而非数组引用：仅内容原地更新时不该重置用户已展开的窗口。
+  //  resetKey 在场时改由键控重置（见 IncrementalListOptions.resetKey）。
   const prevTotal = useRef(total);
+  const prevResetKey = useRef(resetKey);
   useEffect(() => {
+    if (resetKey !== undefined) {
+      if (resetKey !== prevResetKey.current) setLimit(initial);
+      prevResetKey.current = resetKey;
+      prevTotal.current = total;
+      return;
+    }
     if (total < prevTotal.current) {
       setLimit((n) => Math.min(n, total));
     } else if (total > prevTotal.current) {
       setLimit(initial);
     }
     prevTotal.current = total;
-  }, [total, initial]);
+  }, [total, initial, resetKey]);
 
   const loadMore = useCallback(() => {
     setLimit((n) => (n >= total ? n : Math.min(total, n + step)));
@@ -103,7 +115,7 @@ export function useIncrementalList<T>(
     if (el.scrollHeight <= el.clientHeight + threshold) loadMore();
   }, [loadMore, threshold]);
 
-  // P2（审计修复）：scroll 监听只由本 effect 一处挂/卸载。此前回调 ref 与
+  // scroll 监听只由本 effect 一处挂/卸载。此前回调 ref 与
   // effect 各挂一次（同一闭包挂两遍 → loadMore 双触发）；且回调 ref 里用
   // 当前闭包 removeEventListener，摘不掉历史闭包的监听，ref 身份变化
   // detach/reattach 后旧监听残留到节点销毁。

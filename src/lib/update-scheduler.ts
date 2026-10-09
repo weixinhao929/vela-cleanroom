@@ -1,5 +1,5 @@
 /**
- * 更新检查调度器（BentoDesk 借鉴 #10）：主窗口（widget-0）启动即查一次、
+ * 更新检查调度器：主窗口（widget-0）启动即查一次、
  * 之后每小时醒一次看是否到期（默认 24h；每周 168h；0 = 仅手动关闭定时）。
  * 到期才真正发请求——空闲时段零网络。
  *
@@ -72,7 +72,7 @@ async function maybeCheck(): Promise<void> {
   }
 }
 
-/** 启动调度器（幂等）：返回清理函数。仅主窗口调用（D-1 同款约束）。 */
+/** 启动调度器（幂等）：返回清理函数。仅主窗口调用（同款约束）。 */
 export function startUpdateScheduler(): () => void {
   void maybeCheck();
   const timer = window.setInterval(() => void maybeCheck(), HOUR_MS);

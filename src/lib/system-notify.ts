@@ -19,10 +19,9 @@
  * 「去系统设置开权限」的提示行。
  */
 import { useSettingsStore } from "../store/settings-store";
-import { invoke, isTauri, currentWindowLabel } from "./tauri";
-import { NOTIFICATION_RECORDED_EVENT, notifyUser } from "./notifications";
+import { currentWindowLabel, isTauri } from "./tauri";
+import { notifyUser, recordHistory } from "./notifications";
 import { dndSuppressing } from "./dnd";
-import type { NotificationRecord } from "../types/bindings/NotificationRecord";
 
 /** 剪贴板链接快开的 DOM 事件（载荷 { url }；DockTakeover 消费）。 */
 export const CLIP_LINK_EVENT = "focus-desk:clip-link";
@@ -50,89 +49,57 @@ function isRecorder(): boolean {
   return currentWindowLabel() === "widget-0";
 }
 
-/**
- * 留档一条（系统镜像 / 外部推送共用）：成功后广播 DOM + Tauri 事件，
- * 通知中心与灵动岛接管条据此亮起。失败降级为本地构造记录仅本窗口可见。
- */
-function recordAndBroadcast(source: string, title: string, body: string): void {
-  const local: NotificationRecord = {
-    id: crypto.randomUUID(),
-    source,
-    title,
-    body,
-    kind: "info",
-    read: false,
-    created_at: new Date().toISOString()
-  };
-  const broadcast = (record: NotificationRecord) => {
-    try {
-      window.dispatchEvent(new CustomEvent(NOTIFICATION_RECORDED_EVENT, { detail: record }));
-    } catch {
-      // best-effort
-    }
-  };
-  if (!isTauri()) {
-    broadcast(local);
-    return;
-  }
-  void invoke<NotificationRecord>("add_notification", { source, title, body, kind: "info" })
-    .then((record) => {
-      broadcast(record);
-      void import("@tauri-apps/api/event").then(({ emit }) => emit("app:notification", record).catch(() => {}));
-    })
-    .catch((err) => {
-      console.warn("[system-notify] history write failed:", err);
-      broadcast(local);
-    });
-}
-
 let installed = false;
 
 /** 安装三类事件的模块级监听（幂等；由 DockShell 挂载时调用）。 */
 export function ensureSystemNotifyListeners(): void {
   if (installed || !isTauri() || typeof window === "undefined") return;
   installed = true;
-  void import("@tauri-apps/api/event").then(({ listen }) => {
-    // 一.1 系统通知镜像：只留档 + 岛上接管（Windows 已弹过原生 toast）。
-    void listen<SysNotificationCaptured>("sysnotify:captured", (e) => {
-      const p = e.payload;
-      if (!p || typeof p.id !== "number") return;
-      if (!useSettingsStore.getState().notifications.systemListener) return;
-      if (!isRecorder()) return;
-      const title = p.appName && p.title ? `${p.appName}：${p.title}` : p.title || p.appName;
-      recordAndBroadcast("system", title, p.body || "");
-    }).catch(() => {});
+  void import("@tauri-apps/api/event")
+    .then(({ listen }) => {
+      // 一.1 系统通知镜像：只留档 + 岛上接管（Windows 已弹过原生 toast）。
+      void listen<SysNotificationCaptured>("sysnotify:captured", (e) => {
+        const p = e.payload;
+        if (!p || typeof p.id !== "number") return;
+        if (!useSettingsStore.getState().notifications.systemListener) return;
+        if (!isRecorder()) return;
+        const title = p.appName && p.title ? `${p.appName}：${p.title}` : p.title || p.appName;
+        recordHistory("system", title, p.body || "", "info");
+      }).catch(() => {});
 
-    // 一.3 外部推送：留档 + OS toast（免打扰只压制 toast）。
-    void listen<PushReceived>("push:received", (e) => {
-      const p = e.payload;
-      if (!p || typeof p.title !== "string") return;
-      if (!useSettingsStore.getState().notifications.pushEnabled) return;
-      if (!isRecorder()) return;
-      recordAndBroadcast(p.source || "push", p.title, p.body || "");
-      if (!dndSuppressing()) void notifyUser(p.title, p.body || "", { source: "app" });
-    }).catch(() => {});
+      // 一.3 外部推送：留档 + OS toast（免打扰只压制 toast）。
+      void listen<PushReceived>("push:received", (e) => {
+        const p = e.payload;
+        if (!p || typeof p.title !== "string") return;
+        if (!useSettingsStore.getState().notifications.pushEnabled) return;
+        if (!isRecorder()) return;
+        recordHistory(p.source || "push", p.title, p.body || "", "info");
+        if (!dndSuppressing()) void notifyUser(p.title, p.body || "", { source: "app" });
+      }).catch(() => {});
 
-    // 一.4 剪贴板纯链接：转 DOM 事件供接管层提案（每屏的岛各自弹条）。
-    void listen<{ url: string }>("clipboard:url", (e) => {
-      const url = e.payload?.url;
-      if (typeof url !== "string" || !url) return;
-      try {
-        window.dispatchEvent(new CustomEvent(CLIP_LINK_EVENT, { detail: { url } }));
-      } catch {
-        // best-effort
-      }
-    }).catch(() => {});
+      // 一.4 剪贴板纯链接：转 DOM 事件供接管层提案（每屏的岛各自弹条）。
+      void listen<{ url: string }>("clipboard:url", (e) => {
+        const url = e.payload?.url;
+        if (typeof url !== "string" || !url) return;
+        try {
+          window.dispatchEvent(new CustomEvent(CLIP_LINK_EVENT, { detail: { url } }));
+        } catch {
+          // best-effort
+        }
+      }).catch(() => {});
 
-    // 权限状态：设置页提示行用。
-    void listen<{ access: string }>("sysnotify:status", (e) => {
-      try {
-        window.dispatchEvent(
-          new CustomEvent(SYSNOTIFY_STATUS_EVENT, { detail: { access: e.payload?.access ?? "denied" } })
-        );
-      } catch {
-        // best-effort
-      }
-    }).catch(() => {});
-  });
+      // 权限状态：设置页提示行用。
+      void listen<{ access: string }>("sysnotify:status", (e) => {
+        try {
+          window.dispatchEvent(
+            new CustomEvent(SYSNOTIFY_STATUS_EVENT, { detail: { access: e.payload?.access ?? "denied" } })
+          );
+        } catch {
+          // best-effort
+        }
+      }).catch(() => {});
+    })
+    /* 外层 import 链补 catch——失败只损失本窗的
+       系统事件路由（留档在 widget-0，多屏冗余），裸 rejection 不可接受。 */
+    .catch((err: unknown) => console.error("[sysnotify] listener setup failed", err));
 }

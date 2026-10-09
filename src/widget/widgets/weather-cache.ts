@@ -1,7 +1,7 @@
 /**
  * 天气共享缓存槽（localStorage `focus-desk.weather.cache.v1`，slot = lat/lon 各取三位
  * 小数）：WeatherWidget 拉取后写入富快照；WeatherMini / TodayOverview 只读
- * （需求 F-10「与卡片共享缓存槽，不重复请求」）。
+ * （需求 「与卡片共享缓存槽，不重复请求」）。
  *
  * 例外两处只写「当前天气」（writeCurrentWeatherSlot）：天气站（展开页）自己拉取成功后
  * 回写，收起后磁贴不会退回「—」；磁贴在槽位缺失 / 过期时兜底拉一次——灵动岛里通过
@@ -61,6 +61,17 @@ export function writeWeatherCacheSlot<T extends { at: number }>(slot: string, sn
   }
 }
 
+/** 可随当前天气一并合并的最小预报面（今日概览兜底拉取回写 hi/lo 用；
+ *  卡片读槽时对缺失数组可选链兜底，部分字段缺失不会崩）。 */
+export type ForecastBrief = {
+  time: string[];
+  weathercode: number[];
+  temperature_2m_max: number[];
+  temperature_2m_min: number[];
+  sunrise?: string[];
+  sunset?: string[];
+};
+
 /**
  * 只更新一个槽位的「当前天气」（天气站回写 / 磁贴兜底拉取）：
  *  - 槽位已有卡片写的富快照 → 只换 weather / at（及给到的附加字段），预报 / 逐时 /
@@ -71,14 +82,15 @@ export function writeWeatherCacheSlot<T extends { at: number }>(slot: string, sn
  * @param lat - 城市纬度。
  * @param lon - 城市经度。
  * @param weather - 当前天气。
- * @param extra - 可选附加字段（未给的键不改动已有值）。
+ * @param extra - 可选附加字段（未给的键不改动已有值；forecast 传本槽拉到的
+ *   当日 hi/lo 等最小面，避免卡片不在运行时高低温长期停留旧值）。
  * @returns 无。写失败静默。
  */
 export function writeCurrentWeatherSlot(
   lat: number,
   lon: number,
   weather: CachedCurrentWeather,
-  extra: { humidity?: number | null; aqi?: number | null; uv?: number | null } = {}
+  extra: { humidity?: number | null; aqi?: number | null; uv?: number | null; forecast?: ForecastBrief | null } = {}
 ): void {
   const slot = weatherCacheSlot(lat, lon);
   const prev = readWeatherCache<Record<string, unknown>>()[slot];
@@ -88,6 +100,7 @@ export function writeCurrentWeatherSlot(
   if (extra.humidity !== undefined) next.humidity = extra.humidity;
   if (extra.aqi !== undefined) next.aqi = extra.aqi;
   if (extra.uv !== undefined) next.uv = extra.uv;
+  if (extra.forecast !== undefined) next.forecast = extra.forecast;
   writeWeatherCacheSlot(slot, next);
 }
 
@@ -115,4 +128,67 @@ export function weatherCacheSnapshot(): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * 槽位是否「新鲜」（`at` 距 now 未超过 maxAgeMs）：卡片 / 磁贴 / 今日概览
+ * 共用同一判龄口径。原始串缺失 / 槽位缺失 / `at` 非法一律视为不新鲜。
+ */
+export function isWeatherSlotFresh(
+  raw: string,
+  lat: number,
+  lon: number,
+  maxAgeMs: number,
+  now: number = Date.now()
+): boolean {
+  if (!raw) return false;
+  try {
+    const all = JSON.parse(raw) as Record<string, { weather?: unknown; at?: unknown }>;
+    const slot = all[weatherCacheSlot(lat, lon)];
+    if (!slot?.weather) return false;
+    return typeof slot.at === "number" && Number.isFinite(slot.at) && now - slot.at < maxAgeMs;
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  预警推送去重（跨窗口）                                                */
+/* ------------------------------------------------------------------ */
+
+/** 已推送预警 key 的持久化键。localStorage 在同源多 WebView 间共享，天然跨窗口。 */
+const NOTIFIED_ALERTS_KEY = "focus-desk.weather.notified.v1";
+/** 上限：超出后丢最旧（预警是低频事件，200 条 ≈ 数年）。 */
+const NOTIFIED_ALERTS_MAX = 200;
+
+function readNotifiedAlerts(): string[] {
+  try {
+    const raw = localStorage.getItem(NOTIFIED_ALERTS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 查询 / 标记一条已推送预警。
+ *
+ * 卡片此前用模块级 Set 做基线（修同窗口双实例），但每个 WebView 各有
+ * 一份——多显示器每屏一个窗口时，同一预警各推一次。localStorage 同源共享，
+ * 每次「查 + 标记」读最新落盘状态即可跨窗口去重（预警低频，读放大可忽略）。
+ *
+ * @param key - 预警唯一键（调用方约定，建议含城市槽位）。
+ * @returns true 表示本次是首次见到（调用方据此推送通知）。
+ */
+export function markAlertNotified(key: string): boolean {
+  const known = readNotifiedAlerts();
+  if (known.includes(key)) return false;
+  known.push(key);
+  try {
+    localStorage.setItem(NOTIFIED_ALERTS_KEY, JSON.stringify(known.slice(-NOTIFIED_ALERTS_MAX)));
+  } catch {
+    // 写失败不影响本次判定（最坏退化为重启/他窗再推一次）
+  }
+  return true;
 }

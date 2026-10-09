@@ -46,6 +46,11 @@ function load(): CrashEntry[] {
   }
 }
 
+/** 条目身份键（ts+source+message）：合并共享键时去重用。 */
+function entryKey(e: CrashEntry): string {
+  return `${e.ts}\u0000${e.source}\u0000${e.message}`;
+}
+
 function persist() {
   try {
     localStorage.setItem(CRASH_KEY, JSON.stringify(buffer));
@@ -97,6 +102,18 @@ export function logCrash(entry: Omit<CrashEntry, "ts"> & { ts?: string }): void 
     message: truncate(entry.message) ?? "(no message)",
     stack: truncate(entry.stack)
   };
+  /*共享键 LWW 防丢——多窗口各持「加载时刻」的分叉副本，直接整键
+     覆盖会抹掉其他窗口后来写入的条目。写前重读共享 LS，把本窗内存没有的
+     条目并入（身份键 ts+source+message 去重，ISO ts 字典序即时间序），
+     再 prepend 新条目截 50。崩溃记录低频，重读成本可忽略。 */
+  const shared = load();
+  if (shared.length) {
+    const seen = new Set(buffer.map(entryKey));
+    const missed = shared.filter((e) => !seen.has(entryKey(e)));
+    if (missed.length) {
+      buffer = [...buffer, ...missed].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0)).slice(0, MAX_ENTRIES);
+    }
+  }
   buffer = [record, ...buffer].slice(0, MAX_ENTRIES);
   persist();
   reportToBackend(record);

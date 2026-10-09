@@ -44,14 +44,14 @@ export function currentWindowLabel(): string | null {
  *
  * 主窗口（label `"widget-0"`）唯一负责驱动番茄钟 tick / 通知 / 托盘 /
  * 快捷键监听。多显示器下每个物理屏幕各有一个 widget-<i> 窗口，若全部独立
- * 跑表会把同一段专注双写、通知 ×N（D-1/D-2）。浏览器模式（label 为 null，
+ * 跑表会把同一段专注双写、通知 ×N。浏览器模式（label 为 null，
  * 仅单窗口）视为 primary。
  *
  * @returns true 表示本窗口应承担全局副作用。
  * @example
- * ```ts
+ * `ts
  * if (isPrimaryWidgetWindow()) startGlobalTicker();
- * ```
+ * `
  */
 export function isPrimaryWidgetWindow(): boolean {
   const label = currentWindowLabel();
@@ -112,10 +112,10 @@ export async function openSettingsWindow(): Promise<void> {
   }
 }
 
-/* ---------------- 任务栏 · F-8 实时预览通道（TB-PREVIEW） ---------------- */
+/* ---------------- 任务栏 · 实时预览通道（TB-PREVIEW） ---------------- */
 
 /**
- * 任务栏实时预览（需求 F-8）：把 `state` 的外观（合并 `overrides`）临时强制到
+ * 任务栏实时预览（需求 ）：把 `state` 的外观（合并 `overrides`）临时强制到
  * 全部任务栏并挂起状态机输出 60s；`state=null` 取消预览，回到真实求值结果。
  *
  * 与 `apply_taskbar_config`（切片变化 350ms 防抖后整包落定）是两条独立通道：
@@ -128,10 +128,10 @@ export async function openSettingsWindow(): Promise<void> {
  * @returns Rust 命令完成后 resolve；模块未就绪 / 非可信窗口 / 浏览器模式 reject。
  *
  * @example
- * ```ts
+ * `ts
  * await previewTaskbarState("maximizedWindow", { color: "#00000080" });
  * await previewTaskbarState(null); // 取消
- * ```
+ * `
  */
 export async function previewTaskbarState(
   state: TaskbarStateKey | null,

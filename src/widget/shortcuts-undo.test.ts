@@ -3,13 +3,15 @@
  *  - undo/redo 对称执行逆操作，label 原样透传（toast 用）；
  *  - pushOp 清空重做栈；栈深上限 100（最早的操作被挤出）。
  *
- * 注意：栈是模块级单例，用例按顺序消费自己的记录，不与其它文件共享。
+ * 栈是模块级单例：beforeEach 复位，用例间不靠执行顺序隐式清栈。
  */
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { canRedo, canUndo, pushOp, redoOp, undoOp } from "./shortcuts-undo";
+import { __resetShortcutsUndoForTest, canRedo, canUndo, pushOp, redoOp, undoOp } from "./shortcuts-undo";
 
 describe("shortcuts-undo 命令栈", () => {
+  beforeEach(() => __resetShortcutsUndoForTest());
+
   it("undo/redo 对称：执行逆操作并透传 label", () => {
     let v = 0;
     pushOp({

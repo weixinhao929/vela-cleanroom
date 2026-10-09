@@ -1,5 +1,5 @@
 /**
- * [TB-MONITOR] F-6 显示器覆盖（settings-store monitorOverrides 段）：
+ * [TB-MONITOR] 显示器覆盖（settings-store monitorOverrides 段）：
  * - withTaskbarOverride：只写 monitorOverrides[slot]（字段整体替换、其余覆盖字段与统一
  *   配置不动、顺带 perMonitor=true）；null 删除；空白槽位 / 超上限新槽位原样返回；
  * - taskbarViewForSlot：浅合并视图（覆盖字段整体替换、未覆盖沿用、monitorOverrides 保留）；

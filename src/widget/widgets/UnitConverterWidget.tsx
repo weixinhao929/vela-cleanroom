@@ -46,11 +46,13 @@ const CATEGORIES: Record<string, { name: string; units: Unit[] }> = {
   data: {
     name: "数据",
     units: [
+      // 1024 进制按 IEC 二进制前缀标注（KiB/MiB…）——此前用十进制缩写
+      // KB/MB 标 1024 进制，与 SI 语义冲突（1 "KB" 显示 1024 字节）。
       { id: "b", name: "字节", factor: 1 },
-      { id: "kb", name: "KB", factor: 1024 },
-      { id: "mb", name: "MB", factor: 1024 * 1024 },
-      { id: "gb", name: "GB", factor: 1024 * 1024 * 1024 },
-      { id: "tb", name: "TB", factor: 1024 ** 4 }
+      { id: "kb", name: "KiB", factor: 1024 },
+      { id: "mb", name: "MiB", factor: 1024 * 1024 },
+      { id: "gb", name: "GiB", factor: 1024 * 1024 * 1024 },
+      { id: "tb", name: "TiB", factor: 1024 ** 4 }
     ]
   },
   area: {
@@ -92,7 +94,7 @@ const CATEGORIES: Record<string, { name: string; units: Unit[] }> = {
       { id: "day", name: "天", factor: 86400 }
     ]
   },
-  // W-060 扩展类别：压强/能量/功率/角度（普通 factor 换算）。
+  // 扩展类别：压强/能量/功率/角度（普通 factor 换算）。
   pressure: {
     name: "压强",
     units: [
@@ -136,7 +138,7 @@ const CATEGORIES: Record<string, { name: string; units: Unit[] }> = {
       { id: "turn", name: "圆周", factor: 360 }
     ]
   },
-  // W-060 鞋码：以脚长毫米为基准的特殊公式（同温度分支处理）。
+  // 鞋码：以脚长毫米为基准的特殊公式（同温度分支处理）。
   shoe: {
     name: "鞋码",
     units: [
@@ -148,7 +150,7 @@ const CATEGORIES: Record<string, { name: string; units: Unit[] }> = {
       { id: "uk", name: "英码 UK", factor: 1 }
     ]
   },
-  // W-059 货币：factor 由汇率动态填充（1/每美元兑该币汇率），未加载时为 1。
+  // 货币：factor 由汇率动态填充（1/每美元兑该币汇率），未加载时为 1。
   currency: {
     name: "货币",
     units: [
@@ -253,7 +255,7 @@ function fmt(n: number): string {
   return String(Number(n.toPrecision(8)));
 }
 
-// ── W-059 汇率获取（免费无 Key API + localStorage 缓存） ─────────
+// ── 汇率获取（免费无 Key API + localStorage 缓存） ─────────
 const FX_KEY = "focus-desk.uc.fx.v1";
 const FX_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -287,7 +289,7 @@ function readFxCache(): FxSnapshot | null {
   }
 }
 
-// ── W-056 状态持久化 / W-058 历史 ──────────────────────────────
+// ── 状态持久化 / 历史 ──────────────────────────────
 type SavedState = { cat: string; from: string; to: string; value: string };
 type HistEntry = { cat: string; from: string; to: string; value: string; out: string; at: number };
 
@@ -321,6 +323,18 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
 
   const [saved] = useState(readSaved);
   const [cat, setCat] = useState(() => (rememberCategory && saved?.cat) || "length");
+  /* （扩展类别页签丢失）：关闭 showExtended（或记忆恢复到扩展类别而开关
+     为关）时 cat 仍停在扩展类别——页签行里没有当前类别的 tab，看似页签
+     丢失，需重开扩展才找回。关闭时回落到 length。 */
+  useEffect(() => {
+    if (!showExtended && EXTENDED_CATEGORIES.includes(cat)) {
+      const c = CATEGORIES.length.units;
+      setCat("length");
+      setFrom((f) => (c.some((u) => u.id === f) ? f : c[0].id));
+      setTo((t) => (c.some((u) => u.id === t) ? t : c[1].id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- showExtended 翻转是唯一触发点，cat 读现值即可
+  }, [showExtended]);
   const [from, setFrom] = useState(() => {
     const c = CATEGORIES[rememberCategory && saved?.cat ? saved.cat : "length"];
     const u = c?.units.find((x) => x.id === saved?.from);
@@ -347,7 +361,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
     }
   });
 
-  // W-059 汇率状态。
+  // 汇率状态。
   const [fx, setFx] = useState<FxSnapshot | null>(readFxCache);
   const [fxStatus, setFxStatus] = useState<"idle" | "loading" | "error">("idle");
 
@@ -377,7 +391,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
     void refreshFx();
   }, [cat, refreshFx]);
 
-  // W-056 记住类别 + 单位 + 输入值。
+  // 记住类别 + 单位 + 输入值。
   useEffect(() => {
     if (!rememberCategory) return;
     try {
@@ -414,7 +428,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
     setTo(c[1].id);
   };
 
-  // W-061 类别/单位搜索过滤。
+  // 类别/单位搜索过滤。
   const visibleCategories = useMemo(() => {
     const base = Object.entries(CATEGORIES).filter(([id]) => showExtended || !EXTENDED_CATEGORIES.includes(id));
     const q = query.trim().toLowerCase();
@@ -484,7 +498,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
 
   return (
     <div className="uc">
-      {/* W-061 单位/类别搜索 */}
+      {/* 单位/类别搜索 */}
       {showExtended && (
         <div className="uc-search">
           <Search size={12} />
@@ -543,7 +557,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
           title={tr("互换单位")}
           data-interactive
         >
-          {/* E9：字符 ⇅ 换 lucide 图标。 */}
+          {/* 字符 ⇅ 换 lucide 图标。 */}
           <ArrowUpDown size={13} />
         </button>
       </div>
@@ -568,7 +582,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
         />
       </div>
 
-      {/* W-059 货币汇率状态行 */}
+      {/* 货币汇率状态行 */}
       {cat === "currency" && (
         <div className="uc-fx">
           {fxStatus === "loading" && (
@@ -605,7 +619,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
         </div>
       )}
 
-      {/* W-057 一表多单位同显 */}
+      {/* 一表多单位同显 */}
       {showAllUnits && cat !== "currency" && (
         <div className="uc-all">
           {units.map((u, ui) => {
@@ -647,7 +661,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
         </div>
       )}
 
-      {/* W-058 换算历史 */}
+      {/* 换算历史 */}
       {showHistory && history.length > 0 && (
         <div className="uc-hist">
           <button className="uc-hist-toggle" onClick={() => setHistOpen((v) => !v)} data-interactive>
@@ -656,7 +670,7 @@ export function UnitConverterWidget({ instanceId }: { instanceId: string }) {
             <span className="uc-hist-count">{history.length}</span>
             <ChevronDown size={11} className={`uc-hist-chevron${histOpen ? " open" : ""}`} />
           </button>
-          {/* 折叠常驻挂载 + grid-rows 0fr→1fr（W-151 范式）：chevron 已暗示会动，
+          {/* 折叠常驻挂载 + grid-rows 0fr→1fr（范式）：chevron 已暗示会动，
               容器高度不再硬切；inert 收起后不可聚焦。 */}
           <div className={`uc-hist-wrap${histOpen ? " open" : ""}`} inert={!histOpen}>
             <div className="uc-hist-clip">

@@ -133,13 +133,15 @@ export const QUICK_CONFIG_FIELDS: Record<string, QuickFieldDef[]> = {
       kind: "segment",
       key: "networkMode",
       label: "网卡显示",
+      // 「指定」需要配套的网卡选择器，快速面板没有（选了落到空串=自动）——
+      // 从快速配置移除；完整设置页（ambient）保留全部四档。
       options: [
         { id: "first", label: "自动" },
         { id: "all", label: "全部" },
-        { id: "aggregate", label: "聚合" },
-        { id: "select", label: "指定" }
+        { id: "aggregate", label: "聚合" }
       ]
     },
+    { kind: "slider", key: "alertThreshold", label: "告警阈值", min: 10, max: 100, step: 5, suffix: "%" },
     { kind: "slider", key: "refreshInterval", label: "刷新间隔", min: 1, max: 30, step: 1, suffix: "秒" }
   ],
   hardware: [
@@ -206,12 +208,12 @@ export const QUICK_CONFIG_FIELDS: Record<string, QuickFieldDef[]> = {
         { id: "none", label: "无" }
       ]
     },
+    { kind: "toggle", key: "transparent", label: "透明（无底板）" },
     { kind: "stepper", key: "refreshInterval", label: "刷新间隔", min: 1, max: 10, suffix: "秒" }
   ],
   shortcuts: [
     { kind: "toggle", key: "showTitle", label: "显示标题" },
     { kind: "toggle", key: "showLabels", label: "显示名称标签" },
-    { kind: "toggle", key: "marquee", label: "滚动展示" },
     { kind: "toggle", key: "folderPreview", label: "文件夹点击预览" },
     { kind: "stepper", key: "columns", label: "列数", min: 1, max: 6, suffix: "列" }
   ],

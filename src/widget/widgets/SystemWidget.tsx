@@ -6,15 +6,21 @@ import { useEffect, useRef, useState } from "react";
 import { Cpu, Gauge, HardDrive, MemoryStick, Network, WifiOff } from "lucide-react";
 import { useT } from "../../i18n-lite";
 import { FxCount } from "../../lib/fx";
-import { selectNetworkRows, useNetRate, useSystemBroadcast, type NetworkMode } from "../../lib/system-stats";
+import {
+  selectNetworkRows,
+  useNetRate,
+  useSystemBroadcast,
+  type NetworkMode,
+  type SystemBroadcast
+} from "../../lib/system-stats";
 import { useWidgetConfig } from "../widget-config";
 import { Sparkline } from "./sparkline";
 
 const HISTORY_LEN = 40;
-/** W-144 阈值告警线（%）：高于此值进度条与数值变红。 */
-const ALERT_THRESHOLD = 80;
+/** 阈值告警线默认值（%）：实际阈值可配（config.alertThreshold），高于此值进度条与数值变红。 */
+const ALERT_THRESHOLD_DEFAULT = 80;
 
-/** W-146 单核占用率 → 色阶（任务管理器小格子）。 */
+/** 单核占用率 → 色阶（任务管理器小格子）。 */
 function coreColor(v: number): string {
   if (v >= 90) return "var(--danger, #ef4444)";
   if (v >= 60) return "var(--amber, #f59e0b)";
@@ -22,7 +28,7 @@ function coreColor(v: number): string {
   return "var(--accent-2, #4fc3f7)";
 }
 
-/** W-145 网络趋势纵轴满量程：窗口峰值 ×1.2（下限 1KB/s），避免曲线全程贴顶。 */
+/** 网络趋势纵轴满量程：窗口峰值 ×1.2（下限 1KB/s），避免曲线全程贴顶。 */
 function netHistMax(data: number[]): number {
   const peak = data.length ? Math.max(...data) : 0;
   return Math.max(1024, peak * 1.2);
@@ -38,11 +44,11 @@ function netHistMax(data: number[]): number {
  *  - showCPU / showRAM / showGPU / showDisk / showNetwork: toggle each section
  *  - compactMode: tighter layout
  *  - refreshInterval: broadcast cadence this instance asks for
- *  - showTrend (W-142): 每行迷你趋势曲线
- *  - showAllDisks (W-143): 显示全部磁盘
- *  - thresholdAlert (W-144): >80% 变红
- *  - networkMode (W-145): first / all / aggregate
- *  - showCoresGrid (W-146): CPU 每核小格子
+ *  - showTrend (): 每行迷你趋势曲线
+ *  - showAllDisks (): 显示全部磁盘
+ *  - thresholdAlert (): >80% 变红
+ *  - networkMode (): first / all / aggregate
+ *  - showCoresGrid (): CPU 每核小格子
  */
 export function SystemWidget({ instanceId }: { instanceId: string }) {
   const { config } = useWidgetConfig(instanceId);
@@ -57,6 +63,8 @@ export function SystemWidget({ instanceId }: { instanceId: string }) {
   const showTrend = config.showTrend === true;
   const showAllDisks = config.showAllDisks === true;
   const thresholdAlert = config.thresholdAlert !== false;
+  /** 告警阈值可配（默认 80，10–100）。 */
+  const alertThreshold = Math.max(10, Math.min(100, (config.alertThreshold as number) || ALERT_THRESHOLD_DEFAULT));
   const networkMode = ((config.networkMode as NetworkMode) || "first") satisfies NetworkMode;
   const networkSelect = ((config.networkSelect as string) || "") as string;
   const showCoresGrid = config.showCoresGrid === true;
@@ -65,30 +73,46 @@ export function SystemWidget({ instanceId }: { instanceId: string }) {
   const stats = frame?.stats ?? null;
   const disks = frame?.disks ?? [];
   const network = frame?.networks ?? [];
-  // W-167 全局网速显示选项（bit 计/简洁/隐藏单位/上下行交换）。
+  // 全局网速显示选项（bit 计/简洁/隐藏单位/上下行交换）。
   const { fmt: fmtRate, swap: netSwap } = useNetRate();
 
-  // W-142 趋势历史：ref 数组 + 强制重渲染（与 HardwareWidget 同模式）。
+  // 趋势历史：ref 数组 + 强制重渲染（与 HardwareWidget 同模式）。
   const cpuHist = useRef<number[]>([]);
   const memHist = useRef<number[]>([]);
   const gpuHist = useRef<number[]>([]);
-  /** W-145 网络趋势（聚合 ↓/↑ 两条）。 */
+  /** 网络趋势（first/select/aggregate 模式的选卡口径 ↓/↑ 两条）。 */
   const netDownHist = useRef<number[]>([]);
   const netUpHist = useRef<number[]>([]);
+  /** all 模式的每网卡独立趋势：行数值是单卡的，共用全网合计曲线会对不上
+   *  （口径问题在 all 模式的残余）。幽灵行（up=false）速率为 0，正常参与。 */
+  const netHistByNic = useRef<Map<string, { down: number[]; up: number[] }>>(new Map());
   const [, force] = useState(0);
+  /** 已 append 过的最后一帧：effect 依赖含 networkMode/networkSelect/tr，
+   *  选卡或语言变更会让 effect 带着同一帧重跑——无守卫时同一采样被重复
+   *  追加，趋势曲线失真（「一帧一样本」不变量）。 */
+  const lastSampled = useRef<SystemBroadcast | null>(null);
   useEffect(() => {
-    if (!frame) return;
+    if (!frame || lastSampled.current === frame) return;
+    lastSampled.current = frame;
     cpuHist.current = [...cpuHist.current, frame.stats.cpu_usage].slice(-HISTORY_LEN);
     memHist.current = [...memHist.current, frame.stats.mem_percent].slice(-HISTORY_LEN);
     gpuHist.current = [...gpuHist.current, frame.stats.gpu_usage].slice(-HISTORY_LEN);
-    netDownHist.current = [...netDownHist.current, frame.networks.reduce((s, n) => s + (n.up ? n.rx_bps : 0), 0)].slice(
-      -HISTORY_LEN
-    );
-    netUpHist.current = [...netUpHist.current, frame.networks.reduce((s, n) => s + (n.up ? n.tx_bps : 0), 0)].slice(
-      -HISTORY_LEN
-    );
+    // 曲线此前恒为全网卡合计，而当前值在 first/select 模式
+    // 是单网卡——数值与曲线对不上。曲线改按与 netRows 相同的选卡口径累加。
+    const rows = selectNetworkRows(frame.networks, networkMode, networkSelect, tr("合计"));
+    netDownHist.current = [...netDownHist.current, rows.reduce((s, n) => s + n.rx, 0)].slice(-HISTORY_LEN);
+    netUpHist.current = [...netUpHist.current, rows.reduce((s, n) => s + n.tx, 0)].slice(-HISTORY_LEN);
+    // all 模式逐卡追加（其余模式只维护上面的选卡口径对，不白做）。
+    if (networkMode === "all") {
+      for (const n of frame.networks) {
+        const h = netHistByNic.current.get(n.name) ?? { down: [], up: [] };
+        h.down = [...h.down, n.up ? n.rx_bps : 0].slice(-HISTORY_LEN);
+        h.up = [...h.up, n.up ? n.tx_bps : 0].slice(-HISTORY_LEN);
+        netHistByNic.current.set(n.name, h);
+      }
+    }
     force((x) => x + 1);
-  }, [frame]);
+  }, [frame, networkMode, networkSelect, tr]);
 
   /* 骨架→数据交叉淡出：数据到达后骨架再保留 ~120ms（is-closing 淡出），
      与首帧行内容交叠，避免硬切闪烁。依赖布尔量而非 stats 引用——
@@ -104,12 +128,12 @@ export function SystemWidget({ instanceId }: { instanceId: string }) {
     return () => window.clearTimeout(t);
   }, [hasStats]);
 
-  const alertCls = (pct: number) => (thresholdAlert && pct > ALERT_THRESHOLD ? " alert" : "");
+  const alertCls = (pct: number) => (thresholdAlert && pct > alertThreshold ? " alert" : "");
 
-  // W-143 磁盘：默认第一块；showAllDisks 渲染全部（按挂载点排序，系统盘在前）。
+  // 磁盘：默认第一块；showAllDisks 渲染全部（按挂载点排序，系统盘在前）。
   const visibleDisks = showAllDisks ? disks.slice().sort((a, b) => a.mount.localeCompare(b.mount)) : disks.slice(0, 1);
 
-  // W-145 网卡：first(自动选最活跃) / all 全部 / aggregate 聚合 / select 指定。
+  // 网卡：first(自动选最活跃) / all 全部 / aggregate 聚合 / select 指定。
   // 选卡口径统一在 lib/system-stats 的 selectNetworkRows（与 sysbar/mini 一致）。
   const netRows = selectNetworkRows(network, networkMode, networkSelect, tr("合计"));
 
@@ -151,7 +175,7 @@ export function SystemWidget({ instanceId }: { instanceId: string }) {
                 </span>
                 {showTrend && (
                   <div className="widget-sys-trend">
-                    <Sparkline data={cpuHist.current} color="var(--accent)" />
+                    <Sparkline data={cpuHist.current} color="var(--accent)" span={HISTORY_LEN} />
                   </div>
                 )}
               </div>
@@ -191,7 +215,7 @@ export function SystemWidget({ instanceId }: { instanceId: string }) {
                 </span>
                 {showTrend && (
                   <div className="widget-sys-trend">
-                    <Sparkline data={memHist.current} color="var(--accent-2)" />
+                    <Sparkline data={memHist.current} color="var(--accent-2)" span={HISTORY_LEN} />
                   </div>
                 )}
               </div>
@@ -212,14 +236,17 @@ export function SystemWidget({ instanceId }: { instanceId: string }) {
                     style={{ transform: `scaleX(${Math.min(100, stats.gpu_usage) / 100})` }}
                   />
                 </div>
-                <span className={`widget-sys-value${alertCls(stats.gpu_usage)}`}>
+                <span
+                  className={`widget-sys-value${alertCls(stats.gpu_usage)}`}
+                  title={tr("显存为已提交口径（独占+共享，与任务管理器一致；iGPU 上数值偏大属正常）")}
+                >
                   {alertCls(stats.gpu_usage) ? <span aria-hidden="true">▲ </span> : null}
                   <FxCount value={stats.gpu_usage} />%
                   {stats.gpu_mem_used_gb > 0 ? ` · ${stats.gpu_mem_used_gb.toFixed(1)} GB` : ""}
                 </span>
                 {showTrend && (
                   <div className="widget-sys-trend">
-                    <Sparkline data={gpuHist.current} color="var(--warn, var(--amber))" />
+                    <Sparkline data={gpuHist.current} color="var(--warn, var(--amber))" span={HISTORY_LEN} />
                   </div>
                 )}
               </div>
@@ -248,33 +275,50 @@ export function SystemWidget({ instanceId }: { instanceId: string }) {
             ))}
           {showNetwork &&
             netRows.length > 0 &&
-            netRows.map((n) => (
-              <div className="widget-sys-row" key={n.name}>
-                <span className="widget-sys-icon">{n.up ? <Network size={16} /> : <WifiOff size={16} />}</span>
-                <div className="widget-sys-body">
-                  <span className="widget-sys-label">
-                    {tr("网络")}
-                    {networkMode !== "first" ? ` · ${n.name}` : ""}
-                    {!n.up && <span className="widget-sys-net-down">{tr("未连接")}</span>}
-                  </span>
-                  {showTrend && (
-                    <div className="widget-sys-trend widget-sys-trend-net">
-                      <Sparkline
-                        data={netDownHist.current}
-                        color="var(--accent-2)"
-                        max={netHistMax(netDownHist.current)}
-                      />
-                      <Sparkline data={netUpHist.current} color="var(--accent)" max={netHistMax(netUpHist.current)} />
+            netRows.map((n) => {
+              /* all 模式每行用自己网卡的历史；其余模式行即选卡口径，共用一对。 */
+              const nicHist =
+                networkMode === "all"
+                  ? (netHistByNic.current.get(n.name) ?? { down: [] as number[], up: [] as number[] })
+                  : { down: netDownHist.current, up: netUpHist.current };
+              return (
+                <div className="widget-sys-row" key={n.name}>
+                  <span className="widget-sys-icon">{n.up ? <Network size={16} /> : <WifiOff size={16} />}</span>
+                  <div className="widget-sys-body">
+                    <span className="widget-sys-label">
+                      {tr("网络")}
+                      {networkMode !== "first" ? ` · ${n.name}` : ""}
+                      {!n.up && <span className="widget-sys-net-down">{tr("未连接")}</span>}
+                    </span>
+                    {showTrend && (
+                      <div className="widget-sys-trend widget-sys-trend-net">
+                        <Sparkline
+                          data={nicHist.down}
+                          color="var(--accent-2)"
+                          max={netHistMax(nicHist.down)}
+                          span={HISTORY_LEN}
+                        />
+                        <Sparkline
+                          data={nicHist.up}
+                          color="var(--accent)"
+                          max={netHistMax(nicHist.up)}
+                          span={HISTORY_LEN}
+                        />
+                      </div>
+                    )}
+                    <div className="widget-sys-net">
+                      {/* 上下行交换：交换「谁在前」，默认 ↓下载在前。 */}
+                      <span className="widget-sys-net-item">
+                        {netSwap ? `↑ ${fmtRate(n.tx)}` : `↓ ${fmtRate(n.rx)}`}
+                      </span>
+                      <span className="widget-sys-net-item">
+                        {netSwap ? `↓ ${fmtRate(n.rx)}` : `↑ ${fmtRate(n.tx)}`}
+                      </span>
                     </div>
-                  )}
-                  <div className="widget-sys-net">
-                    {/* W-167 上下行交换：交换「谁在前」，默认 ↓下载在前。 */}
-                    <span className="widget-sys-net-item">{netSwap ? `↑ ${fmtRate(n.tx)}` : `↓ ${fmtRate(n.rx)}`}</span>
-                    <span className="widget-sys-net-item">{netSwap ? `↓ ${fmtRate(n.rx)}` : `↑ ${fmtRate(n.tx)}`}</span>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
         </>
       )}
     </div>

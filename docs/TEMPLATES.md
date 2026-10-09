@@ -4,20 +4,22 @@
 
 ## 1. 全局数据源（所有页面共享）
 
-| Hook / Store                  | 关键字段                                                                                                                                | 类型                                                                              | 说明                                                                                                                      |
+| Hook / Store | 关键字段 | 类型 | 说明 |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `useSettingsStore`            | `preset` `themeMode`                                                                                                                    | `"default"\|"retro"\|"custom"` × `"system"\|"dark"\|"light"`                      | 外观；变更即写 CSS 变量（旧值 midnight/daylight/glass/terminal/paper 经迁移表归一；`"custom"` 配色由 `customTheme` 承载） |
-|                               | `zoom` `fontSize`                                                                                                                       | `number`（100 基准，60–160 / 80–140）                                             | 界面缩放与字号百分比                                                                                                      |
-|                               | `general.language`                                                                                                                      | `"简体中文" \| "English"`                                                         | 切换 i18n                                                                                                                 |
-|                               | `extra.focusMode`                                                                                                                       | `"off"\|"light"\|"medium"\|"deep"`                                                | 专注静音档位                                                                                                              |
-|                               | `notifications.sources`                                                                                                                 | `Record<NotificationSource, boolean>`                                             | 逐来源通知开关                                                                                                            |
-| `useAppStore`                 | `tasks: Task[]` `deadlines: Deadline[]`                                                                                                 | 见 `domain/schemas.ts`                                                            | 任务/DDL 数据                                                                                                             |
-|                               | `pomodoro: PomodoroState`                                                                                                               | `{ mode, remainingSeconds, isRunning, completedFocusSessions, currentTaskId, … }` | 番茄钟运行态                                                                                                              |
-|                               | `pomodoroConfig: PomodoroConfig`                                                                                                        | 各时长/目标字段                                                                   | 配置（经 normalizeConfig 钳制）                                                                                           |
-| `useWidgetStore`              | `instances: WidgetInstance[]`                                                                                                           | `{ id, type, x, y, w, h, z, opacity?, clickThrough?, ctBadge?, groupId? }[]`      | 当前视图布局（`ctBadge` 穿透角标开关、`groupId` 所属编组）                                                                |
-|                               | `views: ViewDef[]` `activeView: string` `trash: TrashWidget[]` `groups: WidgetGroup[]` `templates: LayoutTemplate[]` `dock: DockConfig` | —                                                                                 | 多视图、回收站、编组、命名布局模板（§5.1）与本屏灵动岛配置                                                                |
-| `useHabitsStore`              | `habits: Habit[]`                                                                                                                       | `{ id, name, done: Record<dateKey, boolean>, pinned?, remindAt?, … }[]`           | 习惯数据                                                                                                                  |
-| `useWidgetConfig(instanceId)` | `config: WidgetConfig` + `update(patch)`                                                                                                | 见 §3 各组件变量表                                                                | 每实例独立配置                                                                                                            |
+| `useSettingsStore` | `preset` `themeMode` | `"default"\|"retro"\|"custom"` × `"system"\|"dark"\|"light"` | 外观；变更即写 CSS 变量（旧值 midnight/daylight/glass/terminal/paper 经迁移表归一；`"custom"` 配色由 `customTheme` 承载） |
+| | `zoom` `fontSize` | `number`（100 基准，60–160 / 80–140） | 界面缩放与字号百分比 |
+| | `extra.hideEmptyGuide` | `boolean`(false) | 空视图引导卡显隐（桌面右键「隐藏/显示空视图引导」同源） |
+| | `extra.themeInkDurationMs` | `number`(1400，钳 300–3000) | 主题切换水墨动效时长（ms） |
+| | `general.language` | `"简体中文" \| "English" \| "跟随系统"` | 切换 i18n（跟随系统按 OS locale 解析为前两档之一） |
+| | `extra.focusMode` | `"off"\|"light"\|"medium"\|"deep"` | 专注静音档位 |
+| | `notifications.sources` | `Record<NotificationSource, boolean>` | 逐来源通知开关 |
+| `useAppStore` | `tasks: Task[]` `deadlines: Deadline[]` | 见 `domain/schemas.ts` | 任务/DDL 数据 |
+| | `pomodoro: PomodoroState` | `{ mode, remainingSeconds, isRunning, completedFocusSessions, currentTaskId, … }` | 番茄钟运行态 |
+| | `pomodoroConfig: PomodoroConfig` | 各时长/目标字段 | 配置（经 normalizeConfig 钳制） |
+| `useWidgetStore` | `instances: WidgetInstance[]` | `{ id, type, x, y, w, h, z, opacity?, clickThrough?, ctBadge?, groupId? }[]` | 当前视图布局（`ctBadge` 穿透角标开关、`groupId` 所属编组） |
+| | `views: ViewDef[]` `activeView: string` `trash: TrashWidget[]` `groups: WidgetGroup[]` `templates: LayoutTemplate[]` `dock: DockConfig` | — | 多视图、回收站、编组、命名布局模板（§5.1）与本屏灵动岛配置 |
+| `useHabitsStore` | `habits: Habit[]` | `{ id, name, done: Record<dateKey, boolean>, pinned?, remindAt?, … }[]` | 习惯数据 |
+| `useWidgetConfig(instanceId)` | `config: WidgetConfig` + `update(patch)` | 见 §3 各组件变量表 | 每实例独立配置 |
 
 通用工具：`t(zh)/useT()` 翻译；`useNow(intervalMs)` 共享时钟；`useTauriEvent(event, handler)` 订阅 IPC 事件。
 
@@ -29,12 +31,14 @@
 - **变量**：布局来自 `instances`（x/y/w/h/z 定位）；编辑态由 `editMode: boolean` 控制。
 - **交互逻辑**：拖拽/缩放经 rAF 写瞬态 `dragPreview`，pointerup 提交 store；对齐参考线由 `alignGuides` 渲染；框选矩形命中 `instances` 后批量置选。
 - **布局工具**：编辑模式工具栏提供「布局模板」「布局历史」面板（同一锚位互斥打开）；画布挂载时 `initLayoutTimeline()` 接管 Ctrl+Z / Ctrl+Shift+Z。详见 §5。
+- **键盘守卫**：方向键微移 / `Delete` / 的全局捕获在焦点位于「编辑铬件」（工具栏/批量工具栏/模板面板/右键菜单/图库/配置弹层/文件夹弹层/命令面板等，`widget/edit-chrome.ts` `EDIT_CHROME_SELECTOR`）时不作用于画布选中卡；编辑工具栏为 ARIA toolbar 键盘模式（←→ 循环 / Home / End）。
+- **空视图引导**：视图无小组件时渲染可关闭引导卡（`extra.hideEmptyGuide` 偏好，桌面空白右键「隐藏/显示空视图引导」切换）。
 
 ### 2.2 设置窗口（`#/settings`）
 
 - **结构**：`SettingsView` = 左侧导航（页面 + 小组件配置项）+ 右侧内容。
-- **页面**：GeneralPage / StylePage / DisplayPage（含跨屏布局复制入口，§5.4） / AnimationPage / ConnectionPage / DockPage（灵动岛） / TaskbarPage（任务栏） / LicensePage（许可证） / UpdatePage / ViewPages（视图页 + 画布图库 `WidgetGalleryPage`）；DataPanel 内联于 GeneralPage，许可页（LicensePage）内联在 `SettingsView.tsx`；小组件配置项路由 `WidgetConfigPage`，另有灵动岛磁贴配置路由 `DockTileConfigPage` / `MiscItemConfigPage`。
-- **交互逻辑**：所有表单直接写 settings-store（即时生效）；导航支持搜索过滤（`settings-search.ts` 索引）。
+- **页面**：GeneralPage / StylePage / DisplayPage（含跨屏布局复制入口，§5.4） / AnimationPage / ConnectionPage / DockPage（灵动岛） / TaskbarPage（任务栏） / LicensePage（许可证） / UpdatePage / ViewPages（视图页 + 画布图库 `WidgetGalleryPage`）；DataPanel 内联于 GeneralPage，许可页（LicensePage）内联在 `SettingsView.tsx`；小组件配置项路由 `WidgetConfigPage`，另有灵动岛磁贴配置路由 `DockTileConfigPage` / `MiscItemConfigPage` 与**编组配置页 `GroupConfigPage`（路由 `group-config-<gid>`，组级透明度 + 成员列表 + 解散编组；侧栏树为 视图 → 编组 → 成员 三级，编组/成员配置页自动展开所属视图）**。设置导出/导入载荷新增 `groups`（各视图编组）与 `screens`（全部屏幕的视图/布局/编组整屏快照，导入逐屏立即落盘）。
+- **交互逻辑**：所有表单直接写 settings-store（即时生效）；导航支持搜索过滤（`settings-search.ts` 索引），词条命中**落到行**——`settings-jump.ts` 行级跳转信道（`vela:settings-jump` 事件 + pending 单例 + `flashSettingsRowByTitle` 按 `.tm-setting-title` 文本定位行滚动居中、挂 `.tm-row-flash` 1.8s 脉冲；懒加载页 120ms×20 次重试），侧栏搜索与命令面板（跨窗 `app:navigate-settings` 带 `title` 载荷）共用。
 
 ### 2.3 速记窗（quick-note）
 
@@ -75,7 +79,7 @@
 
 ### system 系统信息
 
-五类显示开关 `showCPU/RAM/GPU/Disk/Network`(true)；`compactMode`(false)；`refreshInterval: 1–30s`(3)；`showTrend`(false)；`showAllDisks`(false)；`thresholdAlert`(true, >80% 变红)；`networkMode: "first"|"all"|"aggregate"|"select"`；`networkSelect: string`（select 模式指定网卡名）；`showCoresGrid`(false)
+五类显示开关 `showCPU/RAM/GPU/Disk/Network`(true)；`compactMode`(false)；`refreshInterval: 1–30s`(3)；`showTrend`(false)；`showAllDisks`(false)；`thresholdAlert`(true 阈值告警变红) + `alertThreshold: 10–100`(80 告警阈值百分比，可调)；`networkMode: "first"|"all"|"aggregate"|"select"`；`networkSelect: string`（select 模式指定网卡名）；`showCoresGrid`(false)。趋势曲线：↓/↑ 双条（first/select 模式），all 模式逐网卡独立曲线（`netHistByNic`），纵轴满量程 = 峰值 ×1.2；上下行显示可交换
 
 ### hardware 硬件监控
 
@@ -99,7 +103,7 @@
 
 ### files 文件浏览
 
-`showHidden`(false)；`showFileSize` `showModifiedDate` `showChips` 均(true)；`sortBy: "name"|"size"|"modified"|"type"`；`sortOrder: "asc"|"desc"`；`nameDisplay: "full"|"noext"|"noname"`（完整 / 隐藏扩展名 / 隐藏文件名）；`viewMode: "list"|"preview"`（列表 / 内容预览）；`aliases: Record<path,name>` 显示别名（右键「设置显示名」写入）；`liveSync`(true 目录监视实时刷新，绑定失败回退轮询)；`root: string`(""=全局默认目录)；`rememberPath`(true) + `lastPath: string`
+`showHidden`(false)；`showFileSize` `showModifiedDate` `showChips` 均(true)；`lockToRoot`(false 锁定根目录：向上/面包屑/快捷 chips 不得跳出实例根)；`chipCount: "2"|"4"|"6"`("2" 快捷目录 chips 数量上限，面包屑同步分段)；`sortBy: "name"|"size"|"modified"|"type"`；`sortOrder: "asc"|"desc"`；`nameDisplay: "full"|"noext"|"noname"`（完整 / 隐藏扩展名 / 隐藏文件名）；`viewMode: "list"|"preview"`（列表 / 内容预览）；`aliases: Record<path,name>` 显示别名（右键「设置显示名」写入）；`liveSync`(true 目录监视实时刷新，绑定失败回退轮询)；`root: string`(""=全局默认目录)；`rememberPath`(true) + `lastPath: string`
 
 ### calculator 计算器
 
@@ -123,7 +127,7 @@
 
 ### music 音频可视化 / nowplaying 正在播放（复用同表；后 4 键仅 nowplaying 卡片消费）
 
-`visualStyle: "bars"|"wave"|"mirror"|"minimal"|"radial"|"butterfly"`；`visualHeight: 10–100`（占卡片内容区高度的百分比，卡片放大频谱跟着变大）(64)；`mode: "playback"|"microphone"|"both"`；`layout: "spectrum"|"nowplaying"|"both"`；`colorMode: "theme"|"mono"|"rainbow"`；`gain: 0.5–3`(1)；`smoothing: 0–1`(0.5)；`bandCount: 16–96`(64)；`peakHold`(false)；`dist: "log"|"linear"`；`showStatusText`(true 底部状态文字)；`transparent`(false 无底板透明)；nowplaying 专属：`centerTitle`(false 标题与歌手居中)；`showSeekbar`(true)；`showModeButtons`(true 随机/循环按钮，按会话能力位出现)；`wheelVolume`(true 滚轮调应用音量)
+`lyricOffsetSec: -5..5`（歌词延迟微调，秒）/ `lyricTranslation: bool`（译文双行，默认 true）/ `visualStyle: "bars"|"wave"|"mirror"|"minimal"|"radial"|"butterfly"`；`visualHeight: 10–100`（占卡片内容区高度的百分比，卡片放大频谱跟着变大）(64)；`mode: "playback"|"microphone"|"both"`；`layout: "spectrum"|"nowplaying"|"both"`；`colorMode: "theme"|"mono"|"rainbow"`；`gain: 0.5–3`(1)；`smoothing: 0–1`(0.5)；`bandCount: 16–96`(64)；`peakHold`(false)；`dist: "log"|"linear"`；`showStatusText`(true 底部状态文字)；`transparent`(false 无底板透明)；nowplaying 专属：`centerTitle`(false 标题与歌手居中)；`showSeekbar`(true)；`showModeButtons`(true 随机/循环按钮，按会话能力位出现)；`wheelVolume`(true 滚轮调应用音量)
 
 ### bluetooth 蓝牙
 
@@ -139,15 +143,15 @@
 
 ### countdown 倒计时
 
-`defaultPreset: 1–120min`(25)；`loopAfterComplete`(false)；`notifyOnEnd` `showSeconds` `showPresets` 均(true)
+`defaultPreset: 1–120min`(25)；`loopAfterComplete`(false)；`notifyOnEnd` `showSeconds` `showPresets` `endSound`(结束提示音) `trayTime`(托盘显示剩余时间) 均(true)；`linkPomodoro`(false 与番茄钟联动)；`mode: "timer"|"days"`(timer 计时/纪念日)；`presets: number[]`(快速时长档)；`targets: {id,label,date}[]`(纪念日目标列表)
 
 ### email 邮件
 
-`refreshInterval: 1–60min`(5)；`showPreview` `showTime` 均(true)；`maxItems: 5–50`(20)；`showUnreadOnly`(false)；`notifyNewMail`(true)；`doNotDisturbHour: -1|0–23`(-1 定时免打扰)
+`refreshInterval: 1–60min`(5)；`showPreview` `showTime` 均(true)；`maxItems: 5–50`(20)；`showUnreadOnly`(false)；`notifyNewMail`(true)；`doNotDisturbHour: -1|0–23`(-1 定时免打扰)。配置页（设置 → 连接 → 邮件账户表单）带「测试连接」动作：`test_email_account` 走 DNS→TCP→TLS→登录→SELECT INBOX 全链路当场验证，行内反馈成败与阶段文案
 
 ### timetable 课程表
 
-`showLocation` `showWeeksBadge` `showTimes` 均(true)；`compact`(false)；`sectionTimes/sectionTimesEnd: string` 节次时间表；`totalSections: 0–30`(0 自动)；`cellHeight: 28–96px`；`cellWidth: 0–120px`(0 自适应)；`calendarSync`(false 同步到日历)；`profiles: unknown[]` + `activeProfile: string`（多方案，由导入流程写入）；`classReminder`(true 上课提醒)；`showAllWeeks`(false 总览)；`layout: "grid"|"list"`
+`showLocation` `showWeeksBadge` `showTimes` 均(true)；`compact`(false)；`sectionTimes/sectionTimesEnd: string` 节次时间表；`totalSections: 0–30`(0 自动)；`cellHeight: 28–96px`；`cellWidth: 0–120px`(0 自适应)；`calendarSync`(false 同步到日历)；`profiles: unknown[]` + `activeProfile: string`（多方案，由导入流程写入）；`classReminder`(true 上课提醒)；`showAllWeeks`(false 总览)；`layout: "grid"|"list"`；学期设置（周次徽标入口弹层：开学日期 + 总周数 1–60 + 「以本周为第 1 周」，写入当前方案，学期外自动钳制并提示寒暑假）
 
 ### todayoverview 今日概览
 
@@ -162,7 +166,7 @@
 
 ## 5. 布局模板、布局历史与预设
 
-### 5.1 命名布局模板（I2）
+### 5.1 命名布局模板
 
 - **数据**：`LayoutTemplate { id, name, createdAt, instances }`，存于 widget-store 的 `templates`；持久化键 `focus-desk.screen.<N>.widgets.templates.v1`（localStorage + SQLite `widget:templates:<N>` 镜像，随完整备份走）。只存布局字段，不存实例配置。
 - **动作**（`widget-store.ts`）：`saveTemplate(name)` 保存当前视图全部实例（剥离 groupId，重名返回 false）；`applyTemplate(id)` 用模板整表替换当前视图——实例 id 全部重发，便签/书签/日历/涂鸦的数据桶随 `copyInstanceData` 搬家（模板带回内容，见 §5.2）；`deleteTemplate(id)` 删除。入口：编辑模式工具栏「布局模板」面板；套用前原布局自动存入时间线（§5.3）。

@@ -88,7 +88,20 @@ describe("shortcuts 工具", () => {
       seen.add(norm);
     }
     // [TB-TRAY] 唯一的无默认键动作是任务栏总开关（Rust default_for 同款断言）。
-    expect(unbound).toEqual(["taskbar:toggle"]);
+    // [WIN-OPS]/[WIN-ACTIONS]：新增 10 动作出厂全部未绑定（用户裁定）。
+    expect(unbound).toEqual([
+      "taskbar:toggle",
+      "win-topmost",
+      "win-opacity-up",
+      "win-opacity-down",
+      "win-center",
+      "win-snap-left",
+      "win-snap-right",
+      "vd-move-left",
+      "vd-move-right",
+      "sys-proxy",
+      "sys-contrast"
+    ]);
   });
 
   it("[HOTKEY] toggle-palette：默认 Ctrl+Alt+K，录制得到同一写法，与其它行双向查重", () => {
@@ -106,8 +119,9 @@ describe("shortcuts 工具", () => {
   });
 
   it("[ISLAND-LINK] toggle-dock / open-dock-panel：默认 Ctrl+Alt+I / Ctrl+Alt+O，双向查重", () => {
-    // 9 项灵动岛期动作 + [TB-TRAY] 2 项任务栏动作 + [SNIP] 截图 = 12。
-    expect(SHORTCUT_ACTIONS).toHaveLength(12);
+    // 9 项灵动岛期动作 + [TB-TRAY] 2 项任务栏动作 + [SNIP] 截图
+    // + [WIN-OPS]/[WIN-ACTIONS]10 项 = 22。
+    expect(SHORTCUT_ACTIONS).toHaveLength(22);
     expect(SHORTCUT_ACTIONS).toContain("toggle-dock");
     expect(SHORTCUT_ACTIONS).toContain("open-dock-panel");
     expect(DEFAULT_SHORTCUTS["toggle-dock"]).toBe("Ctrl+Alt+I");
@@ -131,17 +145,17 @@ describe("shortcuts 工具", () => {
     expect(SHORTCUT_ACTIONS).toContain("taskbar:reset-state");
     expect(DEFAULT_SHORTCUTS["taskbar:reset-state"]).toBe("Ctrl+Alt+Shift+F1");
     expect(isShortcutBound(DEFAULT_SHORTCUTS["taskbar:reset-state"])).toBe(true);
-    // 录制 Ctrl+Alt+Shift+F1 得到与默认值相同的字符串（恢复默认按钮据此判等）；
+    // 录制 Ctrl+Alt+Shift+得到与默认值相同的字符串（恢复默认按钮据此判等）；
     // 下发 Rust 不需要别名转换（无 Win 键）。
     expect(acceleratorFromEvent(keydown("F1", "F1", { ctrl: true, alt: true, shift: true }))).toBe("Ctrl+Alt+Shift+F1");
     expect(toRustAccelerator("Ctrl+Alt+Shift+F1")).toBe("Ctrl+Alt+Shift+F1");
     const cfg = { ...DEFAULT_SHORTCUTS };
-    // 别的动作想占 Ctrl+Alt+Shift+F1 → 报与 reset-state 冲突（等价写法亦然）；反向同理。
+    // 别的动作想占 Ctrl+Alt+Shift+→ 报与 reset-state 冲突（等价写法亦然）；反向同理。
     expect(findDuplicate(cfg, "new-task", "Ctrl+Alt+Shift+F1")).toBe("taskbar:reset-state");
     expect(findDuplicate(cfg, "quick-note", "shift+control+alt+F1")).toBe("taskbar:reset-state");
     expect(findDuplicate(cfg, "taskbar:reset-state", "Ctrl+Alt+K")).toBe("toggle-palette");
     expect(findDuplicate(cfg, "taskbar:reset-state", "Ctrl+Alt+Shift+F1")).toBeNull();
-    // 少一个 Shift 的 Ctrl+Alt+F1 是另一组合，不与默认值冲突。
+    // 少一个 Shift 的 Ctrl+Alt+是另一组合，不与默认值冲突。
     expect(findDuplicate(cfg, "new-task", "Ctrl+Alt+F1")).toBeNull();
     expect(SHORTCUT_LABELS["taskbar:reset-state"]).toBe("重置任务栏状态");
   });

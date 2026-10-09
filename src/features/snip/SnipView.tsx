@@ -1,5 +1,5 @@
 /**
- * 截图覆盖窗视图（借鉴 ClassSoftwareHub #4）：冻结帧铺满窗口作背景，
+ * 截图覆盖窗视图：冻结帧铺满窗口作背景，
  * 框选只是从帧上裁——覆盖层永远不会拍到自己。框选后进入编辑：标注工具
  * （画笔/荧光笔/箭头/矩形/椭圆/文字/马赛克）+ 撤销重做，三出口 =
  * 复制剪贴板 / 保存文件 / 钉到桌面（经 snip:pin 事件由 primary 窗落组件）。
@@ -24,6 +24,7 @@ import {
   Circle
 } from "lucide-react";
 import { invoke, isTauri } from "../../lib/tauri";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useT } from "../../i18n-lite";
 import { pushAppToast } from "../../components/ToastHost";
 import {
@@ -68,7 +69,7 @@ export function SnipView() {
   const [tool, setTool] = useState<Tool>("select");
   const [color, setColor] = useState(COLORS[0]);
   const [shapes, setShapes] = useState<Shape[]>([]);
-  // C-5：重做栈改 state——ref 变更不触发重渲，工具栏「重做」按钮的 disabled
+  // 重做栈改 state——ref 变更不触发重渲，工具栏「重做」按钮的 disabled
   // 此前读到的是过期长度；updater 里 push ref 在 StrictMode 下还会双调用
   // 重复压栈。
   const [redoStack, setRedoStack] = useState<Shape[]>([]);
@@ -78,14 +79,14 @@ export function SnipView() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const shownRef = useRef(false);
-  // C-5：冻结帧地址收进 state——render 期读 imgRef.current?.src 依赖「恰好
+  // 冻结帧地址收进 state——render 期读 imgRef.current?.src 依赖「恰好
   // 有别的状态变化触发重渲」才拿到值，convertFileSrc 异步就绪本身不通知渲染。
   const [frameSrc, setFrameSrc] = useState("");
 
   const logicalW = frame ? frame.phys_w / frame.scale : 0;
   const logicalH = frame ? frame.phys_h / frame.scale : 0;
 
-  /* 就绪握手：取帧元数据 + 加载冻结帧，首帧后 show。C-1：取帧被拒/超时的
+  /* 就绪握手：取帧元数据 + 加载冻结帧，首帧后 show。：取帧被拒/超时的
      覆盖窗既不 show 也不 close——Rust 3s 兜底 show 后是纯黑遮罩盖住全屏；
      失败分支与 img.onerror 同款直接关窗退出。 */
   useEffect(() => {
@@ -135,7 +136,7 @@ export function SnipView() {
     void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().close());
   }, []);
 
-  /* C-5：撤销/重做成对操作，键盘与工具栏共用（此前工具栏撤销不入重做栈，
+  /* 撤销/重做成对操作，键盘与工具栏共用（此前工具栏撤销不入重做栈，
      与 Ctrl+Z 行为不一致）；直接读渲染闭包里的当前 state，点击/按键发生在
      两次渲染之间，值必然新鲜。 */
   const undo = useCallback(() => {
@@ -196,6 +197,9 @@ export function SnipView() {
         return; // 文字编辑期其余按键交给 textarea。
       }
       if (e.key === "Escape") {
+        /* 拖拽会话先行终结：否则 Esc 清掉的选区/标注会被后续 pointermove
+           按残留的 drag 会话「复活」。setter 稳定，无需进依赖数组。 */
+        setDrag({ kind: "none" });
         if (shapes.length > 0) {
           setShapes([]);
           setRedoStack([]);
@@ -203,7 +207,7 @@ export function SnipView() {
         else closeWindow();
         return;
       }
-      // C-5：Ctrl+Shift+Z 此前先命中撤销分支再命中重做分支（撤销块没排除
+      // Ctrl+Shift+Z 此前先命中撤销分支再命中重做分支（撤销块没排除
       // shift），一减一加净效果为零——重做快捷键实际失效。分支按 shift 互斥。
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
         e.preventDefault();
@@ -220,13 +224,21 @@ export function SnipView() {
 
   function localPos(e: React.PointerEvent): [number, number] {
     const rect = rootRef.current?.getBoundingClientRect();
-    return [e.clientX - (rect?.left ?? 0), e.clientY - (rect?.top ?? 0)];
+    /* clientX 与 gBCR 都是视觉坐标（含 --ui-zoom 缩放），而选区/标注与画布
+       布局空间（logicalW/H）对齐——先除回 uiZoom 再参与一切几何运算。 */
+    const z = uiZoom();
+    return [(e.clientX - (rect?.left ?? 0)) / z, (e.clientY - (rect?.top ?? 0)) / z];
   }
 
   function onPointerDown(e: React.PointerEvent) {
     if (busy || textAt) return;
     const [px, py] = localPos(e);
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    /* capture 改打 root——"new" 分支随后的
+       setSel(null) 会卸载起拖目标（选区外的 dim 遮罩 div 之一），capture
+       随目标卸载静默丢失，指针移出 overlay 后 pointerup 不再送达、drag
+       会话残留；root 全程存活且挂着整套 pointer 处理器，capture 打它才能
+       覆盖整段拖拽。 */
+    rootRef.current?.setPointerCapture?.(e.pointerId);
     if (tool !== "select") {
       // 标注工具：画笔/形状/马赛克起笔；文字进入草稿态。
       if (tool === "text") {
@@ -361,7 +373,7 @@ export function SnipView() {
       }
       closeWindow();
     } catch (e) {
-      // C-1：三出口失败此前只默默恢复按钮——用户没有任何解释，选区还在，
+      // 三出口失败此前只默默恢复按钮——用户没有任何解释，选区还在，
       // 却不知道为什么没复制/没保存/没钉上。报错后留在覆盖窗，可换出口重试。
       setBusy(false);
       const title = kind === "copy" ? tr("复制失败") : kind === "save" ? tr("保存失败") : tr("钉图失败");
@@ -407,6 +419,9 @@ export function SnipView() {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      /*系统手势接管/触屏取消时终结拖拽会话——drag 残留会让后续
+         pointermove 继续按旧会话改选区/画笔。 */
+      onPointerCancel={() => setDrag({ kind: "none" })}
       onContextMenu={(e) => {
         e.preventDefault();
         closeWindow();

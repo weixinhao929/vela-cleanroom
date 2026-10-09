@@ -1,5 +1,5 @@
 /**
- * 智能分组建议（BentoDesk 借鉴 #5）测试：tokenizer / 三信号 / 去重截断。
+ * 智能分组建议测试：tokenizer / 三信号 / 去重截断。
  */
 import { describe, expect, it } from "vitest";
 

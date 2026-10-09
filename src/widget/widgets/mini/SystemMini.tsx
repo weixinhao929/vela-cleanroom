@@ -5,7 +5,7 @@
  * （active=false）卸载即退订，磁贴层重新可见再订阅；磁贴移出岛同样退订。
  * 细条走 transform: scaleX（合成器友好），不动 width。
  *
- * W-145 新增网络行：速率类指标没有固定满量程，细条按「近 HISTORY_LEN 帧
+ * 新增网络行：速率类指标没有固定满量程，细条按「近 HISTORY_LEN 帧
  * 峰值」归一（与 sparkline 同口径），数值显示 ↓ 下载速率。
  */
 import { useEffect, useRef } from "react";
@@ -34,10 +34,13 @@ function NetRow({ frame }: { frame: SystemBroadcast | null }) {
   const { fmt } = useNetRate();
   const hist = useRef<number[]>([]);
   const rx = frame ? (selectNetworkRows(frame.networks, "aggregate")[0]?.rx ?? 0) : 0;
-  // 历史在 effect 内追加（渲染期写 ref 会在无关重渲时重复采样，sysbar 同款教训）。
+  // 历史按「帧」追加而非按「值」：速率恒为 0 的空闲期（值不变）effect 不再
+  // 触发，历史停更会让峰值归一锚在旧峰上。一帧一样本与 sysbar/system 同款。
   useEffect(() => {
+    if (!frame) return;
     hist.current = [...hist.current, rx].slice(-NET_WINDOW);
-  }, [rx]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rx 是 frame 的派生值，按帧追加是有意为之
+  }, [frame]);
   const peak = Math.max(1024, ...(hist.current.length ? hist.current : [0])) * 1.2;
   const ratio = frame ? Math.max(0, Math.min(1, rx / peak)) : 0;
   return (

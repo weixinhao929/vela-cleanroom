@@ -1,5 +1,5 @@
 /**
- * 专注统计沉浸页（G9）：AnalyticsPanel 在展开遮罩内的全尺寸呈现。
+ * 专注统计沉浸页：AnalyticsPanel 在展开遮罩内的全尺寸呈现。
  * 图表 / 热力图在 320px 卡片里被压得很密，展开后以 min(720px, 90vw) 呈现。
  * 面板无轮询 / rAF / 采集（仅 store 订阅 + 共享 30s ticker + 会话尾条驱动的
  * SQLite 聚合读取），active=false 时由遮罩 display:none 压制渲染成本，

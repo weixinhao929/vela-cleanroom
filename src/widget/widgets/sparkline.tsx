@@ -1,12 +1,12 @@
 /**
  * 迷你趋势曲线（共享组件）：Catmull-Rom → 三次贝塞尔平滑折线。
- * 派生自 HardwareWidget 的 Sparkline（W-142 起被系统监控 / 系统栏复用）。
+ * 派生自 HardwareWidget 的 Sparkline（起被系统监控 / 系统栏复用）。
  *
- * @param data    历史样本（0–max），通常由 ref 数组按广播帧 append。
- * @param color   描边色（CSS 变量或字面量）。
- * @param max     纵轴满量程（百分比类指标为 100）。
- * @param span    横轴样本容量（决定 x 归一化；与调用方 slice 长度一致）。
- * @param peak    W-150 峰值标记：在曲线峰值高度画一条水平虚线。
+ * @param data 历史样本（0–max），通常由 ref 数组按广播帧 append。
+ * @param color 描边色（CSS 变量或字面量）。
+ * @param max 纵轴满量程（百分比类指标为 100）。
+ * @param span 横轴样本容量（决定 x 归一化；与调用方 slice 长度一致）。
+ * @param peak 峰值标记：在曲线峰值高度画一条水平虚线。
  */
 export function Sparkline({
   data,
@@ -21,8 +21,12 @@ export function Sparkline({
   span?: number;
   peak?: boolean;
 }) {
-  const n = Math.max(2, span ?? data.length);
-  const pts = data.map((v, i) => ({
+  // 防御：调用方数组在「配置收缩 historyLen」到「下一帧 append 重切片」之间
+  // 会短暂长于 span（如 120→10），未截断时 x = i/(span-1)·100 越出 viewBox，
+  // 曲线整段画出可视区。恒取末尾 span 个样本，与 append 后的 slice 语义一致。
+  const shown = span ? data.slice(-span) : data;
+  const n = Math.max(2, span ?? shown.length);
+  const pts = shown.map((v, i) => ({
     x: (i / (n - 1)) * 100,
     y: 100 - (Math.min(v, max) / max) * 100
   }));
@@ -43,7 +47,7 @@ export function Sparkline({
       d += `C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)} `;
     }
   }
-  const peakVal = data.length ? Math.max(...data) : 0;
+  const peakVal = shown.length ? Math.max(...shown) : 0;
   const peakY = 100 - (Math.min(peakVal, max) / max) * 100;
   return (
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="hw-spark" aria-hidden="true">

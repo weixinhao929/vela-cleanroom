@@ -43,8 +43,8 @@ pub struct ParentChildRelation {
 
 /// struct VisualElement（字段序照抄头文件：Handle 在最前）。
 ///
-/// 四个 BSTR 的所有权移交回调接收方（对齐标杆 wil::unique_bstr，
-/// visualtreewatcher.cpp:23-28），返回前必须经
+/// 四个 BSTR 的所有权移交回调接收方（wil::unique_bstr 语义），
+/// 返回前必须经
 /// [`free_visual_element_strings`] 释放。
 #[repr(C)]
 pub struct VisualElement {
@@ -81,7 +81,7 @@ pub unsafe fn bstr_to_string_lossy(ptr: PCWSTR) -> String {
 /// drop 它，绝不能再显式 SysFreeString。此前这里两者都做了：每个可视树
 /// 回调对 type_name / name / src_info 双重释放，把 explorer 的堆写坏
 /// （ntdll c0000374，损坏异步暴露，表现为注入后数秒到数分钟的随机崩溃
-/// ——TB-POLISH 记录的 8 次崩溃与本次排查的全部崩溃同源）。
+/// ——与此前排查记录的崩溃同源）。
 unsafe fn free_bstr(ptr: PCWSTR) {
     if !ptr.is_null() {
         drop(unsafe { windows::core::BSTR::from_raw(ptr.as_ptr()) });
@@ -99,7 +99,7 @@ pub unsafe trait IVisualTreeServiceCallback: windows_core::IUnknown {
     ) -> windows_core::Result<()>;
 }
 
-/// IID `{BAD9EB88-AE77-4397-B948-5FA2DB0A19EA}`；Callback 之上追加
+/// IID `{BAD9EB88--4397--5FA2DB0A19EA}`；Callback 之上追加
 /// OnElementStateChanged（本实现用不到，直通 S_OK）。
 #[interface("BAD9EB88-AE77-4397-B948-5FA2DB0A19EA")]
 pub unsafe trait IVisualTreeServiceCallback2: IVisualTreeServiceCallback {
@@ -115,7 +115,7 @@ pub unsafe trait IVisualTreeServiceCallback2: IVisualTreeServiceCallback {
 ///
 /// 真实 vtable 共 14 个方法；这里只声明前缀（Advise / Unadvise），
 /// 调用更靠前的槽位在 ABI 上合法。AdviseVisualTreeChange 由独立线程调用
-/// （对齐标杆 tapsite / VisualTreeWatcher 的防挂起注释）。
+/// （避免 UI 线程挂起）。
 #[interface("A593B11A-D17F-48BB-8F66-83910731C8A5")]
 pub unsafe trait IVisualTreeService: windows_core::IUnknown {
     pub unsafe fn AdviseVisualTreeChange(

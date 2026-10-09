@@ -1,8 +1,7 @@
-//! [SUPER-PANEL]（ZTools 借鉴 #11）超级面板：长按右键取词操作面板。
+//! [SUPER-PANEL]超级面板：长按右键取词操作面板。
 //!
-//! uTools/ZTools 的招牌交互——按住右键（默认 500ms，可配 300–1000）触发：
-//! 记录光标位置 → 模拟 Ctrl+C 取词 → 序号等待剪贴板变化（ZTools
-//! waitForNextCopiedContent 同款，超时 1200ms）→ 在光标旁弹出操作面板，
+//! uTools/同类启动器 的招牌交互——按住右键（默认 500ms，可配 300–1000）触发：
+//! 记录光标位置 → 模拟 Ctrl+C 取词 → 序号等待剪贴板变化→ 在光标旁弹出操作面板，
 //! 动作按剪贴板内容类型路由（文本 → 搜索/存便签/打开网址；文件 → 打开/
 //! 复制路径/…）。面板动作复用 #1 的粘贴态动作构建器（前端 palette-payload）。
 //!
@@ -36,11 +35,11 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(false);
 /// 长按时长毫秒（钳 300–1000，默认 500）。
 static DURATION_MS: Mutex<u32> = Mutex::new(500);
-/// 钩子线程句柄（Some = 已安装）。装卸都走这把锁，杜绝双钩竞态（D-8）。
+/// 钩子线程句柄（Some = 已安装）。装卸都走这把锁，杜绝双钩竞态。
 static HOOK_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 /// 进程启动时预埋 AppHandle + 起配置刷新线程（lib.rs setup 调用）。
-/// D-8：鼠标钩子随开关装卸——首次 enabled=true 才安装，持续关闭后卸载
+/// 鼠标钩子随开关装卸——首次 enabled=true 才安装，持续关闭后卸载
 /// （默认关的功能不该常驻系统鼠标钩子）。
 pub fn init(app: AppHandle) {
     let _ = APP.set(app.clone());
@@ -49,6 +48,9 @@ pub fn init(app: AppHandle) {
         .spawn(move || {
             let mut disabled_ticks: u32 = 0;
             loop {
+                // （missed-wakeup）：代数先于配置读取——变更若落在「读取
+                // 之后、进入等待之前」，wait_for_change_since 立即返回。
+                let seen = crate::settings_mirror::generation();
                 let (enabled, ms) = read_config(&app);
                 ENABLED.store(enabled, Ordering::SeqCst);
                 *DURATION_MS.lock().unwrap_or_else(|p| p.into_inner()) = ms;
@@ -62,9 +64,12 @@ pub fn init(app: AppHandle) {
                         disabled_ticks = 0;
                     }
                 }
-                // B-2：变更即醒；禁用态 2s 兜底（驱动卸钩计时）、启用态 30s 兜底。
+                // 变更即醒；禁用态 2s 兜底（驱动卸钩计时）、启用态 30s 兜底。
                 let fallback = if enabled { 30_000 } else { 2_000 };
-                crate::settings_mirror::wait_for_change(Duration::from_millis(fallback));
+                crate::settings_mirror::wait_for_change_since(
+                    seen,
+                    Duration::from_millis(fallback),
+                );
             }
         })
         .ok();
@@ -76,7 +81,7 @@ pub fn clamp_duration_ms(ms: i64) -> u32 {
 }
 
 /// 从设置镜像读 (enabled, duration_ms)（容错：任何失败回默认关）。
-/// A-4：镜像读取收敛到 settings_mirror 单一助手。
+/// 镜像读取收敛到 settings_mirror 单一助手。
 fn read_config(app: &AppHandle) -> (bool, u32) {
     let default = (false, clamp_duration_ms(500));
     let Some(v) = crate::settings_mirror::read_json(app) else {
@@ -119,39 +124,43 @@ mod win {
         if !super::ENABLED.load(Ordering::Acquire) || code < 0 {
             return CallNextHookEx(None, code, wparam, lparam);
         }
-        match wparam.0 as u32 {
-            WM_RBUTTONDOWN => {
-                let info = lparam.0 as *const MSLLHOOKSTRUCT;
-                if !info.is_null() {
-                    PRESS.with(|p| {
-                        *p.borrow_mut() = Some(PressState {
-                            pt: (*info).pt,
-                            start: Instant::now(),
-                        })
-                    });
-                }
-            }
-            WM_MOUSEMOVE => {
-                let info = lparam.0 as *const MSLLHOOKSTRUCT;
-                if !info.is_null() {
-                    let pt = (*info).pt;
-                    let cancel = PRESS.with(|p| {
-                        p.borrow().as_ref().is_some_and(|s| {
-                            (pt.x - s.pt.x).abs() > MOVE_CANCEL_PX
-                                || (pt.y - s.pt.y).abs() > MOVE_CANCEL_PX
-                        })
-                    });
-                    if cancel {
-                        PRESS.with(|p| *p.borrow_mut() = None);
+        //panic 穿越 extern "system" 钩子回调是 UB——对齐 global_input
+        // /widget 钩子已设防的基线，处理体包 catch_unwind。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match wparam.0 as u32 {
+                WM_RBUTTONDOWN => {
+                    let info = lparam.0 as *const MSLLHOOKSTRUCT;
+                    if !info.is_null() {
+                        PRESS.with(|p| {
+                            *p.borrow_mut() = Some(PressState {
+                                pt: (*info).pt,
+                                start: Instant::now(),
+                            })
+                        });
                     }
                 }
+                WM_MOUSEMOVE => {
+                    let info = lparam.0 as *const MSLLHOOKSTRUCT;
+                    if !info.is_null() {
+                        let pt = (*info).pt;
+                        let cancel = PRESS.with(|p| {
+                            p.borrow().as_ref().is_some_and(|s| {
+                                (pt.x - s.pt.x).abs() > MOVE_CANCEL_PX
+                                    || (pt.y - s.pt.y).abs() > MOVE_CANCEL_PX
+                            })
+                        });
+                        if cancel {
+                            PRESS.with(|p| *p.borrow_mut() = None);
+                        }
+                    }
+                }
+                WM_RBUTTONUP => {
+                    // 正常右键：长按未到期就松手 → 取消（不吞事件，恒透传）。
+                    PRESS.with(|p| *p.borrow_mut() = None);
+                }
+                _ => {}
             }
-            WM_RBUTTONUP => {
-                // 正常右键：长按未到期就松手 → 取消（不吞事件，恒透传）。
-                PRESS.with(|p| *p.borrow_mut() = None);
-            }
-            _ => {}
-        }
+        }));
         CallNextHookEx(None, code, wparam, lparam)
     }
 
@@ -235,7 +244,7 @@ fn install_hook_once() {
     }
 }
 
-/// 请求卸钩（D-8）：投 WM_QUIT 唤醒 + join 等退出，杜绝双钩窗口。
+/// 请求卸钩：投 WM_QUIT 唤醒 + join 等退出，杜绝双钩窗口。
 #[cfg(windows)]
 fn request_unhook() {
     let mut guard = HOOK_THREAD.lock().unwrap_or_else(|p| p.into_inner());
@@ -320,7 +329,7 @@ fn foreground_is_self() -> bool {
 
 /// 序号等待 + 模拟 Ctrl+C + 读回内容。返回 (kind, text, files)。
 /// 文件优先于文本（与采集线程同优先序）。
-/// D-7：合成复制期间抑制剪贴板历史入库——取词选中的常是敏感明文，
+/// 合成复制期间抑制剪贴板历史入库——取词选中的常是敏感明文，
 /// 不应随监听器留存 30 天；抑制窗 4s 覆盖最长等待（1.2s）+ 采集抖动。
 #[cfg(windows)]
 fn fetch_selection() -> Option<(String, Option<String>, Option<Vec<String>>)> {
@@ -364,7 +373,7 @@ fn show_panel_window(app: &AppHandle, x: i32, y: i32, payload: &SuperPanelPayloa
         let built = tauri::WebviewWindowBuilder::new(
             app,
             "super-panel",
-            // C-10：super-panel.html 精简入口（vite 多页），不再共用 index.html
+            // super-panel.html 精简入口（vite 多页），不再共用 index.html
             // 全量主包；旧 hash 由 main.tsx 重定向兜底。
             tauri::WebviewUrl::App("super-panel.html".into()),
         )
@@ -377,11 +386,12 @@ fn show_panel_window(app: &AppHandle, x: i32, y: i32, payload: &SuperPanelPayloa
         .always_on_top(true)
         .skip_taskbar(true)
         .shadow(true)
-        // H1 就绪握手同款：首帧前不显示，前端就绪后自行 show（3s 兜底）。
+        // 就绪握手同款：首帧前不显示，前端就绪后自行 show（3s 兜底）。
         .visible(false)
         .build();
         match built {
             Ok(w) => {
+                crate::anticapture::apply_if_enabled(&w);
                 position_window(app, &w, x, y);
                 crate::windows::spawn_show_fallback(app, "super-panel", 3000);
             }
@@ -430,9 +440,29 @@ fn position_window(app: &AppHandle, w: &tauri::WebviewWindow, x: i32, y: i32) {
         let vh = size.height as f64 / scale;
         let fx = (mx + 12.0).min(px + vw - SUPER_PANEL_W - 8.0).max(px + 8.0);
         let fy = (my + 12.0).min(py + vh - SUPER_PANEL_H - 8.0).max(py + 8.0);
-        let _ = w.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-            fx, fy,
-        )));
+        // fx/fy 是按【光标屏】scale 归一的逻辑值，但
+        // set_position(Logical) 的回乘基准是【窗口当前所在屏】的 scale——两套
+        // scale 基准不统一：复用路径窗口常停在上一屏（首建停在 builder 默认
+        // 主屏），混合 DPI（两屏 scale 不同）下面板被按错屏 scale 回乘，落错
+        // 屏/错偏移且每次都错。修法：钳制计算保留逻辑空间不变，落位改用
+        // 【光标屏】scale 现乘成物理坐标——Physical 落位不做任何 per-屏换算，
+        // 基准唯一。同 DPI 双屏两套 scale 相等，结果与旧代码逐位一致。
+        let _ = w.set_position(tauri::PhysicalPosition::new(
+            (fx * scale).round() as i32,
+            (fy * scale).round() as i32,
+        ));
+        // 尺寸半边——builder 的 inner_size 是逻辑单位，
+        // 建窗期按主屏 scale 回乘物理；跨屏落位后物理尺寸的修正依赖
+        // WM_DPICHANGED，而系统关闭「拖拽时显示窗口内容」（RDP 会话 / 性能
+        // 优化工具常关）时 tao 会跳过该调整：320×380 物理窗落在 150% 副屏
+        // 逻辑视口仅 213×253，内容溢出/裁剪。按光标屏 scale 现乘补齐物理
+        // 尺寸，与 quick-note / snip / widget 层三处兄弟范式成对
+        // （set_position + set_size）。复用路径幂等重设同值无害；同 DPI 两屏
+        // 与旧行为逐位一致（同值重设）。
+        let _ = w.set_size(tauri::PhysicalSize::new(
+            (SUPER_PANEL_W * scale).round() as u32,
+            (SUPER_PANEL_H * scale).round() as u32,
+        ));
         return;
     }
     let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(

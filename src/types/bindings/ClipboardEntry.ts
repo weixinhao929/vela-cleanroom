@@ -17,9 +17,15 @@ kind: string,
  */
 preview: string, 
 /**
- * 文本条目的全文（图片条目为 None）。
+ * 文本条目的全文（图片条目为 None）。`list` 命令不下发全文（每行至多
+ * 512KB × 200+ 行全量过 IPC 太重），该路径下为 None，全文经
+ * `get_clipboard_entry` 按需取。
  */
 text: string | null, 
+/**
+ * 文本条目的行数（列表「{n} 行」元信息；list 路径由 SQL 现算）。非文本行为 0。
+ */
+text_lines: number, 
 /**
  * 图片条目的文件名（clip 数据目录内，非完整路径；文本条目为 None）。
  */

@@ -14,7 +14,9 @@ import { X } from "lucide-react";
 import { useT } from "../../i18n-lite";
 import { useDelayedUnmount } from "../../lib/anim";
 import { animDurations } from "../../lib/durations";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useDismissable } from "../../lib/use-dismissable";
+import { useSliderDraft } from "../../lib/use-slider-draft";
 import { Segmented, Stepper, Toggle } from "../../components/ui/controls";
 import { M3Slider as Slider } from "../../components/ui/M3Slider";
 import { defaultWidgetConfig, sanitizeWidgetConfig } from "../config-schemas";
@@ -44,7 +46,7 @@ export function DockTileConfigPopover({
   const [pos, setPos] = useState<ReturnType<typeof placePopover> | null>(null);
   const fields = QUICK_CONFIG_FIELDS[tile.type] ?? [];
   const defaults = useMemo(() => defaultWidgetConfig(tile.type), [tile.type]);
-  /* 读：过 schema 洗掉损坏字段、补默认；写：合并后再过一遍 schema 落盘（与 B1 弹层同协议）。 */
+  /* 读：过 schema 洗掉损坏字段、补默认；写：合并后再过一遍 schema 落盘（与 弹层同协议）。 */
   const clean = useMemo(() => sanitizeWidgetConfig(tile.type, tile.config ?? {}), [tile.type, tile.config]);
   const commit = (patch: Partial<WidgetConfig>) =>
     setDockTileConfig(tile.id, sanitizeWidgetConfig(tile.type, { ...clean, ...patch }));
@@ -52,8 +54,17 @@ export function DockTileConfigPopover({
   useLayoutEffect(() => {
     const el = ref.current;
     if (!visible || !el) return;
+    /* 锚点来自磁贴 gBCR（**视觉**坐标，界面缩放下 = 布局 × uiZoom）——除回
+       布局单位再交给 placePopover（fixed left/top 渲染会再乘 zoom，不换算
+       时弹层随缩放漂移）；offsetWidth / innerWidth 本就是未缩放值。 */
+    const z = uiZoom();
+    const a = anchor;
     setPos(
-      placePopover(anchor, { w: el.offsetWidth, h: el.offsetHeight }, { w: window.innerWidth, h: window.innerHeight })
+      placePopover(
+        { x: a.x / z, y: a.y / z, w: a.w / z, h: a.h / z },
+        { w: el.offsetWidth, h: el.offsetHeight },
+        { w: window.innerWidth, h: window.innerHeight }
+      )
     );
   }, [visible, anchor]);
 
@@ -120,6 +131,42 @@ function PrivateRow({ label, stack, children }: { label: string; stack?: boolean
   );
 }
 
+/** quick 滑条拖动期只进草稿、松手一次提交（useSliderDraft）——此前逐
+ *  input 事件都走 onChange 提交链（zod sanitize + setDockTileConfig →
+ * saveDock 的 LS 双写 + SQLite 镜像 + 80ms 防抖跨窗广播），拖一次触发几十轮；
+ * Stepper 是离散控件，维持原样。 */
+function DraftSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  onCommit
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix: string;
+  onCommit: (v: number) => void;
+}) {
+  const draft = useSliderDraft(onCommit);
+  return (
+    <Slider
+      label={label}
+      value={draft.draft ?? value}
+      min={min}
+      max={max}
+      step={step}
+      suffix={suffix}
+      onChange={draft.slide}
+      onCommitEnd={draft.commitEnd}
+    />
+  );
+}
+
 /** quick 字段渲染（toggle / segment / slider / stepper / color；zones 仅时钟实例有意义，私有配置不提供）。 */
 function PrivateFieldRow({
   def,
@@ -157,14 +204,14 @@ function PrivateFieldRow({
       return (
         <PrivateRow label={tr(def.label)}>
           {def.kind === "slider" ? (
-            <Slider
+            <DraftSlider
               label={def.label}
               value={num}
               min={def.min}
               max={def.max}
               step={def.step ?? 1}
               suffix={def.suffix ?? ""}
-              onChange={onChange}
+              onCommit={onChange}
             />
           ) : (
             <Stepper

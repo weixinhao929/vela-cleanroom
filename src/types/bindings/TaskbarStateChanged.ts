@@ -2,7 +2,7 @@
 import type { TaskbarStateKey } from "./TaskbarStateKey";
 
 /**
- * `taskbar:state-changed` 负载（F-14）：某显示器当前生效状态变化，
+ * `taskbar:state-changed` 负载：某显示器当前生效状态变化，
  * 仅变化时 emit（Rust 侧合并防抖 ≤200ms）。
  */
 export type TaskbarStateChanged = { activeState: TaskbarStateKey, 

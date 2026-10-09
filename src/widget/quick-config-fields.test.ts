@@ -3,7 +3,7 @@ import { WIDGET_CONFIG_SCHEMAS, defaultWidgetConfig } from "./config-schemas";
 import { QUICK_CONFIG_FIELDS } from "./quick-config-fields";
 
 /**
- * B1 就地配置弹层的 quick 字段标记表与 zod schema 的一致性守卫：
+ * 就地配置弹层的 quick 字段标记表与 zod schema 的一致性守卫：
  * 表只描述呈现，默认值/范围以 schema 为准——这里逐项断言二者不漂移。
  * （schema 全字段带 .default/.catch，parse 恒成功；越界值会被 catch 回默认，
  *  所以「parse(x) === x」即「x 在 schema 合法范围内」。）

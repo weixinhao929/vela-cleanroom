@@ -197,7 +197,12 @@ pub fn current_palette() -> Option<WallpaperPaletteInfo> {
 /// 当前壁纸取色快照（缓存命中不解码；无壁纸 / 解码失败返回 null）。
 /// 壁纸是公开桌面属性，任何窗口都可读，不设窗口闸门（速记窗也要跟随主题）。
 #[tauri::command]
-pub async fn get_wallpaper_palette() -> Result<Option<WallpaperPaletteInfo>, String> {
+pub async fn get_wallpaper_palette(
+    window: tauri::Window,
+) -> Result<Option<WallpaperPaletteInfo>, String> {
+    // 壁纸路径 + 主色对外部页面是环境侧信道，收本地 UI 窗名单
+    // （trusted + super-panel/fullscreen，壁纸主题取色需要）。
+    crate::require_local_ui(&window)?;
     tauri::async_runtime::spawn_blocking(current_palette)
         .await
         .map_err(|e| format!("wallpaper palette task failed: {e}"))
@@ -321,9 +326,10 @@ mod win_watcher {
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage,
-        RegisterClassW, SetTimer, TranslateMessage, MSG, WINDOW_EX_STYLE, WM_DESTROY,
-        WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, KillTimer,
+        PeekMessageW, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage, MSG,
+        PEEK_MESSAGE_REMOVE_TYPE, WINDOW_EX_STYLE, WM_DESTROY, WM_DISPLAYCHANGE, WM_QUIT,
+        WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
     };
 
     use super::WALLPAPER_CHANGED_EVENT;
@@ -338,8 +344,8 @@ mod win_watcher {
     /// 解码工作线程在飞标志：抖动期内不叠加解码，轮询兜底会补上。
     static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-    const DEBOUNCE_TIMER_ID: usize = 0x5750_4c31; // "WPL1"
-    const POLL_TIMER_ID: usize = 0x5750_4c32; // "WPL2"
+    const DEBOUNCE_TIMER_ID: usize = 0x5750_4c31; // ""
+    const POLL_TIMER_ID: usize = 0x5750_4c32; // ""
     const DEBOUNCE_MS: u32 = 400;
     const POLL_MS: u32 = 30_000;
     /// `SPI_SETDESKWALLPAPER`：部分调用方以 wParam 传 SPI 动作而 lParam 为空。
@@ -411,7 +417,7 @@ mod win_watcher {
                 }
                 LRESULT(0)
             }
-            // R4：显示器拓扑变化（热插拔/分辨率/DPI/主屏切换）系统会向全部
+            // 显示器拓扑变化（热插拔/分辨率/DPI/主屏切换）系统会向全部
             // 顶层窗口广播 WM_DISPLAYCHANGE——本窗口顺带转发给 monitor watcher
             // （事件化，取代其 3s 轮询；watcher 侧仍有 30s 兜底轮询）。
             WM_DISPLAYCHANGE => {
@@ -456,41 +462,82 @@ mod win_watcher {
                     ..Default::default()
                 };
                 if RegisterClassW(&wc) == 0 {
-                    log::warn!("wallpaper watcher: RegisterClassW failed; wallpaper changes will not be tracked");
-                    return;
-                }
-                // 真实顶层窗口（非 HWND_MESSAGE）才在 WM_SETTINGCHANGE 广播名单里；
-                // 不带 WS_VISIBLE、零尺寸、不 Show，任务栏 / Alt-Tab 均不可见。
-                let hwnd = match CreateWindowExW(
-                    WINDOW_EX_STYLE(0),
-                    class_name,
-                    w!("Vela Wallpaper Listener"),
-                    WS_OVERLAPPED,
-                    0,
-                    0,
-                    0,
-                    0,
-                    None,
-                    None,
-                    Some(hinstance),
-                    None,
-                ) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        log::warn!("wallpaper watcher: CreateWindowExW failed: {e}");
+                    // ERROR_CLASS_ALREADY_EXISTS 时类已在（本实现从无
+                    // UnregisterClassW），继续建窗；其余错误放弃（见下 注）。
+                    let err = windows::Win32::Foundation::GetLastError();
+                    if err != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS {
+                        log::warn!("wallpaper watcher: RegisterClassW failed ({}); wallpaper changes will not be tracked", err.0);
                         return;
                     }
-                };
-                let _ = SetTimer(Some(hwnd), POLL_TIMER_ID, POLL_MS, None);
-                // 预热：缓存当前壁纸并记下键，启动后首次轮询不会误报"变化"。
-                refresh(true);
-                log::info!("wallpaper watcher started");
-                let mut msg = MSG::default();
-                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
                 }
-                let _ = KillTimer(Some(hwnd), POLL_TIMER_ID);
+                //泵退出后带退避重建（对齐 clipboard watcher 的口径）——
+                // 此前 0/-1 退出仅 KillTimer 结束线程，壁纸追踪当次会话静默失效
+                // （依赖它的调色板联动一并失效），无重试无自愈。
+                let mut backoff = std::time::Duration::from_secs(10);
+                loop {
+                    // 真实顶层窗口（非 HWND_MESSAGE）才在 WM_SETTINGCHANGE 广播名单里；
+                    // 不带 WS_VISIBLE、零尺寸、不 Show，任务栏 / Alt-Tab 均不可见。
+                    let hwnd = match CreateWindowExW(
+                        WINDOW_EX_STYLE(0),
+                        class_name,
+                        w!("Vela Wallpaper Listener"),
+                        WS_OVERLAPPED,
+                        0,
+                        0,
+                        0,
+                        0,
+                        None,
+                        None,
+                        Some(hinstance),
+                        None,
+                    ) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            log::warn!(
+                                "wallpaper watcher: CreateWindowExW failed: {e}, retry in {:?}",
+                                backoff
+                            );
+                            std::thread::sleep(backoff);
+                            backoff = (backoff * 2).min(std::time::Duration::from_secs(300));
+                            continue;
+                        }
+                    };
+                    backoff = std::time::Duration::from_secs(10);
+                    let _ = SetTimer(Some(hwnd), POLL_TIMER_ID, POLL_MS, None);
+                    // 预热：缓存当前壁纸并记下键，重建后首次轮询不会误报"变化"。
+                    refresh(true);
+                    log::info!("wallpaper watcher started");
+                    let mut msg = MSG::default();
+                    // GetMessageW 出错返回 -1：as_bool() 对 -1 为真会拿旧 msg 无限
+                    // 重复派发。0（WM_QUIT）与 -1（错误）都退出泵、走外层重建。
+                    while {
+                        let r = GetMessageW(&mut msg, None, 0, 0);
+                        r.0 != 0 && r.0 != -1
+                    } {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    let _ = KillTimer(Some(hwnd), POLL_TIMER_ID);
+                    // 泵退出后销毁旧窗口再进下一轮——此前直接建新窗，
+                    // 旧 HWND 泄漏（WM_SETTINGCHANGE 广播名单里的僵尸顶层窗
+                    // 随重建次数累积）。DestroyWindow 会经 WM_DESTROY 触发
+                    // PostQuitMessage，残留的 WM_QUIT 若不抽掉，下一轮泵刚建
+                    // 好新窗就被它立即退出，陷入「建窗→秒退→重建」的闪循环。
+                    let _ = DestroyWindow(hwnd);
+                    let mut stale = MSG::default();
+                    //（外层函数体整体在 unsafe 块内，此处不再嵌套 unsafe。）
+                    while PeekMessageW(
+                        &mut stale,
+                        None,
+                        WM_QUIT,
+                        WM_QUIT,
+                        PEEK_MESSAGE_REMOVE_TYPE(1), // PM_REMOVE
+                    )
+                    .as_bool()
+                    {
+                        // 抽干为止（正常至多一条）。
+                    }
+                }
             }
         });
     }

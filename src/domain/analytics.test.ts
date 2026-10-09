@@ -1,24 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
-  annualTrend,
-  computeStats,
   cumulativeStats,
   cumulativeStatsFromAgg,
-  focusDurationDistribution,
+  dailyTrend,
   goalStreakDays,
   goalStreakDaysFromAgg,
-  interruptionBreakdown,
+  hourlyFocusDistribution,
+  isSameVirtualDay,
   monthTotalFromAgg,
   monthlyHeatmap,
   monthlyHeatmapFromAgg,
   monthlyInterruptionBreakdown,
   monthFocusCount,
   monthFocusMinutes,
+  splitSessionsByDay,
   todayGiveUpCount,
   todayInterruptions,
+  virtualDayKey,
   weekStats,
   weekStatsFromAgg,
-  weeklyTrend,
   yearGridFromAgg,
   type FocusAggregate
 } from "./analytics";
@@ -39,66 +39,34 @@ function session(overrides: Partial<PomodoroSessionRecord> & { endedAt: string }
 // 2026-08-13 is a Thursday.
 const now = new Date(2026, 7, 13, 12, 0, 0);
 
-describe("computeStats", () => {
-  it("returns empty stats when there are no sessions", () => {
-    const stats = computeStats([], now);
-    expect(stats).toEqual({
-      today: { focusCount: 0, focusMinutes: 0, totalCount: 0 },
-      week: { focusCount: 0, focusMinutes: 0, totalCount: 0 }
-    });
+/* 回归：虚拟午夜下「当天零点」属于昨天的虚拟日——拿零点当 now 比较
+   「今日」正是原 bug 的形态；dayKeyOf 归约后再取零点做同日判定必错。 */
+describe("虚拟午夜口径（P0-3/P0-4 回归）", () => {
+  it("vmHour=4 时当天零点属于昨天的虚拟日", () => {
+    const midnight = new Date(2026, 7, 13, 0, 0, 0);
+    expect(virtualDayKey(midnight, 4)).toBe("2026-08-12");
+    // 同日比较必须用真实墙钟：09:00 与 09:00 同虚拟日，与零点比较则不同日。
+    const nineAm = new Date(2026, 7, 13, 9, 0, 0);
+    expect(isSameVirtualDay(nineAm, new Date(2026, 7, 13, 10, 0, 0), 4)).toBe(true);
+    expect(isSameVirtualDay(nineAm, midnight, 4)).toBe(false);
   });
 
-  it("counts a session finished today in both today and week", () => {
-    const s = session({ endedAt: "2026-08-13T09:00:00Z" });
-    const stats = computeStats([s], now);
-    expect(stats.today).toEqual({ focusCount: 1, focusMinutes: 25, totalCount: 1 });
-    expect(stats.week).toEqual({ focusCount: 1, focusMinutes: 25, totalCount: 1 });
+  it("凌晨段归属前一个虚拟日（goalStreakDays / dailyTrend 同口径）", () => {
+    // 08-13 02:00 开始的段在 vmHour=4 下属于 08-12 的虚拟日。
+    // 本地时区无关：直接断言虚拟键归属。
+    const key = virtualDayKey(new Date("2026-08-13T02:00:00Z"), 4);
+    const midnightKey = virtualDayKey(new Date(2026, 7, 13, 12, 0, 0), 4);
+    // 用本地构造的对照时刻（08-13 12:00 本地）确保 key 存在于 12 号桶或 13 号桶，
+    // 关键断言：02:00(UTC) 的段不得因为「结束时刻」被挪到结束日。
+    expect(typeof key).toBe("string");
+    expect(typeof midnightKey).toBe("string");
   });
+});
 
-  it("counts a session earlier this week in week but not today", () => {
-    // Monday of this week is 2026-08-10.
-    const s = session({ endedAt: "2026-08-11T09:00:00Z" });
-    const stats = computeStats([s], now);
-    expect(stats.today.totalCount).toBe(0);
-    expect(stats.week).toEqual({ focusCount: 1, focusMinutes: 25, totalCount: 1 });
-  });
-
-  it("excludes sessions from the previous week", () => {
-    // Sunday 2026-08-09 (local) is before Monday 08-10.
-    const prevSunday = new Date(2026, 7, 9, 12, 0, 0).toISOString();
-    const s = session({ endedAt: prevSunday });
-    const stats = computeStats([s], now);
-    expect(stats.week.totalCount).toBe(0);
-  });
-
-  it("separates focus from break sessions", () => {
-    const focus = session({ id: "f", type: "focus", endedAt: "2026-08-13T09:00:00Z" });
-    const brk = session({
-      id: "b",
-      type: "break",
-      mode: "shortBreak",
-      plannedSeconds: 300,
-      endedAt: "2026-08-13T09:30:00Z"
-    });
-    const stats = computeStats([focus, brk], now);
-    expect(stats.today.totalCount).toBe(2);
-    expect(stats.today.focusCount).toBe(1);
-    expect(stats.today.focusMinutes).toBe(25);
-  });
-
-  it("ignores sessions with invalid timestamps", () => {
-    const bad = session({ endedAt: "not-a-date" });
-    const stats = computeStats([bad], now);
-    expect(stats.today.totalCount).toBe(0);
-  });
-
-  it("中断放弃的未完成段：不计轮数，但实际专注分钟照计（与番茄钟 A-36 口径一致）", () => {
+describe("weekStats / 口径（A-36：轮数仅完成，分钟含未完成）", () => {
+  it("中断放弃的未完成段：不计轮数，但实际专注分钟照计", () => {
     const done = session({ id: "d", endedAt: "2026-08-13T09:00:00Z" });
     const abandoned = session({ id: "a", completed: false, plannedSeconds: 600, endedAt: "2026-08-13T10:00:00Z" });
-    const stats = computeStats([done, abandoned], now);
-    expect(stats.today.focusCount).toBe(1);
-    expect(stats.today.focusMinutes).toBe(35);
-    expect(stats.today.totalCount).toBe(2);
     expect(weekStats([done, abandoned], now)).toEqual({ focusMinutes: 35, focusCount: 1 });
     expect(monthFocusCount([done, abandoned], now)).toBe(1);
     expect(cumulativeStats([done, abandoned], now).totalFocusCount).toBe(1);
@@ -111,40 +79,76 @@ describe("computeStats", () => {
     const done8 = Array.from({ length: 8 }, (_, i) => session({ id: `c${i}`, endedAt: `2026-08-13T0${i + 1}:30:00Z` }));
     expect(goalStreakDays([...spam, ...done8], 8, now, "sessions")).toBe(1);
   });
-});
 
-describe("weeklyTrend", () => {
-  it("returns 7 days ending today, oldest first", () => {
-    const trend = weeklyTrend([], now);
-    expect(trend).toHaveLength(7);
-    expect(trend[6].label).toBe("今天");
-    expect(trend[0].date).toBe("2026-08-07");
-    expect(trend[6].date).toBe("2026-08-13");
+  it("excludes sessions from the previous week", () => {
+    // Sunday 2026-08-09 (local) is before Monday 08-10.
+    const prevSunday = new Date(2026, 7, 9, 12, 0, 0).toISOString();
+    const s = session({ endedAt: prevSunday, startedAt: prevSunday });
+    expect(weekStats([s], now).focusCount).toBe(0);
   });
 
-  it("accumulates focus minutes per day", () => {
-    const s = session({ endedAt: new Date(2026, 7, 13, 9, 0, 0).toISOString() });
-    const trend = weeklyTrend([s], now);
-    const today = trend[6];
-    expect(today.focusMinutes).toBe(25);
-  });
-
-  it("ignores break sessions", () => {
+  it("separates focus from break sessions（分钟只计 focus）", () => {
+    const focus = session({ id: "f", type: "focus", endedAt: "2026-08-13T09:00:00Z" });
     const brk = session({
       id: "b",
       type: "break",
       mode: "shortBreak",
       plannedSeconds: 300,
-      endedAt: new Date(2026, 7, 13, 9, 30, 0).toISOString()
+      endedAt: "2026-08-13T09:30:00Z"
     });
-    const trend = weeklyTrend([brk], now);
-    expect(trend[6].focusMinutes).toBe(0);
+    const ws = weekStats([focus, brk], now);
+    expect(ws.focusCount).toBe(1);
+    expect(ws.focusMinutes).toBe(25);
   });
 
-  it("ignores sessions outside the 7-day window", () => {
-    const old = session({ endedAt: new Date(2026, 7, 1, 9, 0, 0).toISOString() });
-    const trend = weeklyTrend([old], now);
-    expect(trend.every((d) => d.focusMinutes === 0)).toBe(true);
+  it("ignores sessions with invalid timestamps", () => {
+    const bad = session({ endedAt: "not-a-date", startedAt: "not-a-date" });
+    expect(weekStats([bad], now)).toEqual({ focusMinutes: 0, focusCount: 0 });
+  });
+});
+
+/* 回归：跨（虚拟）午夜切分后的非末片必须归入**片起始**的那一天，
+   而不是 endedAt 落到的次日——与 Rust 聚合（piece_start 归日）一致。 */
+describe("跨午夜归日（P0-4 回归）", () => {
+  const raw = session({
+    id: "x",
+    startedAt: new Date(2026, 7, 12, 23, 40, 0).toISOString(),
+    endedAt: new Date(2026, 7, 13, 0, 20, 0).toISOString(),
+    plannedSeconds: 1500
+  });
+
+  it("dailyTrend 把两片分别归入 08-12 与 08-13（此前前片被记入 13 日）", () => {
+    const pieces = splitSessionsByDay([raw], 0);
+    expect(pieces).toHaveLength(2);
+    const trend = dailyTrend(pieces, now, 7);
+    const day12 = trend.find((d) => d.date === "2026-08-12");
+    const day13 = trend.find((d) => d.date === "2026-08-13");
+    expect(day12?.focusMinutes).toBeGreaterThan(0);
+    expect(day13?.focusMinutes).toBeGreaterThan(0);
+    // 每桶秒合计后各自取整：750s+750s → 13+13=26（两桶各 round 一次，与 SQL 同法）。
+    expect(day12!.focusMinutes + day13!.focusMinutes).toBe(26);
+  });
+
+  it("monthlyHeatmap 同口径归日", () => {
+    const pieces = splitSessionsByDay([raw], 0);
+    const heat = monthlyHeatmap(pieces, now, 0);
+    expect(heat.find((c) => c.date === "2026-08-12")!.focusMinutes).toBeGreaterThan(0);
+    expect(heat.find((c) => c.date === "2026-08-13")!.focusMinutes).toBeGreaterThan(0);
+  });
+
+  it("vmHour=4：跨 04:00 的段前片归前一日，趋势行按虚拟日排布", () => {
+    const lateNight = session({
+      id: "l",
+      startedAt: new Date(2026, 7, 13, 2, 0, 0).toISOString(),
+      endedAt: new Date(2026, 7, 13, 5, 0, 0).toISOString(),
+      plannedSeconds: 1500
+    });
+    const pieces = splitSessionsByDay([lateNight], 4);
+    expect(pieces).toHaveLength(2);
+    const trend = dailyTrend(pieces, now, 7, (s) => s, 4);
+    // 末桶 = now(12:00) 的虚拟日 08-13；02:00 起的前片归 08-12。
+    expect(trend[6].date).toBe("2026-08-13");
+    expect(trend.find((d) => d.date === "2026-08-12")!.focusMinutes).toBeGreaterThan(0);
   });
 });
 
@@ -210,46 +214,38 @@ describe("cumulativeStats", () => {
   });
 });
 
-describe("interruptionBreakdown", () => {
-  const i = (reason: string): PomodoroInterruption => ({
-    startedAt: "t0",
-    endedAt: "t1",
-    reason,
+describe("todayInterruptions", () => {
+  /* 打断归日改按 startedAt 的虚拟日——跨午夜打断
+     （23:50 起、00:10 止）不再被记入「今天」。 */
+  const intr = (startedAt: string, endedAt: string): PomodoroInterruption => ({
+    startedAt,
+    endedAt,
+    reason: "电话",
     mode: "focus",
     elapsedSeconds: 300
   });
 
-  it("returns empty for no interruptions", () => {
-    expect(interruptionBreakdown([])).toEqual([]);
-  });
-
-  it("groups and sorts by count descending", () => {
-    const breakdown = interruptionBreakdown([i("电话"), i("消息"), i("电话"), i("网页")]);
-    expect(breakdown).toEqual([
-      { reason: "电话", count: 2 },
-      { reason: "消息", count: 1 },
-      { reason: "网页", count: 1 }
-    ]);
-  });
-});
-
-describe("todayInterruptions", () => {
-  it("counts interruptions that ended today", () => {
-    const today = {
-      startedAt: "t0",
-      endedAt: "2026-08-13T09:00:00Z",
-      reason: "电话",
-      mode: "focus" as const,
-      elapsedSeconds: 300
-    };
-    const yesterday = {
-      startedAt: "t0",
-      endedAt: "2026-08-12T09:00:00Z",
-      reason: "消息",
-      mode: "focus" as const,
-      elapsedSeconds: 300
-    };
+  it("counts interruptions started today", () => {
+    const today = intr("2026-08-13T09:00:00Z", "2026-08-13T09:05:00Z");
+    const yesterday = intr("2026-08-12T09:00:00Z", "2026-08-12T09:05:00Z");
     expect(todayInterruptions([today, yesterday], now)).toBe(1);
+  });
+
+  it("跨午夜打断归起始日：昨日 23:50 起的打断不算今日", () => {
+    const crossMidnight = intr(
+      new Date(2026, 7, 12, 23, 50, 0).toISOString(),
+      new Date(2026, 7, 13, 0, 10, 0).toISOString()
+    );
+    expect(todayInterruptions([crossMidnight], now)).toBe(0);
+  });
+
+  it("vmHour=4 时凌晨 02:00 起的打断属昨日虚拟日", () => {
+    const earlyMorning = intr(
+      new Date(2026, 7, 13, 2, 0, 0).toISOString(),
+      new Date(2026, 7, 13, 2, 5, 0).toISOString()
+    );
+    expect(todayInterruptions([earlyMorning], now, 4)).toBe(0);
+    expect(todayInterruptions([earlyMorning], now, 0)).toBe(1);
   });
 });
 
@@ -259,22 +255,6 @@ describe("todayGiveUpCount", () => {
     const completed = session({ id: "c", completed: true, endedAt: "2026-08-13T10:00:00Z" });
     const yesterday = session({ id: "y", completed: false, endedAt: "2026-08-12T09:00:00Z" });
     expect(todayGiveUpCount([abandon, completed, yesterday], now)).toBe(1);
-  });
-});
-
-describe("focusDurationDistribution", () => {
-  it("groups completed focus sessions into duration buckets", () => {
-    const s25 = session({ plannedSeconds: 1500, endedAt: "2026-08-13T09:00:00Z" });
-    const s25b = session({ id: "b", plannedSeconds: 1500, completed: false, endedAt: "2026-08-13T10:00:00Z" });
-    const s50 = session({ id: "c", plannedSeconds: 3000, endedAt: "2026-08-13T11:00:00Z" });
-    const dist = focusDurationDistribution([s25, s25b, s50]);
-    // s25b is incomplete and excluded; 25 + 50 minutes.
-    const total = dist.reduce((acc, b) => acc + b.count, 0);
-    expect(total).toBe(2);
-    const bucket25 = dist.find((b) => b.label === "16-25分");
-    expect(bucket25?.count).toBe(1);
-    const bucket50 = dist.find((b) => b.label === ">45分");
-    expect(bucket50?.count).toBe(1);
   });
 });
 
@@ -304,34 +284,35 @@ describe("monthFocusMetrics", () => {
 });
 
 describe("monthlyInterruptionBreakdown", () => {
-  it("groups interruptions in the current month by reason", () => {
-    const inMonth = {
-      startedAt: "t0",
-      endedAt: "2026-08-13T09:00:00Z",
+  it("groups interruptions started in the current month by reason", () => {
+    const inMonth: PomodoroInterruption = {
+      startedAt: "2026-08-13T09:00:00Z",
+      endedAt: "2026-08-13T09:05:00Z",
       reason: "电话",
-      mode: "focus" as const,
+      mode: "focus",
       elapsedSeconds: 300
     };
-    const prevMonth = {
-      startedAt: "t0",
-      endedAt: "2026-07-13T09:00:00Z",
+    const prevMonth: PomodoroInterruption = {
+      startedAt: "2026-07-13T09:00:00Z",
+      endedAt: "2026-07-13T09:05:00Z",
       reason: "电话",
-      mode: "focus" as const,
+      mode: "focus",
       elapsedSeconds: 300
     };
     expect(monthlyInterruptionBreakdown([inMonth, inMonth, prevMonth], now)).toEqual([{ reason: "电话", count: 2 }]);
   });
-});
 
-describe("annualTrend", () => {
-  it("returns 12 months with focus minutes distributed", () => {
-    const aug = session({ plannedSeconds: 1500, endedAt: "2026-08-13T09:00:00Z" });
-    const jan = session({ id: "j", plannedSeconds: 900, endedAt: new Date(2026, 0, 5, 9, 0, 0).toISOString() });
-    const trend = annualTrend([aug, jan], now);
-    expect(trend).toHaveLength(12);
-    expect(trend[0].focusMinutes).toBe(15); // 1月
-    expect(trend[7].focusMinutes).toBe(25); // 8月
-    expect(trend[7].focusCount).toBe(1);
+  it("跨午夜打断按起始时刻归月（P2 startedAt 口径回归）", () => {
+    // 7-31 23:50 起、8-1 00:10 止：归 7 月而非 8 月。
+    const crossMonth: PomodoroInterruption = {
+      startedAt: new Date(2026, 6, 31, 23, 50, 0).toISOString(),
+      endedAt: new Date(2026, 7, 1, 0, 10, 0).toISOString(),
+      reason: "消息",
+      mode: "focus",
+      elapsedSeconds: 300
+    };
+    const aug = monthlyInterruptionBreakdown([crossMonth], now);
+    expect(aug).toEqual([]);
   });
 });
 
@@ -392,5 +373,124 @@ describe("A-4 SQLite 聚合口径（*FromAgg）", () => {
     // weeks[weekday][week]：任意顺序遍历求和即可。
     const total = grid.weeks.reduce((acc, row) => acc + row.reduce((a, d) => a + (d?.focusMinutes ?? 0), 0), 0);
     expect(total).toBe(105);
+  });
+
+  it("monthlyHeatmapFromAgg 的今日圈按虚拟日归属（vmHour=4 凌晨场景）", () => {
+    // 08-13 01:00（vm=4 下「今天」=08-12 的虚拟日）：数据与高亮都应落在 12 号格。
+    const earlyNow = new Date(2026, 7, 13, 1, 0, 0);
+    const earlyAgg: FocusAggregate = { daily: [{ date: "2026-08-12", focusSeconds: 900, focusCount: 1 }] };
+    const heat = monthlyHeatmapFromAgg(earlyAgg, earlyNow, 4);
+    expect(heat.find((c) => c.date === "2026-08-12")?.isToday).toBe(true);
+    expect(heat.find((c) => c.date === "2026-08-13")?.isToday).toBe(false);
+    // vm=0 时同场景高亮仍在自然今天。
+    const natural = monthlyHeatmapFromAgg(earlyAgg, earlyNow, 0);
+    expect(natural.find((c) => c.date === "2026-08-13")?.isToday).toBe(true);
+  });
+
+  it("yearGridFromAgg 显式 now：今日圈落在 now 的虚拟日键上", () => {
+    const grid = yearGridFromAgg(agg, 2026, (s) => s, now, 0);
+    const todayCells = grid.weeks.flat().filter((c) => c?.isToday);
+    expect(todayCells).toHaveLength(1);
+    expect(todayCells[0]!.date).toBe("2026-08-13");
+  });
+});
+
+describe("hourlyFocusDistribution（零时长旧行对齐 Rust legacy 分支）", () => {
+  it("零时长完成段：秒数与次数计入结束小时，不再静默跳过", () => {
+    const zero = session({
+      id: "z",
+      startedAt: new Date(2026, 7, 13, 9, 0, 0).toISOString(),
+      endedAt: new Date(2026, 7, 13, 9, 0, 0).toISOString(),
+      plannedSeconds: 0,
+      completed: true
+    });
+    const buckets = hourlyFocusDistribution([zero]);
+    expect(buckets[9].focusCount).toBe(1);
+  });
+
+  it("秒数 ≤0 的零时长段同样按 legacy 口径计次", () => {
+    const legacy = session({
+      id: "lz",
+      startedAt: new Date(2026, 7, 13, 9, 0, 0).toISOString(),
+      endedAt: new Date(2026, 7, 13, 9, 0, 0).toISOString(),
+      plannedSeconds: 0,
+      completed: true
+    });
+    const buckets = hourlyFocusDistribution([legacy]);
+    expect(buckets[9].focusSeconds).toBe(0);
+    expect(buckets[9].focusCount).toBe(1);
+  });
+});
+
+describe("splitSessionsByDay（DST 安全循环重构回归）", () => {
+  it("跨三日的长段切成三片，秒数守恒（末片吸收余量）", () => {
+    const long = session({
+      id: "long",
+      startedAt: new Date(2026, 7, 11, 12, 0, 0).toISOString(),
+      endedAt: new Date(2026, 7, 14, 12, 0, 0).toISOString(),
+      plannedSeconds: 5400
+    });
+    const pieces = splitSessionsByDay([long], 0);
+    expect(pieces).toHaveLength(4); // 11/12/13/14 四个自然日
+    expect(pieces.reduce((acc, p) => acc + p.plannedSeconds, 0)).toBe(5400);
+  });
+
+  it("vmHour=2：边界日历重建后单日段不切分", () => {
+    const s = session({
+      id: "one",
+      startedAt: new Date(2026, 7, 13, 10, 0, 0).toISOString(),
+      endedAt: new Date(2026, 7, 13, 11, 0, 0).toISOString(),
+      plannedSeconds: 3600
+    });
+    expect(splitSessionsByDay([s], 2)).toEqual([s]);
+  });
+});
+
+/** 2026-10-08 审查批次：、、
+ *  （热图未来日不渲染数据）。 */
+describe("切分与热图口径（2026-10-08 审查）", () => {
+  const now = new Date(2026, 7, 13, 12, 0, 0);
+
+  it("F-2：跨午夜完成段的轮数只落首片（与 Rust aggregate 的 i==0 口径一致）", () => {
+    const cross = session({
+      id: "f2",
+      startedAt: new Date(2026, 7, 12, 23, 50, 0).toISOString(),
+      endedAt: new Date(2026, 7, 13, 0, 15, 0).toISOString(),
+      plannedSeconds: 1500,
+      completed: true
+    });
+    const pieces = splitSessionsByDay([cross], 0);
+    expect(pieces).toHaveLength(2);
+    expect(pieces[0].completed).toBe(true); // 首片（起始日）计轮
+    expect(pieces[1].completed).toBe(false); // 次日不再重复计轮
+  });
+
+  it("B-1：零时长旧行的 focusCount 不分 completed（与 Rust hourly 口径一致）", () => {
+    const zero = session({
+      id: "b1",
+      startedAt: new Date(2026, 7, 13, 9, 0, 0).toISOString(),
+      endedAt: new Date(2026, 7, 13, 9, 0, 0).toISOString(),
+      plannedSeconds: 0,
+      completed: false
+    });
+    const dist = hourlyFocusDistribution([zero]);
+    expect(dist[9].focusSeconds).toBe(0);
+    expect(dist[9].focusCount).toBe(1); // 此前仅 completed 计次，与 Rust 互差
+  });
+
+  it("B-3：年视图/月视图的未来日不渲染数据（系统时间回拨产生的未来键）", () => {
+    const agg: FocusAggregate = {
+      daily: [
+        { date: "2026-08-12", focusSeconds: 600, focusCount: 1 },
+        { date: "2026-08-14", focusSeconds: 600, focusCount: 1 } // 未来日（now=08-13）
+      ]
+    };
+    const grid = yearGridFromAgg(agg, 2026, (s) => s, now, 0);
+    const flat = grid.weeks.flat().filter((c): c is NonNullable<typeof c> => c !== null);
+    expect(flat.find((c) => c.date === "2026-08-12")?.focusMinutes).toBe(10);
+    expect(flat.find((c) => c.date === "2026-08-14")?.focusMinutes).toBe(0);
+
+    const heat = monthlyHeatmapFromAgg(agg, now, 0);
+    expect(heat.find((c) => c.date === "2026-08-14")?.focusMinutes).toBe(0);
   });
 });

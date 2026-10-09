@@ -66,16 +66,19 @@ pub fn open_and_migrate(db_path: &Path, migrations: &[Migration]) -> DbResult<Co
     }
     // WAL improves crash safety and concurrent read/write.
     let conn = Connection::open(db_path)?;
+    // busy_timeout 必须先于 journal_mode=WAL——设置 WAL 本身也是一次
+    // 写操作（改库文件头），Windows 上杀毒/索引器/云同步/第二实例短暂持有
+    // 文件时，首次打开就会直接收到 SQLITE_BUSY。先给 5s 等待窗口再切 WAL。
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    // E-7: cap WAL growth so a large import/reset can't leave a multi-hundred-MB
+    // cap WAL growth so a large import/reset can't leave a multi-hundred-MB
     // `-wal` file behind. SQLite auto-checkpoints once the WAL exceeds this.
     conn.pragma_update(None, "journal_size_limit", 8_000_000)?;
-    // 审计修复：写连接此前保持 rusqlite 默认 0ms busy_timeout。Windows 上
-    // 杀毒/索引器/云同步/第二实例短暂持有文件时，所有写命令与启动迁移会立即
-    // 收到 SQLITE_BUSY 直接报错给前端。与读连接（open_read_connection）一致，
-    // 给 5s 等待窗口。
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // WAL 下 synchronous=NORMAL 是官方推荐组合——断电最坏丢失最近
+    // 事务（库文件不损坏；WAL 已保证提交原子性），却免去每次提交的强刷
+    // fsync，显著降低高频写（专注记录 / 镜像同步）的磁盘载荷。
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
 
     migrate(&conn, migrations)?;
     Ok(conn)
@@ -89,12 +92,21 @@ pub fn checkpoint(conn: &Connection) {
     }
 }
 
-/// C-1：为只读命令打开第二条独立连接。与写连接共享同一 WAL 库 —— WAL 模式下
+/// 为只读命令打开第二条独立连接。与写连接共享同一 WAL 库 —— WAL 模式下
 /// 读者与写者互不阻塞（checkpoint 短暂互斥除外），因此 list_*/get_setting/export
 /// 走此连接后，即便重备份/导入长时间持有写连接的 Mutex，也只冻结主线程的写路径，
 /// 不再冻结所有窗口的事件泵。
 pub fn open_read_connection(db_path: &Path) -> DbResult<Connection> {
-    let conn = Connection::open(db_path)?;
+    // 按 SQLITE_OPEN_READ_ONLY 打开——「只读池」此前只是约定（默认
+    // READWRITE|CREATE），未来任何代码误经 read_db 发写语句会在 WAL 下静默
+    // 成功并绕过写连接的串行化闸门（lost-update 无报警）；只读旗标让误用
+    // 变成硬错误。NO_MUTEX/URI 与 rusqlite::Connection::open 的默认一致。
+    let conn = Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )?;
     // 读连接面对 checkpoint 的短暂排他窗口时等待而非立即 SQLITE_BUSY。
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     Ok(conn)
@@ -104,7 +116,7 @@ pub fn open_read_connection(db_path: &Path) -> DbResult<Connection> {
 /// 罕见风暴路径留下永久连接堆积；常态并发（≤4 个只读命令同飞）全部命中池。
 const READ_POOL_CAP: usize = 4;
 
-/// R6：只读连接池（C-1 单连接的升级）。此前全部只读命令共享一条读连接 +
+/// 只读连接池（单连接的升级）。此前全部只读命令共享一条读连接 +
 /// Mutex——备份导出整库期间持锁，其余 list_*/get_setting 全部排队。WAL 本就
 /// 支持任意多读者，这里改成池化借还：借出即用即还（RAII），耗尽时新开一条，
 /// 用后超出容量的直接关闭。写连接（AppState.db）语义不变。
@@ -323,6 +335,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "clipboard_files",
         apply: migration_v10,
     },
+    Migration {
+        version: 11,
+        name: "interruption_started_at_index",
+        apply: migration_v11,
+    },
 ];
 
 /// Migration v3: add the `completed` flag to deadlines so a DDL can be marked
@@ -336,7 +353,7 @@ pub fn migration_v3(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Migration v4 (W-043/045/046/049): tasks gain due/priority/tags/sort_order
+/// Migration v4 (/045/046/049): tasks gain due/priority/tags/sort_order
 /// so the todo list can absorb DDL-style scenarios; deadlines gain the
 /// multi-tier reminder ledger (`notified_tiers`, JSON array) and a `repeat`
 /// rule for recurring deadlines.
@@ -355,7 +372,7 @@ pub fn migration_v4(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Migration v5 (W-051): sessions gain the focus-event attribution columns so
+/// Migration v5 (): sessions gain the focus-event attribution columns so
 /// analytics can aggregate focus time per task / custom event.
 pub fn migration_v5(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -367,7 +384,7 @@ pub fn migration_v5(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Migration v6 (E-1): normalize every stored timestamp to UTC `Z` at
+/// Migration v6 (): normalize every stored timestamp to UTC `Z` at
 /// millisecond precision. Older rows were produced by `DateTime::to_rfc3339()`
 /// which emitted `+00:00` with nanoseconds — a form the frontend's Zod
 /// `.datetime()` rejected by default, breaking the export→import round-trip.
@@ -467,7 +484,7 @@ pub fn migration_v8(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Migration v9 (W-153 网络流量历史持久化)：按天累计的本机收发流量表。
+/// Migration v9 (网络流量历史持久化)：按天累计的本机收发流量表。
 /// `day` 为本地日期 `YYYY-MM-DD`（主键，一天一行）；`rx/tx_bytes` 为该日
 /// 累计字节数。写入方是 `net_history::TrafficRecorder`（独立线程增量 UPSERT，
 /// 与任务/番茄钟等业务数据不同源）。流量统计是用户主动回看的长期数据，
@@ -485,7 +502,7 @@ pub fn migration_v9(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Migration v10（ZTools 借鉴 #8 文件类捕获）：`clipboard_history` 加
+/// Migration v10：`clipboard_history` 加
 /// `files` 列（TEXT，JSON 数组字符串；文本/图片行为 NULL）。Explorer 等
 /// 复制文件（CF_HDROP）时以此落库，回写时重建 CF_HDROP。旧行 NULL 语义
 /// 即「无文件列表」，与既有 kind 判定兼容。
@@ -493,6 +510,19 @@ pub fn migration_v10(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         r#"
         ALTER TABLE clipboard_history ADD COLUMN files TEXT;
+        "#,
+    )?;
+    Ok(())
+}
+
+/// Migration v11：interruptions 的 started_at 索引。v2 只建了
+/// ended_at 索引，而 retention 裁剪 / list_limited / monthly_breakdown 的
+/// 排序与过滤都走 started_at——retention 上限扩到 10000 后每次写都做一次
+/// 无索引的全表 top-N 排序。
+pub fn migration_v11(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_interruptions_started_at ON pomodoro_interruptions(started_at);
         "#,
     )?;
     Ok(())
@@ -516,8 +546,8 @@ mod tests {
     #[test]
     fn applies_migrations_and_records_version() {
         let conn = in_memory(MIGRATIONS).unwrap();
-        // v10 = [FILES]（ZTools 借鉴 #8）clipboard_history.files 列。
-        assert_eq!(current_version(&conn).unwrap(), 10);
+        // v11 = interruptions.started_at 索引（retention/list 排序依赖）。
+        assert_eq!(current_version(&conn).unwrap(), 11);
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
@@ -533,7 +563,7 @@ mod tests {
         let conn = in_memory(MIGRATIONS).unwrap();
         // Re-running should be a no-op.
         migrate(&conn, MIGRATIONS).unwrap();
-        assert_eq!(current_version(&conn).unwrap(), 10);
+        assert_eq!(current_version(&conn).unwrap(), 11);
     }
 
     #[test]

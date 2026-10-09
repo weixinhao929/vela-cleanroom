@@ -1,8 +1,8 @@
 /**
- * FocusTimer 借鉴（事件级音效 + 滴答声）：Web Audio 合成音色库。
+ * （事件级音效 + 滴答声）：Web Audio 合成音色库。
  *
  *  - 事件音：专注结束 / 休息结束各配独立音色与音量（0..1），替代单一的
- *    双音提示音——休息结束默认更「响」的 bell，与 FocusTimer 的
+ *    双音提示音——休息结束默认更「响」的 bell，与
  *    loud-bell 语义一致。
  *  - 滴答声：专注进行中的循环音（挂钟 tick-tock / 节拍器），1Hz 调度，
  *    模块级单例（全局只允许一路 tick），随开关即时启停。
@@ -16,20 +16,29 @@ export type EventSoundId = "soft" | "bell" | "digital" | "marimba" | "none";
 /** 专注进行中的循环滴答音色。 */
 export type TickSoundId = "none" | "clock" | "metronome";
 
-let sharedCtx: AudioContext | null = null;
-
-function getCtx(): AudioContext | null {
-  const Ctx =
-    window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!Ctx) return null;
-  try {
-    if (!sharedCtx || sharedCtx.state === "closed") sharedCtx = new Ctx();
-    if (sharedCtx.state === "suspended") void sharedCtx.resume().catch(() => {});
-    return sharedCtx;
-  } catch {
-    return null;
-  }
+/** 惰性 AudioContext 工厂：suspended 自恢复（自动播放策略）、closed 重建。 */
+function ctxManager(): () => AudioContext | null {
+  let ctx: AudioContext | null = null;
+  return () => {
+    const Ctx =
+      window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return null;
+    try {
+      if (!ctx || ctx.state === "closed") ctx = new Ctx();
+      if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+      return ctx;
+    } catch {
+      return null;
+    }
+  };
 }
+
+/** 事件音的共享 ctx。 */
+const getCtx = ctxManager();
+/* 滴答声专用**独立** ctx——stopTickNodes 的 200ms 延迟 close 此前关的是
+   共享 ctx：FocusTickPlayer 的 effect 依赖（音色/音量/运行态）任一变化都会
+   先 stop 再立即重建，新滴答挂在同一 ctx 上随后被 close，滴答静默失效。 */
+const getTickCtx = ctxManager();
 
 /** 单个振荡音符（带指数衰减包络）。 */
 function tone(
@@ -188,7 +197,7 @@ export function setTickActive(kind: TickSoundId, volume: number, active: boolean
   }
   stopTickNodes();
   try {
-    const ctx = getCtx();
+    const ctx = getTickCtx();
     if (!ctx) return;
     const gain = ctx.createGain();
     gain.gain.value = v;

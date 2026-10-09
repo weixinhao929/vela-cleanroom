@@ -1,5 +1,5 @@
 // 一次性 codemod：把 transition/animation 声明里的裸时长与裸 ease 关键字
-// 归一到 --dur-* / --ease-* / --anim-dur 令牌（H3 anim-token 存量归一）。
+// 归一到 --dur-* / --ease-* / --anim-dur 令牌（anim-token 存量归一）。
 //
 // 映射表（ms → token，偏差 ≤10%，与 feature-animations.css 的 100% 标准档对应）：
 //   100/110/120/130 → var(--dur-fx-xfast, .12s)

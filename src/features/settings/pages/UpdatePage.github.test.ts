@@ -1,5 +1,5 @@
 /**
- * 更新链 GitHub 兜底（DeskOrder 借鉴 #9）纯函数测试：
+ * 更新链 GitHub 兜底纯函数测试：
  *  - isGithubRepoUrl：github.com + owner/repo 判定，排除 releases 页与非 GitHub；
  *  - githubLatestProbeUrl：仓库根规范化成 releases/latest 探测地址；
  *  - githubFallbackManifest：tag 去前缀、固定产物名直链、空产物名回退默认；

@@ -9,7 +9,7 @@
 //! 为原始签名 + 独立 `impl` 块的蛇形包装（见各接口底部）。
 //!
 //! 例外：`IDesktopWindowXamlSourceNative` 在 26100 SDK 头里已被移除，IID
-//! 取自旧 SDK / 公开 interop 资料（`3CBCF1BF-...`，与标杆同一来源）。
+//! 取自旧 SDK / 公开 interop 资料（`3CBCF1BF-...`）。
 
 use windows::Win32::Foundation::HWND;
 use windows_core::interface;
@@ -67,8 +67,7 @@ pub mod rt {
 pub struct TimeSpan(pub i64);
 
 /// `AcrylicBackgroundSource::Backdrop = 1`（HostBackdrop=0；任务栏必须用
-/// Backdrop——窗口本身透明，取 XAML 背后内容，对齐标杆注释
-/// taskbarappearanceservice.cpp:49-53）。
+/// Backdrop——窗口本身透明，取 XAML 背后内容）。
 pub const ACRYLIC_BACKGROUND_SOURCE_BACKDROP: i32 = 1;
 
 /// 把出参收成的接口指针转成拥有所有权的 `I`；null → `Err`。
@@ -314,7 +313,7 @@ pub unsafe trait IXamlCompositionBrushBase: rt::IInspectable {
 /// AcrylicBrush 是 **composable-only** 类：系统的 `IActivationFactory::
 /// ActivateInstance` 对它返回 E_NOTIMPL（真机复现），必须按 C++/WinRT 默认
 /// 构造的同款路径 `IAcrylicBrushFactory::CreateInstance(null, &inner, &value)`
-/// 构造（对齐标杆 taskbarappearanceservice.cpp 的 `AcrylicBrush acrylicBrush;`）。
+/// 构造（C++/WinRT 默认构造的等价路径）。
 #[interface("81A32568-F6CC-4013-8363-928AE23B7A61")]
 pub unsafe trait IAcrylicBrushFactory: rt::IInspectable {
     pub unsafe fn CreateInstance(

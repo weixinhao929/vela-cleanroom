@@ -17,7 +17,7 @@ import type { NotificationRecord } from "../types/bindings/NotificationRecord";
  */
 
 /** 历史留档的 kind → IPC 白名单（Rust 侧未知值回落 info）。 */
-type HistoryKind = "pomodoro" | "todo" | "info";
+export type HistoryKind = "pomodoro" | "todo" | "info";
 
 /** 本窗口内广播「一条通知已留档」（notification-store 消费，去重后入列）。 */
 export const NOTIFICATION_RECORDED_EVENT = "vela:notification-recorded";
@@ -47,8 +47,11 @@ function broadcast(record: NotificationRecord): void {
  * 清理过期行），成功后经 Tauri 事件广播到所有窗口（多屏 dock 同步亮角标）；
  * IPC 失败或浏览器模式降级为本地构造记录 + 仅本窗口广播。fire-and-forget，
  * 永不阻塞通知主流程。
+ *
+ * 导出供 system-notify（系统镜像 / 外部推送两条外部链路）复用——三路留档
+ * 共享同一份广播纪律（DOM + app:notification），不各养一份实现。
  */
-function recordHistory(source: string, title: string, body: string, kind: HistoryKind): void {
+export function recordHistory(source: string, title: string, body: string, kind: HistoryKind): void {
   if (!isTauri()) {
     broadcast(localRecord(source, title, body, kind));
     return;
@@ -155,7 +158,7 @@ export function sourceNotify(source: NotificationSource, title: string, body: st
 }
 
 /**
- * #99 通知派发：主窗口可见时走应用内 toast（右上角滑入滑出），否则回落
+ * 通知派发：主窗口可见时走应用内 toast（右上角滑入滑出），否则回落
  * OS 系统通知 —— 两者二选一，避免同一事件双重打扰。kind 用于 toast 左侧
  * 色条区分番茄钟 / 待办，并作为 OS 通知的 source 供点击落地映射。
  */
@@ -167,7 +170,7 @@ function dispatchToast(title: string, body: string, kind: "pomodoro" | "todo" | 
   void notifyUser(title, body, { source: kind });
 }
 
-/** P2（审计修复）：模块级惰性单例 AudioContext。此前每次提示音都新建
+/** 模块级惰性单例 AudioContext。此前每次提示音都新建
     context 且从不 resume()——自动播放策略下无用户手势前 context 处于
     suspended，osc.start 静默无声（番茄钟完成音在启动后未经交互时永远不响）；
     高频提醒时的反复创建/销毁也是浪费。 */
@@ -238,15 +241,15 @@ export function playChime(kind: "pomodoro" | "todo" = "pomodoro", source?: Notif
  * pomodoroToast 决定弹通知、pomodoroSound 决定响铃（两者独立）。
  *
  * @param opts - `kind`：mode-switch 阶段切换 / milestone 里程碑 / complete
- *               整段完成；`title`/`body`：文案；`sound`（FocusTimer 借鉴）：
+ *               整段完成；`title`/`body`：文案；`sound`：
  *               事件级音效来源——提供时按设置里的独立音色/音量播放，缺省
  *               沿用统一双音。
  * @returns 无；任一门控不满足时为 no-op。
  *
  * @example
- * ```ts
+ * `ts
  * pomodoroNotification({ kind: "complete", title: "专注完成", body: "休息一下吧", sound: { event: "focus-end" } });
- * ```
+ * `
  */
 export function pomodoroNotification(opts: {
   kind: "mode-switch" | "milestone" | "complete" | "upcoming";
@@ -256,7 +259,10 @@ export function pomodoroNotification(opts: {
 }) {
   const n = useSettingsStore.getState().notifications;
   if (!n.pomodoroEnabled) return;
-  if (opts.kind === "mode-switch" && !n.pomodoroModeSwitch) return;
+  // （开关治理）：「阶段完成」类含 30 秒预告（upcoming）——此前只有
+  // mode-switch 受 pomodoroModeSwitch 门控，关掉阶段通知的用户仍会被
+  // 「即将完成」预告打扰，与设置文案「在专注 / 休息结束时发送通知」相悖。
+  if ((opts.kind === "mode-switch" || opts.kind === "upcoming") && !n.pomodoroModeSwitch) return;
   // 门控通过即意味着「有事发生」：只要 toast/响铃任一通道开着就留档
   // （响铃-only 时用户没看到弹窗，更需要历史可回看）。免打扰压制两个
   // 打扰通道但不压制留档。
@@ -265,7 +271,7 @@ export function pomodoroNotification(opts: {
   if (n.pomodoroToast && !quiet) dispatchToast(opts.title, opts.body, "pomodoro");
   if (n.pomodoroSound && !quiet) {
     if (opts.sound) {
-      // FocusTimer 借鉴：专注/休息结束各走各的音色与音量（0-100 → 0..1）。
+      // 专注/休息结束各走各的音色与音量（0-100 → 0..1）。
       const id = opts.sound.event === "focus-end" ? n.pomodoroFocusEndSound : n.pomodoroBreakEndSound;
       const volume = (opts.sound.event === "focus-end" ? n.pomodoroFocusEndVolume : n.pomodoroBreakEndVolume) / 100;
       if (!playEventSound(id, volume)) playChime("pomodoro");

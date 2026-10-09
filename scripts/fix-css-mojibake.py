@@ -92,6 +92,10 @@ def fix_comment(text: str, stats: dict) -> str:
 
 
 def process(path: str, write: bool) -> None:
+    # 守卫贴着 sink：__main__ 的批量预检只为一次性列出全部坏路径，process 自身
+    # 再验一次——library 式调用（绕过 __main__）同样拒绝越界路径。
+    if not check_path(path):
+        raise ValueError(f"refusing to touch path outside repo or non-css: {path}")
     raw = open(path, "rb").read()
     text = raw.decode("utf-8")
     stats = {"fixed": 0, "skipped": 0, "samples": []}

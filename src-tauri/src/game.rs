@@ -13,9 +13,13 @@ pub struct ForegroundApp {
     pub process_name: String,
     pub window_title: String,
     pub is_fullscreen: bool,
+    /// 前台窗口是否最大化（IsZoomed）。presence 的 covered 判定消费：单屏
+    /// 最大化 = 桌面层被完全遮挡；与 is_fullscreen（rect ≥ 整屏）互补——
+    /// 最大化窗 rect 止于工作区，不会命中 fullscreen 判定。
+    pub is_maximized: bool,
 }
 
-/// [CTX]/[WAKE-BL]（ZTools 借鉴 #2/#14）「呼出前前台」快照：全局热键 dispatch
+/// [CTX]/[WAKE-BL]「呼出前前台」快照：全局热键 dispatch
 /// 在做任何窗口编排（置前 / 聚焦）**之前**抓一次前台，供面板上下文探针
 /// （read_explorer_path / read_browser_url）与唤醒黑名单消费——事后再取
 /// GetForegroundWindow 只会得到 Vela 自己。
@@ -64,7 +68,7 @@ pub(crate) fn foreground_app() -> Option<ForegroundApp> {
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetSystemMetrics, GetWindowRect, GetWindowTextW,
-        GetWindowThreadProcessId, SM_CXSCREEN, SM_CYSCREEN,
+        GetWindowThreadProcessId, IsZoomed, SM_CXSCREEN, SM_CYSCREEN,
     };
 
     // SAFETY: GetForegroundWindow returns a valid foreground hwnd or null.
@@ -83,6 +87,9 @@ pub(crate) fn foreground_app() -> Option<ForegroundApp> {
     let w = rect.right - rect.left;
     let h = rect.bottom - rect.top;
     let is_fullscreen = screen_w > 0 && screen_h > 0 && w >= screen_w && h >= screen_h;
+    // SAFETY: simple query（最大化管理态，非几何推断——自动隐藏任务栏的
+    // 最大化窗 rect 可能暂时够到整屏，几何法会把它误判成全屏）。
+    let is_maximized = unsafe { IsZoomed(hwnd) }.as_bool();
 
     // Resolve the process image name via the window's owning PID.
     let mut pid: u32 = 0;
@@ -125,6 +132,7 @@ pub(crate) fn foreground_app() -> Option<ForegroundApp> {
         process_name,
         window_title,
         is_fullscreen,
+        is_maximized,
     })
 }
 
@@ -135,7 +143,7 @@ pub(crate) fn foreground_app() -> Option<ForegroundApp> {
 
 /// Tauri command: query the current foreground app state (for the settings
 /// page / diagnostics).
-/// 隐私闸门（S4）：前台应用时间线属敏感枚举面，低信任窗拒绝。
+/// 隐私闸门：前台应用时间线属敏感枚举面，低信任窗拒绝。
 #[tauri::command]
 pub fn get_foreground_app(window: tauri::Window) -> Option<ForegroundApp> {
     if !crate::trusted_window(window.label()) {
@@ -144,7 +152,7 @@ pub fn get_foreground_app(window: tauri::Window) -> Option<ForegroundApp> {
     foreground_app()
 }
 
-/// [CTX]（ZTools 借鉴 #2）最近一次「呼出前前台」快照的进程信息（热键 dispatch
+/// [CTX]最近一次「呼出前前台」快照的进程信息（热键 dispatch
 /// 在窗口编排前抓取；面板上下文探针据此判断 Explorer / 浏览器）。
 #[tauri::command]
 pub fn get_summon_foreground(window: tauri::Window) -> Option<ForegroundApp> {

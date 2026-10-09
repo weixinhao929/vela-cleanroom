@@ -1,23 +1,28 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 就地配置弹层（B1「配置在上下文中」）：锚定在小组件卡片上方的玻璃弹层，
+ * 就地配置弹层（「配置在上下文中」）：锚定在小组件卡片上方的玻璃弹层，
  * 不跳设置窗口即可修改该实例的常用配置。
  *
  * 本文件是壳：保留全部导出面（类型 / openWidgetSettingsPage / placePopover
  * 定位数学 / WidgetConfigPopover 组件），真实现懒加载自 WidgetConfigPopoverInner
- * ——实现 chunk 静态依赖 config-schemas（zod）与 settings/shared（M3Slider →
+ * 实现 chunk 静态依赖 config-schemas（zod）与 settings/shared（M3Slider →
  * motion/react），只有弹层打开时才需要，不能随画布进主 chunk。调用方多以
  * open=false 常驻挂载，故首次 open 翻真才 arm 拉取；弹层由用户手势（齿轮/
  * 右键「配置」）打开，本地 chunk 加载瞬时完成。
  *
  * 键盘 / 单例互斥 / 点击穿透语义见 Inner 文件头与实现内注释（原文迁移）。
  */
-import { lazy, Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { isTauri, openSettingsWindow } from "../lib/tauri";
+import { makeResettableLazy } from "../lib/make-resettable-lazy";
 import { useSettingsStore } from "../store/settings-store";
 import { currentScreenId } from "./widget-store";
 
-/** 锚定矩形：视口 CSS 像素（与 getBoundingClientRect / WidgetCard 的 x,y,w,h 同坐标系）。 */
+/**
+ * 锚定矩形（布局单位）：与 WidgetCard/GroupCard 传入的实例/组几何同坐标系。
+ * 注意 getBoundingClientRect() 返回的是**视觉**坐标（界面缩放下 = 布局 ×
+ * uiZoom），由 gBCR 构造锚点的调用方（dock 磁贴等）必须先除回 uiZoom。
+ */
 export type PopoverAnchor = { x: number; y: number; w: number; h: number };
 
 export type WidgetConfigPopoverProps = {
@@ -56,6 +61,47 @@ export function openWidgetSettingsPage(instanceId: string): void {
   }
 }
 
+/**
+ * 编组版深度设置入口：直达设置窗口的编组配置页（group-config-<gid>：组级
+ * 透明度 / 成员管理 / 解散）。与实例版同一条双通道（Tauri 事件 + localStorage
+ * 兜底 + screenId 分区提示）。
+ */
+export function openGroupSettingsPage(groupId: string): void {
+  const page = `group-config-${groupId}`;
+  const screenId = currentScreenId();
+  useSettingsStore.getState().setSettingsPage(page);
+  try {
+    localStorage.setItem("focus-desk.pending-nav", JSON.stringify({ page, screenId }));
+  } catch {
+    // best-effort
+  }
+  if (isTauri()) {
+    void openSettingsWindow();
+    void import("@tauri-apps/api/event").then(({ emit }) => emit("app:navigate-settings", { page, screenId }));
+  } else {
+    useSettingsStore.getState().setSettingsOpen(true);
+  }
+}
+
+/** 单例互斥事件名：卡片配置弹层与编组配置弹层共用（打开方广播令牌，他方收到即自关）。 */
+export const WCFG_OPEN_EVENT = "focus-desk:widget-config-popover-open";
+
+/**
+ * 弹层互斥令牌全局单源：互斥协议要求「打开方广播的令牌」与「自己
+ * 记住的令牌」在全窗范围内可比且唯一——此前两套并存（Inner 用模块级自增
+ * openSeq、编组面板用 Date.now()），Date.now() 毫秒精度下同毫秒连开两个
+ * 面板会同令牌，互斥判定 detail !== token 会把「别人」误判成「自己」而漏关。
+ * 收敛为同一模块级自增序列（本壳文件两侧——Inner 与 GroupConfigPanel——
+ * 都从这里取号），单调递增、永不撞号。
+ */
+let wcfgTokenSeq = 0;
+
+/** 取下一个弹层互斥令牌（模块级自增，见上方说明）。 */
+export function nextWcfgToken(): number {
+  wcfgTokenSeq += 1;
+  return wcfgTokenSeq;
+}
+
 /* ------------------------------------------------------------------ */
 /*  几何                                                                */
 /* ------------------------------------------------------------------ */
@@ -92,8 +138,11 @@ export function placePopover(
 /*  组件：懒加载壳                                                      */
 /* ------------------------------------------------------------------ */
 
-const WidgetConfigPopoverInner = lazy(() =>
-  import("./WidgetConfigPopoverInner").then((m) => ({ default: m.WidgetConfigPopoverInner }))
+/* 可重置 lazy——实现 chunk 拉取失败后弃缓存，重开弹层即重新 import
+   （弹层由用户手势打开，失败沿画布冒泡；无本地错误边界，靠弃缓存自愈）。 */
+const WidgetConfigPopoverInner = makeResettableLazy(
+  () => import("./WidgetConfigPopoverInner").then((m) => ({ default: m.WidgetConfigPopoverInner })),
+  "WidgetConfigPopoverInner"
 );
 
 export function WidgetConfigPopover(props: WidgetConfigPopoverProps) {
@@ -106,7 +155,7 @@ export function WidgetConfigPopover(props: WidgetConfigPopoverProps) {
   if (!armed) return null;
   return (
     <Suspense fallback={null}>
-      <WidgetConfigPopoverInner {...props} />
+      <WidgetConfigPopoverInner.Component {...props} />
     </Suspense>
   );
 }

@@ -14,19 +14,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useSettingsStore, type FxEffectId } from "../store/settings-store";
 import { useCountUp, usePrefersReducedMotion } from "./anim";
-
-/**
- * 增强动效总开关是否生效（hook）。
- * 条件：动效模式 = 增强 且 系统未开启减少动态（C11 实时响应，此前为
- * 模块级一次性快照）。
- *
- * @returns true 表示可播放增强动效。
- * @throws 无。
- */
-export function useFxEnabled(): boolean {
-  const reduced = usePrefersReducedMotion();
-  return useSettingsStore((s) => !reduced && s.extra.enableAnimations && s.extra.animationMode === "enhanced");
-}
+import { uiZoom } from "./ui-zoom";
 
 /**
  * 单个特效是否生效（hook）。
@@ -149,7 +137,7 @@ export function FxDecrypt({ text, className }: { text: string; className?: strin
 /* ------------------------------------------------------------------ */
 
 /**
- * 数值变化时从旧值滚动到新值的组件（lib/anim useCountUp 的薄封装，D10
+ * 数值变化时从旧值滚动到新值的组件（lib/anim useCountUp 的薄封装，
  * 合并双份实现）；textFx 关闭或减少动态时直接显示真实值。
  *
  * @param value - 目标数值（NaN/Infinity 按 0 处理）。
@@ -217,21 +205,25 @@ function installFxPointer(): () => void {
     const cardRect = card?.getBoundingClientRect();
     const mRect = m?.getBoundingClientRect();
 
+    /* gBCR/客户坐标的差值是视觉单位，--mx/--my（::after 光斑）与
+       transform 的 px 是布局单位——差值 ÷uiZoom 后再写入。 */
+    const z = uiZoom();
+
     if (spot && spotRect) {
-      spot.style.setProperty("--mx", `${ev.x - spotRect.left}px`);
-      spot.style.setProperty("--my", `${ev.y - spotRect.top}px`);
+      spot.style.setProperty("--mx", `${(ev.x - spotRect.left) / z}px`);
+      spot.style.setProperty("--my", `${(ev.y - spotRect.top) / z}px`);
     }
 
     /* Bento 光斑：预设卡片也记录光标局部坐标（rb.css 的 ::after 光斑消费）。 */
     if (card && cardRect) {
-      card.style.setProperty("--mx", `${ev.x - cardRect.left}px`);
-      card.style.setProperty("--my", `${ev.y - cardRect.top}px`);
+      card.style.setProperty("--mx", `${(ev.x - cardRect.left) / z}px`);
+      card.style.setProperty("--my", `${(ev.y - cardRect.top) / z}px`);
     }
 
     if (magnetEl && magnetEl !== m) resetMagnet();
     if (m && mRect) {
-      const dx = ev.x - (mRect.left + mRect.width / 2);
-      const dy = ev.y - (mRect.top + mRect.height / 2);
+      const dx = (ev.x - (mRect.left + mRect.width / 2)) / z;
+      const dy = (ev.y - (mRect.top + mRect.height / 2)) / z;
       magnetEl = m;
       m.style.transform = `translate(${dx * 0.22}px, ${dy * 0.22}px)`;
     }

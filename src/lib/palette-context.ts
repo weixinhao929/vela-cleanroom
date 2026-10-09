@@ -1,7 +1,7 @@
 /**
- * [CTX]（ZTools 借鉴 #2）窗口上下文动作：按前台窗口出专属指令。
+ * [CTX]窗口上下文动作：按前台窗口出专属指令。
  *
- * ZTools 的 window 型 cmd 按前台应用的类名/标题正则出指令（Explorer 里给
+ * 同类启动器 的 window 型 cmd 按前台应用的类名/标题正则出指令（Explorer 里给
  * 「复制当前文件夹路径」，浏览器里给「读取当前页 URL」）。Vela 落地：
  * 面板打开时探一次前台进程（game.rs get_foreground_app）：
  *  - explorer.exe → read_explorer_path 拿当前文件夹 → 复制路径 / 在终端打开；

@@ -1,7 +1,7 @@
-/* WakeSlider（波形手感滑条样式）。
+/* WakeSlider（.dev/micro/wake-slider 官方样式，MIT）。
    追加两条应用内适配：应用级减少动态开关（html[data-reduce-motion]）把
-   波形压平（与 OS 级 prefers-reduced-motion 兜底对齐）；键盘聚焦
-   描边（基础样式 handle outline:none，补齐本项目 a11y 基线）。 */
+   波形压平（与 OS 级 prefers-reduced-motion 的官方兜底对齐）；键盘聚焦
+   描边（官方 handle outline:none，补齐本项目 a11y 基线）。 */
 .wake-slider {
   --ws-fill: #f5f5f5;
   --ws-track: #27272a;
@@ -30,7 +30,8 @@
   gap: var(--ws-gap);
   height: var(--ws-height);
   min-height: 44px;
-  touch-action: none;
+  /* touch-action:none 迁移残留已删——
+     feature-polish.css:42 的 v2 适配段已有同款声明（settings.css 注释自证迁移）。 */
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;

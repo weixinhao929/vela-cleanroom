@@ -8,6 +8,7 @@ import { Panel } from "../../components/ui/Panel";
 import { copyText } from "../../lib/clipboard";
 import { flipReorder } from "../../lib/anim";
 import { todoNotification } from "../../lib/notifications";
+import { markReminded } from "../../lib/remind-dedupe";
 import { dayKeyOf, dayKeyToDate, useNow } from "../../lib/use-now";
 import { useAppStore } from "../../store/app-store";
 import { useWidgetConfig } from "../../widget/widget-config";
@@ -18,7 +19,7 @@ import { useConfirmAction } from "../../lib/use-confirm-remove";
 import type { Deadline } from "../../domain/schemas";
 import { DateTimePicker } from "../../components/DatePicker";
 
-/* C12（性能）：date-fns 此前只为 formatDistanceToNowStrict + zhCN locale
+/* （性能）：date-fns 此前只为 formatDistanceToNowStrict + zhCN locale
    引入整包依赖（数十 KB vendor）。改用手写相对时长后整体移除。 */
 
 /** 紧急程度：逾期 / 临期（<1h）/ 紧迫（<24h）/ 正常。 */
@@ -49,14 +50,14 @@ function relativeSpan(from: Date, to: Date, tr: (s: string) => string): string {
   return fmt(Math.max(1, Math.floor(diff / 1000)), "秒");
 }
 
-/* W-046 多档提醒：24h / 1h / 10min 各提醒一次。 */
+/* 多档提醒：24h / 1h / 10min 各提醒一次。 */
 const REMINDER_TIERS = [
   { key: "24h", ms: 24 * 60 * 60 * 1000 },
   { key: "1h", ms: 60 * 60 * 1000 },
   { key: "10min", ms: 10 * 60 * 1000 }
 ] as const;
 
-/* W-049 周期规则。 */
+/* 周期规则。 */
 const REPEATS: Deadline["repeat"][] = ["none", "daily", "weekly", "monthly", "yearly"];
 const repeatLabel = (r: Deadline["repeat"], tr: (s: string) => string) =>
   r === "daily"
@@ -127,7 +128,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
   const requestDelete = (id: string) => {
     if (confirmRequest(id)) exitThen(id, () => deleteDeadline(id));
   };
-  /* D8：勾选完成会让行按「未完成在前」重排跳位 —— 落勾前对列表做 FLIP 过渡。 */
+  /* 勾选完成会让行按「未完成在前」重排跳位 —— 落勾前对列表做 FLIP 过渡。 */
   const groupsRef = useRef<HTMLDivElement>(null);
   const commitToggle = (id: string) => {
     const el = groupsRef.current;
@@ -144,7 +145,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
   // E-dayKey：分组只关心日期边界，依赖归约为天粒度 todayKey，不再每 30s
   // 全量重算；多档提醒 effect 与逾期计数仍用实时 now（分钟级功能语义）。
   const todayKey = dayKeyOf(now);
-  // A-14：in-flight 防重（持久化在途的 deadline id）+ 失败退避时间戳，配合 store
+  // in-flight 防重（持久化在途的 deadline id）+ 失败退避时间戳，配合 store
   // 的乐观置位，杜绝「IPC 慢/失败 → 每 30s 重复发档甚至热循环」。失败后按
   // 退避窗口延迟重试（不永久禁用，避免编辑后连提醒也一并被吞）。
   const tiersInFlight = useRef<Set<string>>(new Set());
@@ -160,7 +161,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
   const sortOrder = (config.sortOrder as string) || "soonest";
   const multiTierRemind = config.multiTierRemind !== false;
 
-  /* W-044 行内编辑：双击进入，改标题 / 截止 / 周期，Esc 取消。 */
+  /* 行内编辑：双击进入，改标题 / 截止 / 周期，Esc 取消。 */
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editDue, setEditDue] = useState("");
@@ -207,7 +208,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
   );
 
   // 分组：逾期 / 今天 / 未来 / 已完成，便于快速浏览即将到来的节点。
-  // 逾期判定用 now（30s tick）而非 Date.now()：后者不在 deps 里，到期瞬间
+  // 逾期判定用 now（30s tick）而非 Date.now：后者不在 deps 里，到期瞬间
   // 之后 memo 不会重算，条目要等别的依赖变化才移入「已逾期」。
   const groups = useMemo(() => {
     const byKey: Record<"overdue" | "today" | "future" | "done", typeof sorted> = {
@@ -240,7 +241,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
       .map((k) => ({ key: k, label: labels[k], items: byKey[k] }));
   }, [sorted, todayKey, now, tr]);
 
-  /* W-046 多档提醒链：每个档位只发一次；到期后按「剩余时间对应的最高档」
+  /* 多档提醒链：每个档位只发一次；到期后按「剩余时间对应的最高档」
    * 一次性补发到位（不再逐档在多个 30s 周期里连发）。 */
   useEffect(() => {
     if (!multiTierRemind) return;
@@ -253,6 +254,13 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
       // 未发送且已到点的档位（tiers 由大到小：24h→1h→10min，末尾最具体）。
       const applicable = REMINDER_TIERS.filter((t) => !sent.includes(t.key) && remaining <= t.ms);
       if (applicable.length === 0) return;
+      // （多实例重复通知）：同窗/跨窗多个 DDL 组件读到同一份「未发档位」
+      // 快照时各自派发一次通知。markReminded 写 localStorage（全窗共享）做
+      // 档位级全局在途标记——只有抢到至少一个档位的实例发声；落库推进不
+      // 受影响（另一实例失败时本实例仍会补写 store）。
+      const fresh = applicable.filter((t) =>
+        markReminded(`focus-desk.ddl-tier.${deadline.id}.${t.key}.${todayKey}`, "focus-desk.ddl-tier.", todayKey)
+      );
       // in-flight 防重：该 id 已有一次派发在途，跳过本轮。
       if (tiersInFlight.current.has(deadline.id)) return;
       // 失败退避：上一次持久化失败后，在退避窗口内不重试。
@@ -263,11 +271,13 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
         remaining > 60 * 60 * 1000
           ? `${Math.ceil(remaining / (60 * 60 * 1000))} ${tr("小时")}`
           : `${Math.max(1, Math.ceil(remaining / 60000))} ${tr("分钟")}`;
-      todoNotification({
-        overdue: late,
-        title: tr("DDL 即将到期"),
-        body: `${deadline.title} · ${late ? tr("已到期") : `${tr("还有")} ${leftText}`}`
-      });
+      if (fresh.length > 0) {
+        todoNotification({
+          overdue: late,
+          title: tr("DDL 即将到期"),
+          body: `${deadline.title} · ${late ? tr("已到期") : `${tr("还有")} ${leftText}`}`
+        });
+      }
       // 一次推进到「剩余时间对应的最高档」：把所有已到点档位一并标记已发。
       const nextSent = [...sent, ...applicable.map((t) => t.key)];
       tiersInFlight.current.add(deadline.id);
@@ -281,9 +291,9 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
           tiersRetryAt.current.set(deadline.id, now.getTime() + TIER_RETRY_BACKOFF_MS);
         });
     });
-  }, [deadlines, now, setDeadlineTiers, tr, multiTierRemind]);
+  }, [deadlines, now, todayKey, setDeadlineTiers, tr, multiTierRemind]);
 
-  /* W-047 自然语言日期：标题里写"周五下午5点交论文"可自动带出截止时间。 */
+  /* 自然语言日期：标题里写"周五下午5点交论文"可自动带出截止时间。 */
   const natural = useMemo(() => parseNaturalDateTime(title), [title]);
 
   function submit(event: FormEvent) {
@@ -376,7 +386,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
           if (!deadline.completed && !showCompleted) exitThen(deadline.id, () => toggleDeadline(deadline.id));
           else commitToggle(deadline.id);
         }}
-        /* R1#12：行内已含复制/删除真按钮，行本身不再声明 role="button"
+        /* #12：行内已含复制/删除真按钮，行本身不再声明 role="button"
          （交互元素嵌套会让读屏器把整行播成一个按钮）。保留 Tab+Enter
          快捷勾选，语义由行内控件承担。 */
         tabIndex={0}
@@ -408,7 +418,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
             </span>
           )}
           <span className="deadline-exact">{fmtExact.format(date)}</span>
-          {/* W-049 周期标识：勾选完成会自动滚到下一期。 */}
+          {/* 周期标识：勾选完成会自动滚到下一期。 */}
           {(deadline.repeat ?? "none") !== "none" && (
             <span className="deadline-repeat-badge">
               <Repeat size={10} />
@@ -491,7 +501,7 @@ export function DeadlinePanel({ instanceId }: { instanceId: string }) {
           {tr("添加")}
         </button>
       </form>
-      {/* W-049 周期选择 + W-047 自然语言识别预览。 */}
+      {/* 周期选择 + 自然语言识别预览。 */}
       <div className="deadline-form-extra">
         <div className="deadline-repeat-chips" role="group" aria-label={tr("重复")}>
           {REPEATS.map((r) => (

@@ -14,8 +14,7 @@ body.is-tauri {
   opacity: 0;
   pointer-events: none;
 }
-.widget-canvas.game-covered .widget-card,
-.widget-canvas.game-covered .widget-edit-toggle {
+.widget-canvas.game-covered .widget-card {
   transition: none;
 }
 
@@ -130,7 +129,7 @@ body.is-tauri {
     opacity 0.4s var(--ease-fx, ease),
     transform var(--dur-fx-slow, 0.3s) var(--ease-out);
 }
-/* A1 文件拖拽显形：OS 拖文件进入屏幕时，
+/* 文件拖拽显形：OS 拖文件进入屏幕时，
    可接收文件的卡片（registry acceptsOsFiles）亮出主色描边提示投放；
    光标命中组件内部后仍由组件自己的 os-hover 给出更强的「就松手」提示。
    仅改 border-color / box-shadow（重绘级），过渡复用上方基础声明。 */
@@ -143,7 +142,7 @@ body.is-tauri {
     0 1px 2px color-mix(in srgb, var(--widget-rest-shadow, rgba(0, 0, 0, 0.18)) 55%, transparent),
     0 16px 40px -18px var(--widget-rest-shadow, rgba(0, 0, 0, 0.18));
 }
-/* A2 空闲淡化：presence Idle ≥60s 且设置开启时，
+/* 空闲淡化：presence Idle ≥60s 且设置开启时，
    App 的 GlobalIdleDim 给根元素挂 .idle-dim——全部卡片统一降透明度让位
    于桌面壁纸；任何键鼠输入都会在一拍（1s 轮询）内恢复。透明度过渡复用
    下方基础声明里补充的 opacity 档。 */
@@ -192,11 +191,12 @@ body.is-tauri {
    压过 widget-anim.css 里同特异度的 .is-exiting / .fly-in / .pulse-in /
    .ct-flash 状态动画——删除退场、定位脉冲、撤销飞入全都不触发。
    :where() 后本条只赢「无状态类的初次挂载」，widget-anim.css 后加载，
-   同特异度下所有状态动画稳定胜出。 */
-:root[data-widget-entrance="fade"] :where(.widget-card) {
+   同特异度下所有状态动画稳定胜出。
+   编组容器同款入场（启动时组与卡片一起错落淡入，不再瞬现）。 */
+:root[data-widget-entrance="fade"] :where(.widget-card, .widget-group) {
   animation: tw-widget-fade var(--anim-dur, 0.25s) var(--ease-entrance, var(--ease-out)) backwards;
 }
-:root[data-widget-entrance="scale"] :where(.widget-card) {
+:root[data-widget-entrance="scale"] :where(.widget-card, .widget-group) {
   animation: tw-widget-scale var(--anim-dur, 0.25s) var(--ease-entrance, var(--ease-out)) backwards;
 }
 /* View switching transition driven by the "视图切换" setting. */
@@ -218,11 +218,15 @@ body.is-tauri {
     opacity: 1;
   }
 }
+/* 同源：视图切换曲线改走 --ease-entrance（自定义曲线启用时指向它）——
+   动画页预览卡的 run-slide/run-fade 同用该别名，预览手感与桌面实际切换
+   一致，所见即所得（此前预览用 entrance、实际用 ease-out，开自定义曲线后
+   两边手感不一致）。 */
 :root[data-view-transition="slide"] .widget-canvas-viewport.view-anim {
-  animation: tw-view-slide var(--anim-dur, 0.25s) var(--ease-out) both;
+  animation: tw-view-slide var(--anim-dur, 0.25s) var(--ease-entrance, var(--ease-out)) both;
 }
 :root[data-view-transition="fade"] .widget-canvas-viewport.view-anim {
-  animation: tw-view-fade var(--anim-dur, 0.25s) var(--ease-out) both;
+  animation: tw-view-fade var(--anim-dur, 0.25s) var(--ease-entrance, var(--ease-out)) both;
 }
 
 .widget-align-guide {
@@ -339,7 +343,7 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
 .widget-card.editing.selected::after {
   opacity: 1;
 }
-/* G13 键盘选中：聚焦壳层即选中（.selected 描边已表达），压掉 UA 默认
+/* 键盘选中：聚焦壳层即选中（.selected 描边已表达），压掉 UA 默认
    focus 轮廓避免双环。 */
 .widget-card.editing:focus-visible {
   outline: none;
@@ -394,6 +398,27 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
 .widget-error-retry:active {
   transform: scale(0.94);
 }
+/* 壳层（灵动岛 / 岛配置面板）崩溃恢复条——WidgetErrorBoundary 函数式
+   fallback 渲染（此前 fallback=null 永久空白无入口）。默认按编辑弹层的
+   绝对定位摆放（left/bottom 由 WidgetCanvas 内联注入），岛壳场景内联覆写
+   为 fixed 贴屏底；复用 .widget-error-text / .widget-error-retry 子元素。
+   不用 backdrop-filter：透明窗口里 backdrop-filter + transform 组合会触发
+   合成层重建（见 .widget-gallery-card 注释），纯实底更稳。 */
+.widget-shell-error {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--danger);
+  font-size: var(--fs-12-5);
+  background: var(--paper-solid);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: var(--z-float-menu);
+  animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
 
 .widget-card-body {
   scrollbar-width: none;
@@ -404,7 +429,7 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
   width: 0;
   height: 0;
 }
-/* J-2 溢出可发现性：卡体内容高出视口（滚动条按设计语言隐藏）时，底缘画
+/* 溢出可发现性：卡体内容高出视口（滚动条按设计语言隐藏）时，底缘画
    一道与卡面同配方的渐隐——「下方还有内容，可滚动」有视觉信号，不再
    像被卡片裁断。类名由 WidgetCard 的滚动监听切换；渐变端色与 .widget-card
    背景同一 color-mix 配方，半透明卡面也贴合。 */
@@ -551,28 +576,12 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
 .widget-card .pomodoro-panel {
   min-height: 0;
 }
-.widget-card .focus-timer {
-  width: 168px;
-  margin: 8px auto 6px;
-}
-.widget-card .focus-timer-time {
-  font-size: var(--fs-32);
-}
-.widget-card .focus-timer-kicker {
-  font-size: var(--fs-10);
-}
-.widget-card .focus-timer-target {
-  font-size: var(--fs-10);
-}
-.widget-card .focus-timer-progress {
-  stroke-width: 5;
-}
-.widget-card .pomodoro-stats {
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-  margin-top: 12px;
-  padding-top: 10px;
-}
+/* .focus-timer / -time / -kicker / -target / -progress /
+   .pomodoro-stats 六条基础块已删——PomodoroPanel 唯一宿主是 widget 窗，
+   feature-pomodoro.css（widget 窗后到 chunk）对同选择器无条件压制（fp:1614
+   宽度 / :632 外距 / :1648 字号简写 / :635/:639 角标 / :1635 描边 / :686-691
+   统计格），本组为级联死声明（③ 的 widget.css 半边）。注意：曾把
+   令牌化修复落在本组的 :584（--fs-32）上——修复落在永不生效的声明上。 */
 .widget-card .pomodoro-stat {
   padding: 8px 4px;
 }
@@ -594,8 +603,7 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
   bottom: auto;
   transform: translate(-50%, -50%);
 }
-.widget-card .task-list,
-.widget-card .deadline-list {
+.widget-card .task-list {
   max-height: 180px;
 }
 .widget-card .deadline-panel,
@@ -683,7 +691,8 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
     0 2px 8px var(--widget-hover-shadow, rgba(0, 0, 0, 0.12));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  z-index: 200;
+  /* 画布带令牌（定义见 global.css 阶梯），不再裸写 200。 */
+  z-index: var(--z-canvas-band-edit-toolbar);
   animation: toolbar-fade-in var(--anim-dur, 0.25s) var(--ease-out) both;
   transition:
     background var(--dur-fx, 0.2s) var(--ease-fx, ease),
@@ -774,7 +783,8 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
 
 .widget-marquee {
   position: fixed;
-  z-index: 150;
+  /* 画布带令牌（定义见 global.css 阶梯），不再裸写 150。 */
+  z-index: var(--z-canvas-band-marquee);
   border: 1px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   pointer-events: none;
@@ -797,7 +807,8 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
     0 2px 8px var(--widget-hover-shadow, rgba(0, 0, 0, 0.12));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  z-index: 210;
+  /* 画布带令牌（定义见 global.css 阶梯），不再裸写 210。 */
+  z-index: var(--z-canvas-band-batch-toolbar);
   animation: toolbar-fade-in var(--anim-dur, 0.25s) var(--ease-out) both;
 }
 /* 退场（useDelayedUnmount 关闭窗口内播放）：入场反向，保留 -50% 水平定位。 */
@@ -1166,8 +1177,14 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
   position: absolute;
   bottom: 68px;
   left: 50%;
-  transform: translateX(-50%);
+  /* 水平定位经 --panel-tx 参数化：锚点跟随工具栏自定义位置时（WidgetCanvas
+     内联覆写 left/bottom/top），pop 动画关键帧引用同一变量，入场/退场的
+     位移方向才不会把面板甩回屏幕中央。 */
+  --panel-tx: -50%;
+  transform: translateX(var(--panel-tx, -50%));
   width: min(360px, calc(100vw - 48px));
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
   background: var(--popover-bg, var(--paper-solid));
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -1176,16 +1193,19 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* 与 .dock-cfg 同层：此前无 z-index，多选批量工具栏（210）等浮层直接盖住
+     面板内容。 */
+  z-index: var(--z-float-menu);
   animation: widget-template-pop var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out) both;
 }
 @keyframes widget-template-pop {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(6px);
+    transform: translateX(var(--panel-tx, -50%)) translateY(6px);
   }
   to {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(var(--panel-tx, -50%)) translateY(0);
   }
 }
 /* 退场（useDelayedUnmount 关闭窗口内播放）：入场反向，保留 -50% 水平定位。 */
@@ -1195,7 +1215,7 @@ html[data-fx-off~="ambientMotion"] .widget-card.editing {
 @keyframes widget-template-out {
   to {
     opacity: 0;
-    transform: translateX(-50%) translateY(6px);
+    transform: translateX(var(--panel-tx, -50%)) translateY(6px);
   }
 }
 html[data-reduce-motion="1"] .widget-template-panel {
@@ -1250,6 +1270,12 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .widget-template-error {
   font-size: var(--fs-11);
   color: var(--danger);
+}
+/* 空态提示（与历史面板的空态同语义，弱化色不打扰）。 */
+.widget-template-empty {
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+  padding: 2px 2px 0;
 }
 .widget-template-list {
   display: flex;
@@ -1355,82 +1381,11 @@ html[data-reduce-motion="1"] .widget-template-panel {
   opacity: 1;
 }
 
-/* === 编辑模式切换按钮 === */
-.widget-edit-toggle {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--paper);
-  color: var(--muted);
-  font-size: var(--fs-12);
-  font-weight: 600;
-  cursor: pointer;
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  box-shadow:
-    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
-    inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent),
-    0 2px 10px var(--widget-hover-shadow, rgba(0, 0, 0, 0.14));
-  z-index: 100;
-  transition:
-    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    color var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
-}
-.widget-edit-toggle:hover {
-  color: var(--ink);
-  transform: translateY(-1px);
-}
-.widget-edit-toggle.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--btn-fg);
-  box-shadow: none;
-}
-.widget-edit-toggle:active {
-  transform: scale(0.95);
-}
-/* === 设置按钮 === */
-.widget-settings-toggle {
-  position: fixed;
-  top: 16px;
-  right: 72px;
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--paper);
-  color: var(--muted);
-  cursor: pointer;
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  box-shadow:
-    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
-    inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent),
-    0 2px 10px var(--widget-hover-shadow, rgba(0, 0, 0, 0.14));
-  z-index: 100;
-  transition:
-    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    color var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
-}
-.widget-settings-toggle:hover {
-  color: var(--ink);
-  transform: translateY(-1px);
-}
-.widget-settings-toggle:active {
-  transform: scale(0.94);
-}
+/* 已删除 .widget-edit-toggle 编辑模式切换按钮全族
+   （基础/hover/active/:active 及 game-covered 复合成员）——编辑入口已由
+   工具栏承接，全语料 0 引用（含 game-covered 侧只保留 .widget-card 半边）。
+   复核追加（门禁）：相邻的 .widget-settings-toggle 设置按钮全族
+   （基础/hover/:active）同为 0 引用，一并删除。 */
 
 .widget-gallery-overlay {
   position: fixed;
@@ -1474,7 +1429,8 @@ html[data-reduce-motion="1"] .widget-template-panel {
   }
 }
 .widget-gallery-panel {
-  width: min(1080px, 100%);
+  /* 预览双栏改单列后收窄到设置页内容栏的比例（.tm-gallery 两列卡片宽）。 */
+  width: min(880px, 100%);
   max-height: 86vh;
   border-radius: var(--radius-lg);
   background: var(--paper-solid);
@@ -1503,97 +1459,72 @@ html[data-reduce-motion="1"] .widget-template-panel {
     transform: none;
   }
 }
-/* 椤堕儴鏍?*/
+
+/* ══ 添加小组件（桌面图库 · 与设置页「添加小组件」同一形式） ══
+   视觉对齐 settings.css 的 .tm-gallery-*：细边返回钮 + 胶囊搜索 + 带计数的
+   分类芯片 + 分类分节的两列圆形图标卡片。与设置页的两处刻意差异：
+   ① 卡片一律不动 transform（面板 backdrop-filter + 透明窗口下，子元素常驻
+     transform 会触发合成层重建导致卡片消失，见 WidgetGallery.tsx 注释），
+     悬停浮起感用阴影表达，操作钮浮现只走透明度（设置页的 scale 弹出在这
+     不安全）；
+   ② 卡片多一枚悬停浮现的「入岛」圆钮（灵动岛入口收编自旧预览面板）。 */
 .widget-gallery-topbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line);
+  padding: 16px 16px 0;
   flex-shrink: 0;
 }
+/* 返回钮 = 设置页 .tm-btn-secondary 同款（细边次级）。 */
 .widget-gallery-back {
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: transparent;
-  border: 0;
-  color: var(--ink);
-  font-size: var(--fs-13);
-  cursor: pointer;
-  padding: 6px 8px;
-  border-radius: var(--radius-ctl);
-  transition:
-    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
-}
-.widget-gallery-back:hover {
-  background: var(--surface-soft);
-}
-.widget-gallery-back:active {
-  transform: scale(0.96);
-}
-.widget-gallery-pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 4px 12px;
-  font-size: var(--fs-12);
-  color: var(--muted);
-}
-.widget-gallery-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-ctl);
-  padding: 6px 10px;
-  color: var(--muted);
-}
-.widget-gallery-search input {
-  flex: 1;
-  background: transparent;
-  border: 0;
-  outline: none;
-  color: var(--ink);
+  gap: 7px;
+  padding: 6px 18px;
   font-size: var(--fs-13);
   font-family: inherit;
-}
-.widget-gallery-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-12);
-  color: var(--muted);
-}
-.widget-gallery-group-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  color: var(--ink);
   background: var(--surface-soft);
   border: 1px solid var(--line);
   border-radius: var(--radius-ctl);
-  padding: 6px 10px;
-  color: var(--ink);
-  font-size: var(--fs-12);
   cursor: pointer;
   transition:
     background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
 }
-.widget-gallery-group-btn:hover {
-  border-color: var(--line-strong);
+.widget-gallery-back:hover {
   background: var(--surface-hover);
+  border-color: var(--line-strong);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
-.widget-gallery-group-btn:active {
-  transform: scale(0.96);
+.widget-gallery-back:active {
+  transform: scale(0.98);
+}
+.widget-gallery-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 8px 14px;
+  color: var(--muted-2);
+  transition: border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-gallery-search:focus-within {
+  border-color: var(--accent);
+}
+.widget-gallery-search input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  outline: none;
+  font-size: var(--fs-13);
+  font-family: inherit;
 }
 .widget-gallery-close {
   width: 28px;
@@ -1617,54 +1548,105 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .widget-gallery-close:active {
   transform: scale(0.94);
 }
-/* 主体双栏 */
-.widget-gallery-body {
+/* 分类芯片（全部 / 专注 / 工具 / 系统 / 在线）：计数徽章随芯片同色，
+   参数照搬设置页 .tm-gallery-chip。 */
+.widget-gallery-chips {
   display: flex;
-  flex: 1;
-  overflow: hidden;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px 14px;
+  flex-shrink: 0;
 }
-.widget-gallery-list {
-  flex: 1.4;
+.widget-gallery-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: none;
+  font-size: var(--fs-12-5);
+  font-family: inherit;
+  color: var(--muted-3);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-gallery-chip:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+.widget-gallery-chip.active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: transparent;
+  color: var(--accent);
+  font-weight: 500;
+}
+.widget-gallery-chip-count {
+  font-family: var(--font-label);
+  font-size: var(--fs-10);
+  color: var(--muted-2);
+  /* chip 选中时计数徽标变 accent 走过渡（子元素自持，同设置页）。 */
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-gallery-chip.active .widget-gallery-chip-count {
+  color: var(--accent);
+}
+/* 滚动容器：「全部」时分节（节标题 + 两列网格），选具体分类时平铺。
+   入场只做透明度（key=cat 换分类重放；transform 见区块头注释①）。 */
+.widget-gallery-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 16px;
-  border-right: 1px solid var(--line);
+  padding: 2px 16px 16px;
+  animation: wg-page-in var(--dur-fx-slow, 0.3s) var(--ease-out);
+}
+@keyframes wg-page-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 .widget-gallery-cat {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
+}
+.widget-gallery-cat:last-child {
+  margin-bottom: 4px;
 }
 .widget-gallery-cat-label {
   font-size: var(--fs-11);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 10px;
   font-weight: 600;
+  color: var(--muted-2);
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
 }
-
 .widget-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-content: start;
 }
-
-@media (min-width: 900px) {
-  .widget-gallery-grid {
-    grid-template-columns: repeat(3, minmax(150px, 1fr));
-  }
-}
+/* 卡片参数照搬设置页 .tm-gallery-card（圆角 14 / 软底 / 圆形图标芯片 +
+   名称与一行描述），悬停浮现操作钮。 */
 .widget-gallery-card {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
-  /* touch target ≥48px（docs/ui-guidelines.md §2）：12px 内距 + 40px 图标芯片天然 64px，显式钉住下限 */
-  min-height: 48px;
+  gap: 14px;
+  min-height: 64px;
+  padding: 13px 16px;
+  background: var(--surface-soft);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--paper);
-  color: var(--ink);
-  text-align: left;
+  border-radius: var(--rad-14);
+  color: var(--muted-3);
   cursor: pointer;
+  text-align: left;
   transition:
     border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
@@ -1672,19 +1654,117 @@ html[data-reduce-motion="1"] .widget-template-panel {
     border-radius var(--dur-fx, 0.2s) var(--ease-spring),
     opacity var(--dur-fx-fast, 0.15s) var(--ease-fx);
 }
-
 .widget-gallery-card:hover {
-  border-color: var(--accent);
   background: var(--surface-hover);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  border-color: var(--line-strong);
+  /* 不位移（注释①），浮起感全靠阴影（设置页同款投影）。 */
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
 }
-.widget-gallery-card.active {
+.widget-gallery-card:focus-visible {
+  outline: none;
   border-color: var(--accent);
-  background: var(--surface-hover);
-  box-shadow: inset 0 0 0 0.5px var(--accent);
 }
-/* [POLISH] A4 按压几何（无 transform 版，原因见上方 hover 注释）：按住的卡片外圆角
-   张大到 20px、底色加深（「被压扁」的形变感）；同网格其余卡片圆角收到 8px 并降到
+.widget-gallery-card.just-added {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+/* 圆形图标芯片：--h 未设（图库不按类型配色）即主题主色，与设置页同款
+   悬停满填充（feature-animations.css 对两族卡片共用该悬停规则）。 */
+.widget-gallery-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--h, var(--accent)) 16%, transparent);
+  color: var(--h, var(--accent));
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-gallery-card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.widget-gallery-card-name {
+  font-size: var(--fs-13-5);
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.widget-gallery-card-desc {
+  font-size: var(--fs-11-5);
+  line-height: 1.4;
+  color: var(--muted-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 悬停浮现的圆钮：右侧「+」添加入画布（添加后短暂变 ✓）；左侧「岛」把
+   类型加入灵动岛。只走透明度（注释①）；隐藏态 pointer-events 关掉，
+   键盘聚焦时强制显形。 */
+.widget-gallery-card-add,
+.widget-gallery-card-dock {
+  position: absolute;
+  top: 8px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-gallery-card-add {
+  right: 8px;
+  background: var(--h, var(--accent));
+  color: var(--h-ink, var(--btn-fg));
+}
+.widget-gallery-card-dock {
+  right: 36px;
+  background: var(--paper-solid);
+  border: 1px solid var(--line-strong);
+  color: var(--muted-2);
+  cursor: pointer;
+  padding: 0;
+  /* hover/disabled 的颜色与边框随过渡渐变（首个基类只过渡 opacity）。 */
+  transition:
+    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-gallery-card-dock:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* 已在灵动岛：禁用态（灰显，title 说明）。 */
+.widget-gallery-card-dock:disabled {
+  cursor: default;
+  color: var(--muted-3);
+  border-color: var(--line);
+  background: var(--surface-soft);
+}
+.widget-gallery-card-dock:disabled:hover {
+  border-color: var(--line);
+  color: var(--muted-3);
+}
+.widget-gallery-card:hover .widget-gallery-card-add,
+.widget-gallery-card:hover .widget-gallery-card-dock,
+.widget-gallery-card.just-added .widget-gallery-card-add,
+.widget-gallery-card-dock:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* [POLISH] 按压几何（无 transform 版）：按住的卡片外圆角张大到 --radius-lg、
+   底色加深（「被压扁」的形变感）；同网格其余卡片圆角收到 --rad-8 并降到
    .85 透明（邻块吸收）。类名由 WidgetGallery.tsx 的 pointer 事件驱动。 */
 .widget-gallery-card.is-pressed {
   border-radius: var(--radius-lg);
@@ -1695,124 +1775,11 @@ html[data-reduce-motion="1"] .widget-template-panel {
   border-radius: var(--rad-8);
   opacity: 0.85;
 }
-.widget-gallery-card-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--rad-10);
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  color: var(--accent);
-  background: var(--surface-soft);
-}
-/* 数据作用域徽标：独立（per-instance）/ 同步（全局共享）。 */
-.widget-gallery-scope {
-  display: inline-block;
-  margin-top: 3px;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  font-size: var(--fs-10);
-  line-height: 1.5;
-  border: 1px solid var(--line);
-  color: var(--muted);
-  background: var(--surface-soft);
-  align-self: flex-start;
-}
-.widget-gallery-scope.is-shared {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-}
-.widget-gallery-preview-desc .widget-gallery-scope {
-  margin-left: 6px;
-  margin-top: 0;
-}
-.widget-gallery-card-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.widget-gallery-card-name {
-  font-size: var(--fs-13);
-  font-weight: 600;
-}
-.widget-gallery-card-desc {
-  font-size: var(--fs-11);
-  color: var(--muted);
-}
 .widget-gallery-empty {
-  padding: 40px 16px;
+  padding: 48px 16px;
+  text-align: center;
   font-size: var(--fs-13);
-}
-/* 棰勮闈㈡澘 */
-.widget-gallery-preview {
-  flex: 1;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.widget-gallery-preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.widget-gallery-preview-title {
-  font-size: var(--fs-15);
-  font-weight: 600;
-  color: var(--ink);
-}
-.widget-gallery-preview-add {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--accent);
-  color: var(--btn-fg);
-  border: 0;
-  border-radius: var(--radius-ctl);
-  padding: 6px 14px;
-  font-size: var(--fs-12);
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    filter var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out),
-    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
-}
-.widget-gallery-preview-add:hover {
-  filter: brightness(1.08);
-  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 30%, transparent);
-}
-.widget-gallery-preview-add:active {
-  transform: scale(0.96);
-}
-.widget-gallery-preview-card {
-  flex: 1;
-  border-radius: var(--rad-14);
-  display: grid;
-  place-items: center;
-
-  color: var(--accent);
-  border: 1px solid var(--line);
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--accent) 16%, transparent),
-      color-mix(in srgb, var(--accent) 5%, transparent)
-    ),
-    var(--paper);
-  min-height: 220px;
-}
-.widget-gallery-preview-desc {
-  font-size: var(--fs-12);
-  color: var(--muted);
-}
-.widget-gallery-preview-empty {
-  flex: 1;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  font-size: var(--fs-13);
+  color: var(--muted-2);
 }
 /* === 时钟 === */
 .widget-clock {
@@ -1898,123 +1865,11 @@ html[data-reduce-motion="1"] .widget-template-panel {
   color: var(--ink);
 }
 
-.clock-settings-popover {
-  position: absolute;
-  top: 42px;
-  right: 8px;
-  z-index: 20;
-  min-width: 180px;
-  padding: 12px;
-  border-radius: var(--rad-14);
-  background: var(--paper-solid);
-  border: 1px solid var(--line);
-  box-shadow:
-    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
-    inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent),
-    0 12px 36px rgba(0, 0, 0, 0.4);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  backdrop-filter: blur(var(--glass-blur)) saturate(180%);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  animation: clock-popover-in var(--dur-fx, 0.2s) var(--ease-out) both;
-}
-@keyframes clock-popover-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px) scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.clock-settings-title {
-  font-size: var(--fs-12);
-  font-weight: 700;
-  color: var(--ink);
-  margin-bottom: 2px;
-}
-.clock-settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: var(--fs-12);
-  color: var(--muted);
-  gap: 12px;
-}
-/* 精致的切换开关，替代原生 checkbox */
-.clock-settings-row input[type="checkbox"] {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 34px;
-  height: 20px;
-  border-radius: var(--radius-pill);
-  background: var(--line);
-  border: 1px solid var(--line-strong);
-  position: relative;
-  cursor: pointer;
-  flex: none;
-  transition:
-    background var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease);
-}
-.clock-settings-row input[type="checkbox"]::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--btn-fg, #fff);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-  transition: transform var(--dur-fx, 0.2s) var(--ease-out);
-}
-.clock-settings-row input[type="checkbox"]:checked {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-.clock-settings-row input[type="checkbox"]:checked::after {
-  transform: translateX(14px);
-}
-.clock-style-pills {
-  display: flex;
-  gap: 4px;
-}
-.clock-style-pill {
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--muted);
-  border-radius: var(--radius-pill);
-  padding: 3px 12px;
-  font-size: var(--fs-11);
-  cursor: pointer;
-  transition:
-    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
-}
-.clock-style-pill:hover {
-  border-color: var(--accent);
-  color: var(--ink);
-}
-.clock-style-pill.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--btn-fg);
-}
-.clock-settings-select {
-  max-width: 140px;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-ctl);
-  background: var(--surface-soft);
-  color: var(--ink);
-  font-size: var(--fs-11);
-  cursor: pointer;
-}
-/* === 时钟增强（W-001~006）：世界时钟 / 模拟表盘 / 秒表 / 设置分组 === */
+/* 原时钟自绘设置弹层整族样式已删除（.clock-settings-popover
+   及其 title/row/select/group、.clock-style-pills、.clock-zone-*、.clock-scale-*、
+   @keyframes clock-popover-in）——ClockWidget 注释自证已改用 统一就地配置弹层
+   （WidgetConfigPopover），全语料 0 引用；仅 .clock-settings-btn 齿轮按钮存活。 */
+/* === 时钟增强（~006）：世界时钟 / 模拟表盘 / 秒表 === */
 
 .clock-world {
   display: flex;
@@ -2049,7 +1904,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* W-002 模拟表盘 */
+/* 模拟表盘 */
 .clock-analog {
   width: min(72cqw, 78%);
   max-width: 240px;
@@ -2087,14 +1942,14 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .clock-analog-hand.second {
   stroke: var(--accent);
   stroke-width: 1.2;
-  /* 秒针 1Hz 步进 6°，配过冲曲线会每秒「跳过头再弹回」（D11 同一教训，
+  /* 秒针 1Hz 步进 6°，配过冲曲线会每秒「跳过头再弹回」（同一教训，
      时/分针已改无过冲曲线，此处对齐）；0.18s 快速 ease-out 是利落的石英跳秒。 */
   transition: transform var(--dur-fx, 0.2s) var(--ease-clock-hand);
 }
 .clock-analog-pin {
   fill: var(--accent);
 }
-/* W-003 秒表 + 表冠切换按钮 */
+/* 秒表 + 表冠切换按钮 */
 .clock-stopwatch {
   display: flex;
   flex-direction: column;
@@ -2168,112 +2023,6 @@ html[data-reduce-motion="1"] .widget-template-panel {
   color: var(--accent);
 }
 
-.clock-settings-group {
-  font-size: var(--fs-10);
-  font-weight: 700;
-  color: var(--muted);
-  letter-spacing: 0.06em;
-  margin: 8px 0 2px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
-}
-.clock-settings-group:first-of-type {
-  margin-top: 4px;
-}
-/* 世界时钟时区管理 */
-.clock-zone-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin: 2px 0 4px;
-}
-.clock-zone-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--rad-7);
-  background: var(--surface-soft);
-}
-.clock-zone-name {
-  font-size: var(--fs-11);
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.clock-zone-remove {
-  transition: color var(--dur-fx) var(--ease-fx);
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: var(--fs-14);
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 2px;
-}
-.clock-zone-remove:hover {
-  color: var(--danger);
-}
-.clock-zone-add {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  min-width: 0;
-}
-.clock-zone-input {
-  width: 130px;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--rad-7);
-  background: var(--surface-soft);
-  color: var(--ink);
-  font-size: var(--fs-11);
-}
-.clock-zone-add-btn {
-  transition:
-    background var(--dur-fx) var(--ease-fx),
-    color var(--dur-fx) var(--ease-fx);
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
-  border-radius: var(--rad-7);
-  padding: 3px 8px;
-  font-size: var(--fs-11);
-  font-weight: 600;
-  cursor: pointer;
-}
-.clock-zone-add-btn:hover {
-  background: var(--accent);
-  color: var(--btn-fg);
-}
-.clock-scale-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.clock-scale-row input[type="range"] {
-  width: 90px;
-  accent-color: var(--accent);
-}
-.clock-scale-row input[type="color"] {
-  width: 28px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--rad-6);
-  background: transparent;
-  cursor: pointer;
-}
-.clock-scale-value {
-  font-size: var(--fs-11);
-  color: var(--muted);
-  min-width: 32px;
-  text-align: right;
-}
-
 .widget-sysbar {
   height: 100%;
   display: flex;
@@ -2289,6 +2038,35 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .widget-sysbar .sep {
   color: var(--muted-2);
   opacity: 0.6;
+}
+
+/* 系统监控栏「透明（无底板）」（对齐时钟/音乐 transparent 同款）：背景、
+   边框、投影、毛玻璃全部摘掉，只留监控文字条本身；悬停不再浮现卡片轮廓，
+   编辑模式保留强调色描边方便拖动调整位置。小字直接压在壁纸上，补一层
+   纯色细描边提升可读性（随主题前景色）。 */
+.widget-card:has(.widget-sysbar.transparent) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.widget-card:has(.widget-sysbar.transparent):hover,
+.widget-card:has(.widget-sysbar.transparent).hovered {
+  border-color: transparent;
+  box-shadow: none;
+}
+.widget-card:has(.widget-sysbar.transparent).editing {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.widget-card:has(.widget-sysbar.transparent) .widget-card-body {
+  padding: 4px;
+}
+.widget-card:has(.widget-sysbar.transparent) .widget-sysbar {
+  text-shadow:
+    0 1px 1.5px color-mix(in srgb, var(--paper-solid, #000) 55%, transparent),
+    0 0 2px color-mix(in srgb, var(--paper-solid, #000) 35%, transparent);
 }
 
 .widget-sysbar.fs-xs {
@@ -2347,7 +2125,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   margin-top: 3px;
   text-align: right;
 }
-/* === 蹇嵎鏂瑰紡鍗＄墖 === */
+/* === 快捷方式卡片 === */
 /* 快捷方式：自由排布板（条目绝对定位，inline left/top/width；无格位条目自动补空格）。 */
 .widget-shortcuts {
   height: 100%;
@@ -2468,7 +2246,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   object-fit: contain;
 }
 
-/* hover：色彩/描边反馈（不位移缩放，同全局 D9 约定）。 */
+/* hover：色彩/描边反馈（不位移缩放，同全局 约定）。 */
 .widget-shortcut:hover .widget-shortcut-icon {
   background: var(--surface-soft);
   border-color: var(--line-strong);
@@ -2504,7 +2282,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   font-size: var(--fs-10);
   font-weight: 700;
 }
-/* 文件夹磁贴成员数角标（BentoDesk pill count badge）：中性主色，与回收站
+/* 文件夹磁贴成员数角标：中性主色，与回收站
    危险色角标区分。 */
 .widget-shortcut-count {
   position: absolute;
@@ -2521,7 +2299,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   font-size: var(--fs-10);
   font-weight: 700;
 }
-/* 目标缺失角点（BentoDesk file_missing：图标压暗 + 琥珀角点，条目保留）。 */
+/* 目标缺失角点。 */
 .widget-shortcut-missing-dot {
   position: absolute;
   bottom: 2px;
@@ -2545,7 +2323,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
-/* E8：长名截断（此前无处理会把网格撑破）。 */
+/* 长名截断（此前无处理会把网格撑破）。 */
 .widget-shortcut-name {
   font-size: var(--fs-12);
   color: var(--ink);
@@ -2603,7 +2381,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
     inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
     inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent);
   color: var(--ink);
-  z-index: var(--z-config-pop); /* 与 wcfg-popover / folder-popup 同层 */
+  z-index: var(--z-config-pop); /* 与 wcfg-popover / folder-popup 同层；右键菜单（--z-ctx）在其上 */
   /* 开合动画由组件内 WAAPI FLIP 驱动（磁贴矩形↔弹层矩形连续变形，中途反向
      从当前值续跑）；CSS 不挂 keyframes，避免两套动画叠加。 */
   outline: none;
@@ -2611,7 +2389,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .sfolder-popup.is-closing {
   pointer-events: none;
 }
-/* 内联搜索条（BentoDesk InlineSearch）：高度显隐为一次性离散形变。 */
+/* 内联搜索条：高度显隐为一次性离散形变。 */
 .sfolder-popup-search {
   display: flex;
   align-items: center;
@@ -2718,7 +2496,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   cursor: pointer;
   transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
 }
-/* 错峰进场（BentoDesk item_card：stagger 10ms、前 5 张、Y 偏移 6px）。
+/* 错峰进场。
    仅首次打开（is-entering，280ms 后摘除）：拖拽重排移动 DOM 节点会让
    animation 重放，全网格闪一遍。 */
 .sfolder-popup-grid.is-entering:not(.is-dragging) .sfolder-popup-item,
@@ -2737,11 +2515,12 @@ html[data-reduce-motion="1"] .widget-template-panel {
   background: var(--surface-soft);
   outline: none;
 }
-/* 按下反馈（BentoDesk press 80/120ms）。 */
+/* 按下反馈。 */
 .sfolder-popup-item:active .sfolder-popup-icon {
   transform: scale(0.94);
 }
-/* 拖拽中的条目：fixed 定身（left/top/width 由内联样式给出）+ transform 跟手。 */
+/* 拖拽幽灵（Portal 到 body）：fixed 定位，left/top/width/height 由内联样式
+   给出、中心对齐当前指针（同系统拖图标手感）。 */
 .sfolder-popup-item.is-dragging {
   z-index: 3;
   cursor: grabbing;
@@ -2794,7 +2573,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   font-size: var(--fs-10-5);
   opacity: 0.75;
 }
-/* 搜索无结果（BentoDesk SEARCH_EMPTY：居中 muted 文案，被滤条目直接不渲染）。 */
+/* 搜索无结果。 */
 .sfolder-popup-nomatch {
   flex: 1;
   min-height: 96px;
@@ -2858,7 +2637,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   transform: scale(1.2);
 }
 
-/* === 文件夹预览小窗（DeskOrder 借鉴 #13）：Portal 到 body 的玻璃浮层 === */
+/* === 文件夹预览小窗：Portal 到 body 的玻璃浮层 === */
 .folder-popup {
   position: fixed;
   width: min(440px, 92vw);
@@ -2874,7 +2653,9 @@ html[data-reduce-motion="1"] .widget-template-panel {
     inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
     inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent);
   color: var(--ink);
-  z-index: var(--z-config-pop); /* 与 wcfg-popover 同层：高于右键菜单，弹层打开时菜单已被外点关闭 */
+  z-index: var(
+    --z-config-pop
+  ); /* 与 wcfg-popover 同层；右键菜单（--z-ctx）在其上——弹层与菜单可共存（pin 态外点不关） */
   animation: folder-pop-in var(--dur-fx, 0.2s) var(--ease-out, ease-out) both;
   outline: none;
 }
@@ -2910,7 +2691,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   padding: 6px 8px;
   border-bottom: 1px solid var(--line);
 }
-/* B4 面包屑：占据原标题位；祖先段可点（就地下钻），当前段加粗高亮；
+/* 面包屑：占据原标题位；祖先段可点（就地下钻），当前段加粗高亮；
    深路径前缀折叠为「…」。只改 background/color（重绘级）。 */
 .folder-popup-crumbs {
   flex: 1;
@@ -3139,8 +2920,8 @@ html[data-reduce-motion="1"] .widget-template-panel {
   color: var(--muted);
   flex-shrink: 0;
 }
-/* ---- B5/B6/B8：预览网格 / 批量选择 / 别名配套样式 ---- */
-/* B6 选择框：行首小方格，选中填主色（纯装饰，行本身可点）。 */
+/* ---- 预览网格 / 批量选择 / 别名配套样式 ---- */
+/* 选择框：行首小方格，选中填主色（纯装饰，行本身可点）。 */
 .fb-check {
   width: 14px;
   height: 14px;
@@ -3161,7 +2942,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
-/* B5 预览网格：自适应小卡片，预览体固定高、名称最多两行。 */
+/* 预览网格：自适应小卡片，预览体固定高、名称最多两行。 */
 .widget-files-grid {
   flex: 1;
   overflow: auto;
@@ -3222,7 +3003,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   -webkit-box-orient: vertical;
   word-break: break-all;
 }
-/* B6 批量操作条：选择模式下常驻卡片底部。 */
+/* 批量操作条：选择模式下常驻卡片底部。 */
 .fb-batch {
   display: flex;
   align-items: center;
@@ -3263,7 +3044,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .fb-batch-btn.danger {
   color: var(--danger, #ef4444);
 }
-/* B7 批量进度态：当前文件名单行省略；进度条 scaleX（合成器友好）。 */
+/* 批量进度态：当前文件名单行省略；进度条 scaleX（合成器友好）。 */
 .fb-batch-current {
   font-size: var(--fs-11);
   color: var(--muted);
@@ -3303,7 +3084,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
     color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
 }
-/* B6/B5 工具栏开关态：批量选择 / 预览视图激活时高亮主色。 */
+/* 工具栏开关态：批量选择 / 预览视图激活时高亮主色。 */
 .widget-files-up.is-on {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
@@ -3430,6 +3211,41 @@ html[data-reduce-motion="1"] .widget-template-panel {
   text-align: center;
   color: var(--muted);
   font-size: var(--fs-12);
+}
+.widget-files-empty-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 10px auto 0;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.widget-files-empty-act:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+/* 预览拉取失败的 tile：降级图标 + 半透明（与「还在加载」区分）。 */
+.fb-tile-preview.is-preview-failed {
+  opacity: 0.45;
+}
+
+/* OS 文件拖入高亮 / 传输进行中。 */
+.widget-files.os-drop-over {
+  outline: 2px dashed var(--ink);
+  outline-offset: -4px;
+}
+.widget-files.is-transferring {
+  opacity: 0.65;
 }
 
 .fb-crumbs {
@@ -3682,14 +3498,6 @@ html[data-reduce-motion="1"] .widget-template-panel {
   border-color: var(--line-strong);
   background: var(--surface-hover);
 }
-.hw-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-10);
-  color: var(--muted);
-  margin-top: auto;
-}
 
 .hw-static {
   padding: 8px 10px;
@@ -3720,7 +3528,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-/* W-151 点击展开明细 */
+/* 点击展开明细 */
 .hw-cell.expanded {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
   background: var(--surface-soft);
@@ -3805,7 +3613,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* === 璁＄畻鍣?=== */
+/* === 计算器 === */
 .calc {
   display: flex;
   flex-direction: column;
@@ -3836,8 +3644,9 @@ html[data-reduce-motion="1"] .widget-template-panel {
   gap: 8px;
 }
 .calc-result {
+  /* 多行 font: 简写的裸 px 此前绕过按行门禁——改令牌（30→--fs-30）。 */
   font:
-    600 30px/1 Outfit,
+    600 var(--fs-30)/1 Outfit,
     sans-serif;
   color: var(--ink);
   word-break: break-all;
@@ -4040,7 +3849,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .uc-result {
   flex: 1;
   font:
-    600 20px/1 Outfit,
+    600 var(--fs-20)/1 Outfit,
     sans-serif;
   color: var(--accent);
   padding: 8px 12px;
@@ -4142,7 +3951,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
 }
 .uc-all-val {
   font:
-    600 12px/1.2 Outfit,
+    600 var(--fs-12)/1.2 Outfit,
     sans-serif;
   color: var(--ink);
   overflow: hidden;
@@ -4232,7 +4041,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .uc-hist-chevron.open {
   transform: rotate(180deg);
 }
-/* 换算历史折叠：常驻挂载 + grid-rows 0fr→1fr（W-151 同款），容器高度不再硬切。 */
+/* 换算历史折叠：常驻挂载 + grid-rows 0fr→1fr（同款），容器高度不再硬切。 */
 .uc-hist-wrap {
   display: grid;
   grid-template-rows: 0fr;
@@ -4293,7 +4102,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   font-size: var(--fs-10-5);
   color: var(--muted);
 }
-/* === 鍙栬壊鍣?=== */
+/* === 取色器 === */
 .cp {
   display: flex;
   flex-direction: column;
@@ -4330,7 +4139,9 @@ html[data-reduce-motion="1"] .widget-template-panel {
 .cp-field span {
   width: 34px;
 }
-.cp-field button {
+.cp-field :where(button) {
+  /* where 降特异度（0,1,0）——.cp-copy-btn（0,1,0、位序在后）不再
+     需要 !important 救济元素选择器带来的 0,1,1 劣势。 */
   flex: 1;
   display: flex;
   align-items: center;
@@ -4386,7 +4197,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   transition: border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
   padding: 0;
 }
-/* G-4：透明桌面画布 hover 不用 transform（合成层闪白）——描边 + 光环。
+/* 透明桌面画布 hover 不用 transform（合成层闪白）——描边 + 光环。
    光环走 ::after opacity 交叉淡化：色板是 N 格网格 hover 高频目标，
    box-shadow 逐帧插值改为伪元素一次绘制 + 合成器过渡。 */
 .cp-swatch::after {
@@ -4407,7 +4218,9 @@ html[data-reduce-motion="1"] .widget-template-panel {
 }
 .widget-context-menu {
   position: fixed;
-  z-index: var(--z-float-menu);
+  /* 与 .ctx-menu 同层（--z-ctx）：高于配置 popover——文件夹弹层（pin 常驻态）
+     内右键条目的就地菜单不能被弹层本体盖住。 */
+  z-index: var(--z-ctx, 10120);
   min-width: 168px;
   padding: 5px;
   border-radius: var(--rad-10);
@@ -4431,7 +4244,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
     transform: none;
   }
 }
-/* #57 统一弹层退场：widget 内右键菜单关闭时播 ctx-menu-out（useDelayedUnmount
+/* 统一弹层退场：widget 内右键菜单关闭时播 ctx-menu-out（useDelayedUnmount
    延迟卸载），与全局 ContextMenu 同语言。 */
 .widget-context-menu.is-closing {
   animation: ctx-menu-out var(--dur-fx-fast, 0.15s) var(--ease-in) forwards;
@@ -4911,12 +4724,20 @@ html[data-reduce-motion="1"] .widget-template-panel {
   gap: 5px;
   opacity: 0.75;
 }
-/* W-120 鍝嶅害鏁板€硷細绛夊鏁板瓧闃叉姈鍔?*/
+/* 响度数值：等宽数字防抖动 */
 .music-pure-level {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   min-width: 34px;
   text-align: right;
+}
+
+/* 采集管线提示角标（audio:status）：麦克风不可用（告警色）/ 跟随全局。 */
+.music-pure-flag {
+  white-space: nowrap;
+}
+.music-pure-flag.is-warn {
+  color: var(--danger);
 }
 
 .music-pure {
@@ -4968,13 +4789,13 @@ html[data-reduce-motion="1"] .widget-template-panel {
   gap: 10px;
   padding: 10px 8px;
   min-height: 0;
-  /* W-131 滚轮音量浮标的定位基准。 */
+  /* 滚轮音量浮标的定位基准。 */
   position: relative;
 }
-/* W-131 滚轮调应用音量时的回显浮标（约 1.2s 自动消失）。
+/* 滚轮调应用音量时的回显浮标（约 1.2s 自动消失）。
    常驻挂载 + .show 过渡（同 .music-mute-flash 范式）：浮现/消失都走
    opacity/transform 过渡，不再硬切。 */
-/* W-131 滚轮调应用音量时的回显浮标（约 1.2s 自动消失）。 */
+/* 滚轮调应用音量时的回显浮标（约 1.2s 自动消失）。 */
 .np-vol {
   position: absolute;
   top: 6px;
@@ -5009,9 +4830,8 @@ html[data-reduce-motion="1"] .widget-template-panel {
   font-size: var(--fs-12);
   padding: 16px 8px;
 }
-.np-empty-spin {
-  animation: spin var(--dur-spinner, 1s) linear infinite;
-}
+/* P-占用④：np-empty-spin（无媒体时 1s/圈永动）已移除——空态是稳态，
+   loading 语义的无限动画既误导又常驻烧合成器。 */
 .np-cover {
   width: 44px;
   height: 44px;
@@ -5030,7 +4850,7 @@ html[data-reduce-motion="1"] .widget-template-panel {
   object-fit: cover;
   display: block;
 }
-/* W-131 封面可点唤起播放器：hover 勾边 + 亮化提示可点。 */
+/* 封面可点唤起播放器：hover 勾边 + 亮化提示可点。 */
 .np-cover.is-openable {
   cursor: pointer;
   transition:
@@ -5130,6 +4950,8 @@ html:not([data-fx-off~="ambientMotion"]) .np-cover.is-playing > svg {
   border-radius: var(--rad-2);
   background: color-mix(in srgb, var(--ink) 10%, transparent);
   overflow: hidden;
+  /* color-hop 契约：np-bar-hit 键盘聚焦挂轨道呼吸圈，基类补 box-shadow 过渡。 */
+  transition: box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
 }
 .np-bar-fill {
   height: 100%;
@@ -5149,7 +4971,7 @@ html:not([data-fx-off~="ambientMotion"]) .np-cover.is-playing > svg {
 .np-bar-fill.snap {
   transition: filter var(--dur-fx-fast, 0.15s) var(--ease-out);
 }
-/* W-130 进度条可点/可拖 seek：4px 细条外包一层加高 hit 区（易命中），
+/* 进度条可点/可拖 seek：4px 细条外包一层加高 hit 区（易命中），
    拖动交互在组件内用 pointer capture 实现；会话不支持定位时整体禁用。 */
 .np-bar-hit {
   flex: 1;
@@ -5160,8 +4982,18 @@ html:not([data-fx-off~="ambientMotion"]) .np-cover.is-playing > svg {
 .np-bar-hit .np-bar {
   width: 100%;
 }
-.np-bar-hit:hover .np-bar-fill {
+.np-bar-hit:hover .np-bar-fill,
+.np-bar-hit:focus-visible .np-bar-fill {
   filter: brightness(1.15);
+}
+/* 键盘聚焦（role=slider，←/→ seek）：全局 :focus-visible 的 outline 在 4px
+   细条上太窄，改用轨道提亮 + 呼吸圈提示可操作。 */
+.np-bar-hit:focus-visible {
+  outline: none;
+}
+.np-bar-hit:focus-visible .np-bar {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-pill);
 }
 .np-bar-hit.is-disabled {
   cursor: default;
@@ -5202,7 +5034,7 @@ html:not([data-fx-off~="ambientMotion"]) .np-cover.is-playing > svg {
   color: var(--accent);
   border-color: var(--accent);
 }
-/* W-130 能力位禁用：会话不支持的按钮置灰且不再响应 hover。 */
+/* 能力位禁用：会话不支持的按钮置灰且不再响应 hover。 */
 .np-btn:disabled {
   opacity: 0.35;
   cursor: default;
@@ -5266,7 +5098,6 @@ html:not([data-fx-off~="ambientMotion"]) .np-cover.is-playing > svg {
 }
 
 .bt-refresh-float svg,
-.bt-refresh svg,
 .habit-del svg {
   display: block;
 }
@@ -5300,52 +5131,9 @@ html:not([data-fx-off~="ambientMotion"]) .np-cover.is-playing > svg {
   width: 0;
   height: 0;
 }
-.bt-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.bt-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-13);
-  font-weight: 600;
-  color: var(--ink);
-}
-.bt-title svg {
-  color: var(--accent);
-}
-.bt-count {
-  font-size: var(--fs-11);
-  color: var(--muted);
-  font-weight: 400;
-}
-.bt-refresh {
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--muted);
-  border-radius: var(--radius-ctl);
-  width: 28px;
-  height: 28px;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition:
-    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
-}
-.bt-refresh:hover {
-  color: var(--ink);
-}
-.bt-refresh:active {
-  transform: scale(0.94);
-}
-.bt-refresh.done {
-  color: var(--accent);
-  border-color: var(--accent);
-}
+/* .bt-refresh 基类族（base/:hover/:active/.done 共 4 条
+   + .bt-refresh svg 复合成员，~40 行）删除——蓝牙改环形布局后仅存
+   .bt-refresh-float，基类全语料 0 引用。 */
 
 .spin {
   animation: spin var(--dur-spinner, 1s) linear infinite;
@@ -6184,7 +5972,7 @@ html[data-reduce-motion="1"] .widget-skeleton::after {
   padding: 12px 14px 12px;
   background: var(--paper-solid);
   color: var(--ink);
-  /* 进出场（H1）：窗口由 Rust visible(false) 创建、前端就绪握手后显示，
+  /* 进出场：窗口由 Rust visible(false) 创建、前端就绪握手后显示，
      入场动画因此真正可见；关闭前播退场再销毁窗口，对齐命令面板节奏。 */
   animation: quick-note-in var(--dur-fx, 0.2s) var(--ease-out) both;
 }
@@ -6302,8 +6090,7 @@ html[data-reduce-motion="1"] .quick-note {
 .widget-files-empty,
 .bm-empty,
 .mail-empty,
-.widget-gallery-empty,
-.analytics-empty {
+.widget-gallery-empty {
   margin: 10px 6px;
   padding: 22px 16px;
   text-align: center;
@@ -6313,6 +6100,16 @@ html[data-reduce-motion="1"] .quick-note {
   border-radius: var(--rad-14);
   background: color-mix(in srgb, var(--paper-soft) 55%, transparent);
   animation: empty-in var(--anim-dur, 0.25s) var(--ease-out) backwards;
+}
+/* .analytics-empty 成员已摘——空态迁移 EmptyState
+   （fd-empty）完成，全语料 0 引用（global.css 同名规则同批删除）。 */
+/* 蓝牙错误空态 div → button（键盘可达）——button
+   默认不继承字体、光标为 default，仅补这两行重置保持原外观（其余属性上方
+   共享规则已覆盖按钮默认值）。 */
+button.widget-empty {
+  font-family: inherit;
+  line-height: inherit;
+  cursor: pointer;
 }
 @keyframes empty-in {
   from {
@@ -6324,45 +6121,8 @@ html[data-reduce-motion="1"] .quick-note {
     transform: none;
   }
 }
-.widget-reload {
-  color: var(--muted);
-  font-size: var(--fs-12);
-  text-align: center;
-  padding: 20px 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-.widget-reload button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--line);
-  background: var(--paper-soft);
-  color: var(--muted);
-  border-radius: var(--radius-ctl);
-  padding: 4px 10px;
-  font-size: var(--fs-11);
-  cursor: pointer;
-  transition:
-    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
-}
-.widget-reload button:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--surface-hover);
-}
-.widget-reload button:active:not(:disabled) {
-  transform: scale(0.96);
-}
-.widget-reload button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
+/* 已删除 .widget-reload 重载兜底族 5 条规则——
+   全语料 0 引用（加载失败态已由组件内错误渲染承接）。 */
 /* === 系统监控 === */
 .widget-system {
   display: flex;
@@ -6448,11 +6208,11 @@ html[data-reduce-motion="1"] .quick-note {
 
   transition: color var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
 }
-/* 闃堝€煎憡璀︽€併€?*/
+/* 阈值告警（超限值红调） */
 .widget-sys-value.alert {
   color: var(--danger);
 }
-/* 鍔犺浇楠ㄦ灦琛屻€?*/
+/* 加载骨架行 */
 .sys-skeleton-row {
   height: 34px;
   border-radius: var(--rad-8);
@@ -6523,14 +6283,14 @@ html[data-reduce-motion="1"] .quick-note {
 .widget-sys-value.alert {
   color: var(--danger);
 }
-/* W-142 行末迷你趋势曲线 */
+/* 行末迷你趋势曲线 */
 .widget-sys-trend {
   margin-top: 4px;
 }
 .widget-sys-trend .hw-spark {
   height: 22px;
 }
-/* W-146 CPU 每核小格子（任务管理器形态） */
+/* CPU 每核小格子（任务管理器形态） */
 .sys-cores-grid {
   display: flex;
   flex-wrap: wrap;
@@ -6560,7 +6320,7 @@ html[data-reduce-motion="1"] .quick-note {
 }
 .widget-cal-header span {
   font:
-    600 14px/1 Outfit,
+    600 var(--fs-14)/1 Outfit,
     sans-serif;
 }
 .widget-cal-header button {
@@ -6715,7 +6475,7 @@ html[data-reduce-motion="1"] .quick-note {
     transform: rotate(360deg);
   }
 }
-/* W-008 空气质量 + 绱绾胯 */
+/* 空气质量 + 绱绾胯 */
 .widget-weather-aqi {
   display: flex;
   align-items: center;
@@ -6897,7 +6657,7 @@ html[data-reduce-motion="1"] .quick-note {
     transform: none;
   }
 }
-/* 澶氬煄甯傚垏鎹?chips */
+/* 多城市切换 chips */
 .widget-weather-cities {
   display: flex;
   flex-wrap: wrap;
@@ -6984,7 +6744,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
 }
 .widget-weather-temp {
   font:
-    600 42px/1 Outfit,
+    600 var(--fs-42)/1 Outfit,
     sans-serif;
   background: linear-gradient(135deg, var(--ink), color-mix(in srgb, var(--ink) 62%, var(--accent)));
   -webkit-background-clip: text;
@@ -6992,7 +6752,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
   color: transparent;
   font-variant-numeric: tabular-nums;
 }
-/* 首载骨架条（S7）：贴温度字高，加载完成由真实温度替换（继承渐变文字色会不可见，重置底色） */
+/* 首载骨架条：贴温度字高，加载完成由真实温度替换（继承渐变文字色会不可见，重置底色） */
 .widget-weather-temp .widget-weather-temp-sk {
   display: inline-block;
   width: 84px;
@@ -7004,7 +6764,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
 }
 .widget-weather-unit {
   font:
-    600 16px/1 Outfit,
+    600 var(--fs-16)/1 Outfit,
     sans-serif;
   color: var(--muted);
 }
@@ -7094,7 +6854,6 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
     background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
 }
-/* D9 */
 .widget-weather-hour:hover {
   background: var(--surface-hover);
 }
@@ -7292,7 +7051,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
     filter var(--dur-fx, 0.2s) var(--ease-fx, ease),
     box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
 }
-/* G-4：透明悬浮窗内 hover 不用 transform（合成层空白），改描边 + 提亮反馈。 */
+/* 透明悬浮窗内 hover 不用 transform（合成层空白），改描边 + 提亮反馈。 */
 .gal-tile:hover {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
   filter: brightness(1.05);
@@ -7769,7 +7528,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
     border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
 }
-/* G-4：hover 只走描边（桌面画布禁 transform hover）；transform 过渡留给 :active。 */
+/* hover 只走描边（桌面画布禁 transform hover）；transform 过渡留给 :active。 */
 .habit-check:hover {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -8065,7 +7824,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
     box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
 }
-/* G-4：hover 预览改为 tint 底色（11px 小格 scale(1.3) 既闪又遮邻格）。 */
+/* hover 预览改为 tint 底色（11px 小格 scale(1.3) 既闪又遮邻格）。 */
 .habit-patch-cell:hover:not(:disabled) {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 28%, transparent);
@@ -8092,7 +7851,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-icon::before {
     transform: scale(0.92);
   }
 }
-/* === 鍊掕鏃?=== */
+/* === 倒计时 === */
 .cd {
   display: flex;
   flex-direction: column;
@@ -8189,7 +7948,7 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
 }
 .cd-time {
   font:
-    600 32px/1 Outfit,
+    600 var(--fs-32)/1 Outfit,
     sans-serif;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
@@ -8761,7 +8520,7 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   cursor: crosshair;
   touch-action: none;
 }
-/* === 璇剧▼琛紙Wakeup 椋庢牸鍛ㄨ鍥撅級 === */
+/* === 课程表（Wakeup 风格周期） === */
 .tt {
   position: relative;
   display: flex;
@@ -8770,7 +8529,7 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   min-height: 0;
   gap: 8px;
 }
-/* 绌烘€佸紩瀵?*/
+/* 空态引导 */
 .tt-empty {
   flex: 1;
   display: flex;
@@ -8883,11 +8642,99 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   color: var(--ink);
   background: color-mix(in srgb, var(--ink) 6%, transparent);
   border: 1px solid var(--line-soft);
+  /* 徽标即「学期设置」入口（按钮化）：继承视觉，补指针与按压反馈。 */
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-spring);
+}
+.tt-week-badge:hover {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.tt-week-badge:active {
+  transform: scale(0.97);
 }
 .tt-week-badge.now {
   color: var(--btn-fg);
   background: var(--accent);
   border-color: transparent;
+}
+/* 学期设置弹层（Portal 到 body；DatePicker 的日历弹层 absolute 定位在其
+   内部，容器必须 overflow: visible 才不被裁掉）。 */
+.tt-sem-pop {
+  position: fixed;
+  z-index: var(--z-float-menu);
+  width: 236px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--paper-solid);
+  border: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  border-radius: var(--rad-11);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  animation: tt-tip-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+.tt-sem-title {
+  font-size: var(--fs-11);
+  font-weight: 700;
+  color: var(--ink);
+  padding: 0 2px;
+}
+.tt-sem-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tt-sem-label {
+  font-size: var(--fs-11);
+  color: var(--ink);
+  font-weight: 600;
+  flex: none;
+}
+.tt-sem-weeks {
+  width: 76px;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  font-size: var(--fs-12);
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  outline: none;
+  /* color-hop 契约：focus 换 accent 描边，基类补 border-color 过渡。 */
+  transition: border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tt-sem-weeks:focus {
+  border-color: var(--accent);
+}
+.tt-sem-quick {
+  padding: 6px 10px;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tt-sem-quick:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.tt-sem-hint {
+  font-size: var(--fs-9-5);
+  color: var(--muted);
+  padding: 0 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tt-sem-pop {
+    animation: none;
+  }
 }
 .tt-header-actions {
   display: flex;
@@ -8968,7 +8815,7 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   opacity: 0.8;
   font-variant-numeric: tabular-nums;
 }
-/* 鑺傚亣鏃ヨ鏍囷細浼?红调，班=橙调（仅在有数据的日期显示） */
+/* 节假日角标：休=红调，班=橙调（仅在有数据的日期显示） */
 .tt-holiday-badge {
   font-size: var(--fs-9);
   font-weight: 700;
@@ -9261,6 +9108,29 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   transform-origin: 10% 90%;
   animation: tt-tip-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
+/* 可点击形态：条目即「跳去编辑」入口，需要接收指针（悬停意图链：
+   移入浮层取消退场，移出立即收起）。 */
+.tt-conflict-tooltip.interactive {
+  pointer-events: auto;
+}
+.tt-conflict-tooltip.interactive .tt-conflict-item {
+  cursor: pointer;
+  background: none;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: background var(--dur-fx, 0.2s) var(--ease-out);
+}
+.tt-conflict-tooltip.interactive .tt-conflict-item:hover,
+.tt-conflict-tooltip.interactive .tt-conflict-item:focus-visible {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  outline: none;
+}
+.tt-conflict-item.pair .tt-conflict-item-name {
+  font-weight: 600;
+}
 @keyframes tt-tip-in {
   from {
     opacity: 0;
@@ -9356,6 +9226,16 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
 .tt-grid.compact .tt-course-weeks {
   font-size: var(--fs-8-5);
 }
+/* 法定节假日当天的课程弱化显示（配合「休」徽标，提示可能停课）。 */
+.tt-course.offday {
+  opacity: 0.5;
+  filter: saturate(0.35);
+  border-style: dashed;
+}
+.tt-list-item.offday {
+  opacity: 0.55;
+  filter: saturate(0.35);
+}
 
 .tt-footer {
   flex: none;
@@ -9377,7 +9257,7 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   font-size: var(--fs-11);
   color: var(--danger);
 }
-/* 瀵煎叆棰勮妯℃€?*/
+/* 导入预览模板 */
 .tt-preview-overlay {
   position: absolute;
   inset: 0;
@@ -9454,12 +9334,35 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
 }
 .tt-preview-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) 56px 64px minmax(0, 1.2fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(0, 2fr) 56px 64px minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 1fr);
   gap: 6px;
   padding: 4px 8px;
   font-size: var(--fs-11);
   color: var(--ink);
   align-items: center;
+}
+.tt-preview-conflict {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-10);
+  font-weight: 700;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.tt-field-hint {
+  display: block;
+  margin-top: 3px;
+  font-size: var(--fs-9-5);
+  font-style: normal;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.tt-field-hint.warn {
+  color: var(--danger);
 }
 .tt-preview-row.head {
   font-size: var(--fs-10);
@@ -9544,6 +9447,10 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   font-size: var(--fs-11);
   font-family: inherit;
   outline: none;
+  /* 补颜色过渡——下方 :focus 改 border-color 而
+     基类原无过渡，触发 check-transitions 的 color-hop 阻断门禁（hover/focus
+     瞬跳），口径对齐 settings.css 各 select/input。 */
+  transition: border-color var(--dur-fx, 0.2s) var(--ease-fx, ease);
 }
 .tt-session-form select:focus {
   border-color: var(--accent);
@@ -9712,10 +9619,18 @@ html:not([data-fx-off~="ambientMotion"]) .cd-ring.running .cd-ring-tip {
   place-items: center;
   border: 1px solid var(--line);
   background: transparent;
+  /* 视觉 14px 低于 WCAG 2.5.8 最小目标尺寸——透明伪元素把命中区扩到
+     24px（四周各 +5px），不改变视觉大小。 */
+  position: relative;
   transition:
     background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.today-overview-check:not(.done)::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
 }
 .today-overview-check:hover {
   border-color: var(--accent);
@@ -10038,8 +9953,8 @@ html:not([data-fx-off~="ambientMotion"]) .cp-pick-btn.on::after {
     color var(--dur-fx) var(--ease-fx),
     border-color var(--dur-fx) var(--ease-fx);
   width: 30px;
-  flex: none !important;
-  display: grid !important;
+  flex: none;
+  display: grid;
   place-items: center;
   border: 1px solid var(--line);
   background: var(--paper-soft);
@@ -10422,7 +10337,7 @@ html:not([data-fx-off~="ambientMotion"]) .cp-pick-btn.on::after {
   margin-left: auto;
 }
 
-/* --- 1) 璇剧▼琛細鏂规鏍?--- */
+/* --- 1) 课程表：方案栏 --- */
 .tt-profile-bar {
   display: flex;
   align-items: center;
@@ -10715,7 +10630,7 @@ html:not([data-fx-off~="ambientMotion"]) .cp-pick-btn.on::after {
 .widget-cal-ics.loading svg {
   animation: spin var(--dur-spinner, 1s) linear infinite;
 }
-/* --- 4) 鍊掓暟鏃ワ細妯″紡椤电 + 鐩爣琛?--- */
+/* --- 4) 倒计时：模式页签 + 目标行 --- */
 .cd-mode-tabs {
   display: inline-flex;
   align-items: center;
@@ -10968,12 +10883,15 @@ html[data-reduce-motion="1"] .widget-busy-veil {
 .wsel-field.is-open svg {
   transform: rotate(180deg);
 }
+/* portal 到 document.body + fixed——left/top 与
+   min-width（触发钮宽度下限，fixed 的百分比包含块是视口）由 JS 内联写入
+   （布局单位，锚点 gBCR÷uiZoom 快照），CSS 只留视觉与 transform-origin
+   （data-side 翻转 / data-align 对齐边时变换原点跟随触发角）。此前
+   absolute + top:calc(100%+6px) 内联于 .wsel（relative）下，被
+   .widget-card-body 的 overflow:auto 裁剪。 */
 .wsel-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   z-index: var(--z-pop);
-  min-width: 100%;
   padding: 5px;
   background: var(--popover-layer, var(--popover-bg, var(--paper-solid, var(--paper))));
   border: 1px solid var(--line);
@@ -10989,13 +10907,9 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   animation: wsel-in var(--dur-fx-fast, 0.15s) var(--ease-out) both;
 }
 .wsel-pop[data-align="left"] {
-  right: auto;
-  left: 0;
   transform-origin: top left;
 }
 .wsel-pop[data-side="top"] {
-  top: auto;
-  bottom: calc(100% + 6px);
   transform-origin: bottom right;
 }
 .wsel-pop[data-side="top"][data-align="left"] {
@@ -11094,7 +11008,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
 }
 
 /* ================================================================ */
-/* W-145/W-153/W-167/W-168 网络监控增强                              */
+/* 网络监控增强 */
 /* ================================================================ */
 
 /* 系统监控：网络行趋势（↓/↑ 两条堆叠曲线） */
@@ -11106,7 +11020,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
 .widget-sys-trend-net .hw-spark {
   height: 16px;
 }
-/* 系统监控：网卡断开徽标（W-145 幽灵行） */
+/* 系统监控：网卡断开徽标（幽灵行） */
 .widget-sys-net-down {
   margin-left: 6px;
   padding: 0 5px;
@@ -11139,10 +11053,10 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   font-size: var(--fs-9);
   color: var(--muted);
 }
-/* P2-8 任务栏网速条样式已拆至 feature-taskbar-net.css（该窗口走独立精简
+/* 任务栏网速条样式已拆至 feature-taskbar-net.css（该窗口走独立精简
    入口 taskbar-net.html，主入口经 main.tsx 静态加载拆出的样式文件）。 */
 
-/* === 样式预设批量套用（DeskOrder 借鉴 #4）：多选工具栏内 === */
+/* === 样式预设批量套用：多选工具栏内 === */
 .wbatch-preset-wrap {
   position: relative;
   display: grid;
@@ -11155,19 +11069,29 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   left: 50%;
   transform: translateX(-50%);
   min-width: 150px;
+  /* 长预设列表的高度守卫：菜单向上展开，超出视口时收进滚动（按钮锚定菜单
+     无光标坐标可钳制，这是视口钳定的纵向等价物）。 */
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
 }
 .wbatch-preset-empty {
   color: var(--muted);
   cursor: default;
 }
 
-/* === DeskOrder 借鉴 #12：编组容器 === */
+/* === 编组容器 === */
 .widget-group {
   position: absolute;
   display: flex;
   flex-direction: column;
   border-radius: var(--radius-md);
-  background: var(--paper-solid);
+  /* 组级不透明度（--widget-bg-alpha = 全局 × 组 × 预览，GroupCard 内联）与
+     卡片玻璃同一 color-mix 口径；成员各自 opacity 是下一级，逐级相乘。 */
+  background: color-mix(
+    in srgb,
+    var(--paper-opaque, var(--paper-solid, var(--paper))) calc(var(--widget-bg-alpha, 1) * 100%),
+    transparent
+  );
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   backdrop-filter: blur(var(--glass-blur)) saturate(180%);
   border: 1px solid var(--line);
@@ -11179,6 +11103,80 @@ html[data-reduce-motion="1"] .widget-busy-veil {
 .widget-group.editing .widget-group-tabs {
   cursor: grab;
   background: color-mix(in srgb, var(--accent) 10%, var(--paper-solid));
+}
+/* 编辑模式可编辑暗示：虚线轮廓勾出整组边界（与合并投放同一语言），四角
+   手柄显形为实心角标——组体/标签条/把手均可拖，缩放从"看不见的 8px 死区"
+   变成可发现的手势。 */
+.widget-group.editing {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 1px;
+  /* color-hop 契约：selected 态换实线 ring + 外扩光晕，editing 基类补
+     box-shadow 过渡（选中/取消选中光晕渐显渐隐）。 */
+  transition: box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+/* 组选中态：与卡片 .editing.selected 同语言（编辑底是虚线轮廓，选中转
+   实线 accent + 外扩 ring——框选/Ctrl 点选可含组的可视化确认）。 */
+.widget-group.editing.selected {
+  outline: 1.5px solid color-mix(in srgb, var(--accent) 85%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent),
+    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
+    inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent);
+}
+/* 标签条溢出渐隐：外层包裹只承载两端覆盖层（滚动条隐藏、垂直滚轮又不滚
+   横向容器——渐隐是「还能滚」的唯一线索；卡片 has-more-below 同语言）。 */
+.widget-group-tabs-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.widget-group-tabs-wrap::before,
+.widget-group-tabs-wrap::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.widget-group-tabs-wrap::before {
+  left: 0;
+  background: linear-gradient(to right, var(--tabs-fade, var(--paper-solid)), transparent);
+}
+.widget-group-tabs-wrap::after {
+  right: 0;
+  background: linear-gradient(to left, var(--tabs-fade, var(--paper-solid)), transparent);
+}
+.widget-group-tabs-wrap.can-left::before,
+.widget-group-tabs-wrap.can-right::after {
+  opacity: 1;
+}
+/* 编辑模式标签条底是 accent 混色，渐隐端点跟随同色才不突兀。 */
+.widget-group.editing .widget-group-tabs-wrap {
+  --tabs-fade: color-mix(in srgb, var(--accent) 10%, var(--paper-solid));
+}
+.widget-group.editing .widget-group-grip {
+  display: inline-flex;
+  flex: none;
+  align-self: stretch;
+  align-items: center;
+  color: var(--muted);
+  cursor: grab;
+  padding: 0 1px;
+}
+.widget-group.editing [data-resize-handle="nw"],
+.widget-group.editing [data-resize-handle="ne"],
+.widget-group.editing [data-resize-handle="sw"],
+.widget-group.editing [data-resize-handle="se"] {
+  background: color-mix(in srgb, var(--accent) 85%, transparent);
+  border-radius: var(--rad-2);
+  opacity: 0.9;
+}
+.widget-group.editing [data-resize-handle]:hover {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .widget-group-tabs {
   display: flex;
@@ -11192,19 +11190,43 @@ html[data-reduce-motion="1"] .widget-busy-veil {
 .widget-group-tabs::-webkit-scrollbar {
   display: none;
 }
+/* 拖拽摘出会话中被拖的源标签压暗占位（灵动岛 is-drag-source 同语言）。 */
+.widget-group-tab.extracting {
+  opacity: 0.35;
+}
+/* 灵动岛同款插入竖条：条内拖动时预告落位空槽（transform 由组件按包裹层内
+   布局坐标直写，离散跨槽才更新）。 */
+.widget-group-insert-bar {
+  position: absolute;
+  top: 3px;
+  bottom: 1px;
+  left: 0;
+  width: 2px;
+  border-radius: var(--rad-1);
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 3;
+  transition: transform var(--dur-fx-fast) var(--ease-out);
+}
 .widget-group-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: none;
   border-radius: var(--rad-8) var(--rad-8) 0 0;
   background: color-mix(in srgb, var(--ink) 4%, transparent);
   color: var(--muted);
   font-size: var(--fs-11);
   font-weight: 600;
-  padding: 0 10px;
-  max-width: 120px;
+  padding: 0 9px;
+  max-width: 132px;
   cursor: pointer;
+  /* opacity 入列：摘出会话的源标签压暗（.extracting 0.35）随过渡渐变，
+     此前只过渡 bg/color、压暗瞬变。 */
   transition:
     background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
-    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    opacity var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
 }
 .widget-group-tab:hover {
   color: var(--ink);
@@ -11213,8 +11235,20 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent-ink, var(--ink));
 }
+/* 类型图标（浏览器标签 favicon 语言；摘出幽灵克隆标签内容随行）。 */
+.widget-group-tab-ico {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted-2, var(--muted));
+  transition: color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.widget-group-tab.active .widget-group-tab-ico {
+  color: var(--accent);
+}
 .widget-group-tab-name {
   display: inline-block;
+  min-width: 0;
+  flex: 0 1 auto;
   max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -11226,7 +11260,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   padding: 8px;
   overflow: auto;
 }
-/* 切 tab 内容交换：纯 opacity 淡入（key 重挂驱动重播；G-4 桌面层禁 transform）。 */
+/* 切 tab 内容交换：纯 opacity 淡入（key 重挂驱动重播；桌面层禁 transform）。 */
 .widget-group-body-swap {
   animation: group-body-in var(--dur-fx, 0.2s) var(--ease-out, ease-out);
 }
@@ -11238,7 +11272,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
     opacity: 1;
   }
 }
-/* ---- BentoDesk 借鉴 #9：FolderPopup 行内筛选。 ---- */
+/* ---- FolderPopup 行内筛选。 ---- */
 .folder-popup-filter {
   display: flex;
   align-items: center;
@@ -11264,7 +11298,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   color: var(--muted-3);
 }
 
-/* ---- BentoDesk 借鉴 #1 v2：布局历史面板（复用模板面板骨架）。 ---- */
+/* ---- v2：布局历史面板（复用模板面板骨架）。 ---- */
 .widget-template-row-btn.active {
   color: var(--accent, #4f7cff);
   border-color: var(--accent, #4f7cff);
@@ -11274,7 +11308,39 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   font-weight: 600;
 }
 
-/* ---- BentoDesk 借鉴 #3：编组花瓣预览（GroupBloom）。 ---- */
+/* ---- 标签拖出摘成员的跟手幽灵（GroupCard 直挂 body）：fixed 定位坐标由
+   组件按 --ui-zoom 换算（left/top 布局单位，渲染再乘 zoom）；pointer-events
+   关闭不挡命中，data-interactive 让穿透采集上报它的矩形——指针始终在
+   幽灵上，拖动期间窗口保持可交互（手法同 dock-drag-ghost）。 ---- */
+.group-tab-ghost {
+  position: fixed;
+  z-index: var(--z-drag-ghost, 10111);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  /* 幽灵克隆源标签内容（图标 + 名称），布局与标签一致。 */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: var(--rad-8, 10px);
+  background: var(--popover-layer, var(--popover-bg, var(--paper-solid)));
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, var(--line-strong));
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-tint) 30%, transparent);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.group-tab-ghost .widget-group-tab-ico {
+  color: var(--accent);
+}
+/* 拖出标签条（摘出意图）：幽灵半透明预告「松手即摘出」，拖回条内恢复。 */
+.group-tab-ghost.is-removing {
+  opacity: 0.55;
+  transition: opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+
+/* ---- 编组花瓣预览（GroupBloom）。 ---- */
 .group-bloom {
   position: fixed;
   z-index: 60;
@@ -11287,7 +11353,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-ctl);
-  /* --surface 从未定义（曾回退 92% 白底，暗色档白字白底）：改接 A1 求解的
+  /* --surface 从未定义（曾回退 92% 白底，暗色档白字白底）：改接 求解的
      弹层色（跟随自定义背景与不透明度滑条），纯 CSS 直开落 popover-bg。 */
   background: var(--popover-layer, var(--popover-bg, var(--paper-solid)));
   box-shadow: 0 10px 32px color-mix(in srgb, var(--shadow-tint) 36%, transparent);
@@ -11622,7 +11688,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
 }
 
 /* ------------------------------------------------------------------ */
-/*  秒表（借鉴 ClassSoftwareHub #3）：.sw                               */
+/*  秒表：.sw                               */
 /* ------------------------------------------------------------------ */
 
 .sw {
@@ -11755,7 +11821,7 @@ html[data-reduce-motion="1"] .widget-busy-veil {
 }
 
 /* ------------------------------------------------------------------ */
-/*  贴图（借鉴 ClassSoftwareHub #4 钉图）：.pin                         */
+/*  贴图：.pin                         */
 /* ------------------------------------------------------------------ */
 
 .pin {

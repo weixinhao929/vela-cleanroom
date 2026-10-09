@@ -1,7 +1,6 @@
 /* eslint-disable react-refresh/only-export-components -- 纯函数与组件同文件导出供测试（FileBrowserWidget 同款惯例） */
 /**
- * 计算器组件的「编码 / 哈希」页（原独立「编码哈希」小组件并入计算器，
- * ClassSoftwareHub #2）：Base64/URL 编解码（「用作输入」一键回填）、
+ * 计算器组件的「编码 / 哈希」页：Base64/URL 编解码（「用作输入」一键回填）、
  * 文本 / 文件双模式哈希（MD5 / SHA-1 / SHA-256 / SHA-512）。
  * 文件走 Rust 流式命令 hash_file（1MB 块恒定内存，任意大小不吃内存），
  * 文本侧 MD5 用 domain/md5 纯函数、SHA 系用 WebCrypto；粘贴期望值自动

@@ -1,9 +1,9 @@
 /**
- * 便签定时提醒（DeskOrder 借鉴 #8）：Note.remindAt 到点经通知中心提醒
+ * 便签定时提醒：Note.remindAt 到点经通知中心提醒
  * （sourceNotify("note")，受「通知来源」逐源开关 + 免打扰 + 专注静音治理），
  * 发出后清除 remindAt。
  *
- * 错过补发（DeskOrder CheckMissedReminders 的等价简化）：扫描器对
+ * 错过补发：扫描器对
  * remindAt <= now 且未清除的便签一律发出——应用停机期间错过的提醒在下次
  * 启动的首轮扫描自然补发，无需单独路径。
  *
@@ -18,7 +18,7 @@ import { t } from "../i18n-lite";
 /** 便签键前缀（与 notes-store 的 notesKey 一致；单独声明避免循环依赖）。 */
 const NOTES_KEY_PREFIX = "focus-desk.notes.";
 
-/** 扫描间隔：与 DeskOrder ReminderService 的 30s 对齐（提醒粒度 ±30s）。 */
+/** 扫描间隔：与 同类桌面整理工具 ReminderService 的 30s 对齐（提醒粒度 ±30s）。 */
 export const REMINDER_SCAN_MS = 30_000;
 
 /** 首行摘要：清单/空行跳过，截 40 字符。 */
@@ -90,7 +90,7 @@ export function scanNoteReminders(now = new Date()): number {
 }
 
 /**
- * 启动周期扫描（仅主窗口调用一次，D-1 单驱动原则）。立即先扫一轮——
+ * 启动周期扫描（仅主窗口调用一次，单驱动原则）。立即先扫一轮——
  * 错过补发就发生在这一轮。返回停止函数。
  */
 export function startNoteReminderScheduler(): () => void {

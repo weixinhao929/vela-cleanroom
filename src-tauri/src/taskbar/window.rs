@@ -1,14 +1,13 @@
-//! 用户窗口判定与每显示器窗口集合（TB-STATE 感知层的窗口事实源）。
+//! 用户窗口判定与每显示器窗口集合（状态感知层的窗口事实源）。
 //!
-//! - [`is_user_window`]：标杆七条件（windows\window.cpp:188-212）——可见 ∧
+//! - [`is_user_window`]：七条件——可见 ∧
 //!   无 TOOLWINDOW ∧ 未 cloaked(DWMWA_CLOAKED) ∧ 顶层 ∧ 非 NOACTIVATE 或有
-//!   APPWINDOW ∧ 在当前虚拟桌面；外加 CoreWindow 排除（标杆 InsertWindow
-//!   :680 前置跳过 Windows.UI.Core.CoreWindow，那是 shell 自身 UI）。
-//! - [`WindowTable`]：按 hwnd 维护 maximised/normal 两类归属（对齐标杆
-//!   InsertWindow/RemoveWindow :680-741 的集合转移语义），**纯数据结构**，
+//!   APPWINDOW ∧ 在当前虚拟桌面；外加 CoreWindow 排除（前置跳过
+//!   Windows.UI.Core.CoreWindow，那是 shell 自身 UI）。
+//! - [`WindowTable`]：按 hwnd 维护 maximised/normal 两类归属（集合转移语义），**纯数据结构**，
 //!   与 Win32 调用解耦以便单测状态转移表。
 //!
-//! **重入防御（§1.4 / 标杆 .cpp:692-702 注释）**：`IsWindowOnCurrentVirtualDesktop`
+//! **重入防御**：`IsWindowOnCurrentVirtualDesktop`
 //! 会泵消息。本层约定：[`judge_window`] 先收集窗口快照再逐条判定，虚拟桌面
 //! 查询永远放在最后一步；调用方（状态机线程独占持有 [`WindowTable`]）在
 //! 判定期间不持任何锁——钩子回调在独立 WinEvent 线程经 channel 投递，不
@@ -24,8 +23,8 @@ pub type DesktopManager = Option<windows::Win32::UI::Shell::IVirtualDesktopManag
 #[cfg(not(windows))]
 pub type DesktopManager = Option<()>;
 
-/// Windows.UI.Core.CoreWindow：shell 自身 UI（开始 / 搜索宿主等），标杆
-/// constants.hpp:82 —— 永不算用户窗口。
+/// Windows.UI.Core.CoreWindow：shell 自身 UI（开始 / 搜索宿主等）
+/// —— 永不算用户窗口。
 pub const CORE_WINDOW_CLASS: &str = "Windows.UI.Core.CoreWindow";
 
 /// 单窗口一次判定的完整快照。`is_user=false` 时其余字段仅供参考。
@@ -61,10 +60,10 @@ pub fn window_cloaked(hwnd: isize) -> bool {
     win::window_cloaked(hwnd)
 }
 
-/// 标杆七条件判定 + CoreWindow 排除 + 忽略列表过滤（F-5：命中忽略列表的
+/// 七条件判定 + CoreWindow 排除 + 忽略列表过滤（命中忽略列表的
 /// 窗口不进集合；[`crate::taskbar::resolve_active_state`] 内部会再过滤一次，
 /// 两层过滤幂等）。`vdm` 为懒创建的 IVirtualDesktopManager（None = COM
-/// 不可用，虚拟桌面条件按 false 处理，对齐标杆 `value_or(false)`）。
+/// 不可用，虚拟桌面条件按 false 处理）。
 ///
 /// 判定顺序刻意安排：**廉价且不泵消息的检查在前，虚拟桌面查询（会泵）
 /// 永远最后**——前六条任一不满足就不碰 COM。
@@ -139,6 +138,8 @@ mod win {
 
     /// 进程可执行文件名（无路径）。GetWindowThreadProcessId + OpenProcess +
     /// QueryFullProcessImageNameW；任一步失败回空串（匹配恒不命中，安全）。
+    /// OpenProcess 失败（提权窗口/UWP 宿主）时打一次 debug 日志——空串
+    /// 会让 process 规则/忽略静默失效，排障时这是唯一线索。
     fn process_name(hwnd: HWND) -> String {
         unsafe {
             let mut pid = 0u32;
@@ -147,6 +148,9 @@ mod win {
                 return String::new();
             }
             let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                log::debug!(
+                    "taskbar state: OpenProcess(pid={pid}) 失败（提权窗口？），进程名回空，process 规则/忽略对该窗口不生效"
+                );
                 return String::new();
             };
             let mut buf = [0u16; 512];
@@ -188,7 +192,7 @@ mod win {
         }
     }
 
-    /// 标杆七条件（window.cpp:188-212）。顺序：先做不泵消息的检查，
+    /// 七条件。顺序：先做不泵消息的检查，
     /// `IsWindowOnCurrentVirtualDesktop` 最后。
     pub fn judge(
         hwnd: isize,
@@ -213,7 +217,7 @@ mod win {
             let h = to_hwnd(hwnd);
             maximised = IsZoomed(h).as_bool();
             minimised = IsIconic(h).as_bool();
-            // CoreWindow 是 shell 自身 UI，直接排除（标杆 InsertWindow :680）。
+            // CoreWindow 是 shell 自身 UI，直接排除。
             if info.class != CORE_WINDOW_CLASS {
                 let ex_style = WINDOW_EX_STYLE(GetWindowLongPtrW(h, GWL_EXSTYLE) as u32);
                 let is_tool = (ex_style & WS_EX_TOOLWINDOW) == WS_EX_TOOLWINDOW;
@@ -222,13 +226,17 @@ mod win {
                     let no_activate = (ex_style & WS_EX_NOACTIVATE) == WS_EX_NOACTIVATE;
                     let app_window = (ex_style & WS_EX_APPWINDOW) == WS_EX_APPWINDOW;
                     if !no_activate || app_window {
-                        // 最后一步才是会泵消息的虚拟桌面查询（标杆
-                        // on_current_desktop().value_or(false)）。
+                        // 最后一步才是会泵消息的虚拟桌面查询（单次
+                        // 失败按 false）。
+                        // 该语义针对**单次查询失败**；
+                        // 窗口判非用户——visible/maximized 两态永久失效且无提示，
+                        // 任务栏恒桌面态。对象缺失按宽松降级（视为在当前桌面），
+                        // 单次失败仍严格拒绝。
                         let on_desktop = match vdm {
                             Some(m) => m
                                 .IsWindowOnCurrentVirtualDesktop(h)
                                 .is_ok_and(|ok| ok.as_bool()),
-                            None => false,
+                            None => true,
                         };
                         is_user = on_desktop;
                     }
@@ -350,9 +358,8 @@ pub struct WindowEntry {
     pub normal: bool,
 }
 
-/// 按 hwnd 维护的窗口集合表（标杆 TaskbarInfo::MaximisedWindows /
-/// NormalWindows 的合并形态；转移语义对齐 InsertWindow/RemoveWindow
-/// :680-741）。纯数据结构，由状态机线程独占。
+/// 按 hwnd 维护的窗口集合表（maximised/normal 两类合并形态）。
+/// 纯数据结构，由状态机线程独占。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WindowTable {
     entries: HashMap<isize, WindowEntry>,
@@ -363,7 +370,7 @@ impl WindowTable {
         Self::default()
     }
 
-    /// 按判定结果落位（= 标杆 InsertWindow 一支；含"移出"分支）。
+    /// 按判定结果落位（含"移出"分支）。
     /// 返回集合是否发生变化（驱动防抖重求值）。
     pub fn insert(&mut self, hwnd: isize, j: WindowJudgment) -> bool {
         if !j.is_user || j.hmonitor.is_none() {
@@ -392,10 +399,18 @@ impl WindowTable {
         }
     }
 
-    /// 从所有集合移除（= 标杆 RemoveWindow；DESTROY/HIDE/CLOAK/
+    /// 从所有集合移除（DESTROY/HIDE/CLOAK/
     /// MINIMIZESTART 共用）。返回是否发生变化。
     pub fn remove(&mut self, hwnd: isize) -> bool {
         self.entries.remove(&hwnd).is_some()
+    }
+
+    /// 前台窗口信息（审计修复）：表层只收用户窗口（insert 的 is_user
+    /// 门槛），命中即「前台是用户窗口」且直接复用已采快照；缺席（桌面
+    /// Progman/WorkerW 等非用户窗口，或 Insert 未到的乱序瞬态）返回 None
+    /// ——非用户前台不该驱动 Title/Class 规则匹配。
+    pub fn user_window_info(&self, hwnd: isize) -> Option<WindowInfo> {
+        self.entries.get(&hwnd).map(|e| e.info.clone())
     }
 
     pub fn clear(&mut self) {
@@ -477,8 +492,8 @@ mod tests {
         assert!(t.contains(1) && t.entry(1).unwrap().normal && !t.entry(1).unwrap().maximised);
         // 重复同态事件幂等（不触发重求值）。
         assert!(!t.insert(1, j(1, "A", "a.exe", 10, false, true)));
-        // LOCATIONCHANGE 报告最大化 → maximised 集合（normal 撤出，标杆
-        // InsertWindow：先 erase(normal) 再 insert(maximised)）。
+        // LOCATIONCHANGE 报告最大化 → maximised 集合（normal 撤出：
+        // 先 erase(normal) 再 insert(maximised)）。
         assert!(t.insert(1, j(1, "A", "a.exe", 10, true, false)));
         assert!(t.entry(1).unwrap().maximised && !t.entry(1).unwrap().normal);
         // MINIMIZESTART（judgment minimised 且非 maximised）→ 移出全部。

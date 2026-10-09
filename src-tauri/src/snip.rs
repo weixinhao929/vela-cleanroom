@@ -1,4 +1,4 @@
-//! 截图套件（借鉴 ClassSoftwareHub #4）：冻结帧框选 + 标注 + 钉图。
+//! 截图套件：冻结帧框选 + 标注 + 钉图。
 //!
 //! 流程：`start_snip` 抓光标所在显示器的整屏位图（GDI BitBlt + CAPTUREBLT，
 //! 含层叠窗口），存 PNG 到 `<appdata>/snip/frame-*.png`，记录元数据，随后
@@ -81,8 +81,17 @@ unsafe fn capture_region(sx: i32, sy: i32, w: u32, h: u32) -> Result<image::Rgba
         ..Default::default()
     };
     let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-    let hbmp = CreateDIBSection(Some(hdc_mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-        .map_err(|_| "创建 DIB 截面失败".to_string())?;
+    // map_err(?) 提前返回会泄漏 hdc_mem/hdc_screen 两个 GDI DC（进程
+    // GDI 句柄上限 10000，DIB 分配失败反复触发会拖垮全应用绘制）——失败
+    // 分支显式释放后再返回。
+    let hbmp = match CreateDIBSection(Some(hdc_mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+        Ok(h) => h,
+        Err(_) => {
+            let _ = DeleteDC(hdc_mem);
+            let _ = ReleaseDC(None, hdc_screen);
+            return Err("创建 DIB 截面失败".into());
+        }
+    };
     if bits.is_null() {
         let _ = DeleteObject(HGDIOBJ(hbmp.0));
         let _ = DeleteDC(hdc_mem);
@@ -179,21 +188,24 @@ pub fn start_snip_internal(app: &tauri::AppHandle) {
 
 fn cleanup_old_frames(dir: &std::path::Path) {
     const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 3600);
+    // （冻结帧无数量上限）：4K 全屏 PNG 单张数 MB，高频截图在 3 天窗口内
+    // 可累积数百 MB 纯垃圾（PENDING_FRAME 只留最新一张元数据）。mtime 倒序
+    // 保留最新 20 帧，其余删除。
+    const MAX_COUNT: usize = 20;
     if let Ok(entries) = std::fs::read_dir(dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("png") {
-                continue;
-            }
-            let stale = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .map(|age| age > MAX_AGE)
-                .unwrap_or(false);
-            if stale {
-                let _ = std::fs::remove_file(&p);
+        let mut frames: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("png"))
+            .filter_map(|e| {
+                let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+                Some((e.path(), mtime))
+            })
+            .collect();
+        frames.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime)); // 新 → 旧
+        for (i, (p, mtime)) in frames.iter().enumerate() {
+            let stale_age = mtime.elapsed().map(|age| age > MAX_AGE).unwrap_or(false);
+            if i >= MAX_COUNT || stale_age {
+                let _ = std::fs::remove_file(p);
             }
         }
     }
@@ -204,13 +216,17 @@ fn show_snip_window(app: &tauri::AppHandle, mx: i32, my: i32, pw: u32, ph: u32, 
     let built = tauri::WebviewWindowBuilder::new(
         app,
         "snip",
-        // C-10：snip.html 精简入口（vite 多页）——不再共用 index.html 全量
+        // snip.html 精简入口（vite 多页）——不再共用 index.html 全量
         // 主包（3.5 万行 CSS 大头 + 双 store 水合）；旧 hash 由 main.tsx
         // 重定向兜底。
         tauri::WebviewUrl::App("snip.html".into()),
     )
     .title("Vela 截图")
-    .position(mx as f64 / scale, my as f64 / scale)
+    // builder 的 position/inner_size 是逻辑单位，创建期按主屏 scale 回乘
+    // 物理坐标——混合 DPI（主屏 100% + 副屏 150%）下除以目标屏 scale 的坐标
+    // 会被错误换算，覆盖窗与实际屏幕错位。改为建窗后（visible(false) 期间）
+    // 用**物理**坐标精确落位。
+    .position(0.0, 0.0)
     .inner_size(pw as f64 / scale, ph as f64 / scale)
     .resizable(false)
     .maximizable(false)
@@ -222,7 +238,12 @@ fn show_snip_window(app: &tauri::AppHandle, mx: i32, my: i32, pw: u32, ph: u32, 
     .visible(false)
     .build();
     match built {
-        Ok(_) => crate::windows::spawn_show_fallback(app, "snip", 3000),
+        Ok(w) => {
+            let _ = w.set_position(tauri::PhysicalPosition::new(mx, my));
+            let _ = w.set_size(tauri::PhysicalSize::new(pw, ph));
+            crate::anticapture::apply_if_enabled(&w);
+            crate::windows::spawn_show_fallback(app, "snip", 3000)
+        }
         Err(e) => log::warn!("snip: build window failed: {e}"),
     }
 }
@@ -241,7 +262,7 @@ pub async fn start_snip(window: tauri::Window) -> Result<(), String> {
 }
 
 /// snip 覆盖窗就绪后取冻结帧元数据（取走即清空，防陈旧帧复用）。
-/// D-9：截图帧路径 + 屏幕物理尺寸只放行给 snip 覆盖窗——低信任窗口
+/// 截图帧路径 + 屏幕物理尺寸只放行给 snip 覆盖窗——低信任窗口
 /// （含 web-preview 远程页）没有理由读待处理的截图。
 #[tauri::command]
 pub fn get_snip_frame(window: tauri::Window) -> Option<SnipFrame> {
@@ -252,7 +273,7 @@ pub fn get_snip_frame(window: tauri::Window) -> Option<SnipFrame> {
 }
 
 /// 「保存」出口：把前端合成的 PNG dataURL 写到用户指定路径。
-/// D-4：任意路径 + 任意内容的文件写原语不允许暴露给全部 trusted 窗口
+/// 任意路径 + 任意内容的文件写原语不允许暴露给全部 trusted 窗口
 /// （widget 层渲染歌词/邮件主题等不可信内容）——收窄到 snip 覆盖窗，
 /// 且载荷必须是真 PNG（魔数校验，防把任意字节写进 .png 名下）。
 #[tauri::command]
@@ -322,7 +343,7 @@ pub struct SnipPinResult {
     pub h: i64,
 }
 
-/// dataURL（data:image/png;base64,…）→ PNG 字节。前缀宽松校验 + D-4 魔数
+/// dataURL（data:image/png;base64,…）→ PNG 字节。前缀宽松校验 + 魔数
 /// 校验：解码结果必须以 PNG 8 字节签名开头，防「PNG 前缀的 dataURL 里裹
 /// 任意字节」绕过写原语的内容约束。
 fn decode_png_data_url(data_url: &str) -> Result<Vec<u8>, String> {

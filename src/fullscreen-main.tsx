@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 全屏展示窗的独立精简入口（fullscreen.html#fullscreen&kind=xx；C-10，对照
+ * 全屏展示窗的独立精简入口（fullscreen.html#fullscreen&kind=xx；，对照
  * taskbar-net.html 模式）。原走 index.html#fullscreen 共用主入口——投影大字
  * 钟的「按键到可见」链路里塞进了 3.5 万行 CSS 大头 + 双 store 水合 + 全部
  * 全局 handler。
@@ -27,6 +27,12 @@ import { logCrash, toCrashFields } from "./lib/crash-log";
 import { hydrateSettingsFromDb } from "./store/settings-store";
 import "./styles/fonts.css";
 import "./styles/global.css";
+/* 动效令牌面（--ease-* 两族 + --dur-* 派生链）定义
+   在 feature-animations.css，vite 多入口不共享 CSS——本窗此前的
+   var(--ease-out) 无定义致整条 animation 简写 unset（入场/退场/爆闪全静默
+   失效），--dur-fx 也恒吃回退字面量。该文件规则全部限定在 .widget-* 等本窗
+   不存在的类名 / fx 闸下，加载无视觉泄漏。 */
+import "./styles/feature-animations.css";
 
 // 首帧即透明：与 main.tsx 同款处置（投影底色由 fullscreen.css 自绘）。
 document.body.classList.add("tm-widget-layer");

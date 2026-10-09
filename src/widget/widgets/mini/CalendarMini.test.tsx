@@ -36,7 +36,7 @@ describe("CalendarMini", () => {
     expect(document.querySelector(".dock-mini-text")).toBeNull();
   });
 
-  it("下一事件：跳过已过去的定时事件，取最早的未开始事件；weekly 锚点在上周同天也命中", () => {
+  it("下一事件：跳过已过去的定时事件，取最早的未开始事件（带时间前缀）；weekly 锚点在上周同天也命中", () => {
     localStorage.setItem(
       KEY("c1"),
       JSON.stringify({
@@ -45,8 +45,8 @@ describe("CalendarMini", () => {
       })
     );
     render(<CalendarMini instanceId="c1" active />);
-    expect(screen.getByText("午餐")).toBeInTheDocument();
-    expect(screen.queryByText("晨会")).toBeNull();
+    expect(screen.getByText("12:00 午餐")).toBeInTheDocument();
+    expect(screen.queryByText(/晨会/)).toBeNull();
   });
 
   it("无定时事件时取今天的全天事件；单位数小时的时间也能正确比较", () => {

@@ -22,6 +22,23 @@ describe("resolveGalleryManifestUrl", () => {
     expect(resolveGalleryManifestUrl("")).toBeNull();
     expect(resolveGalleryManifestUrl("not a url")).toBeNull();
   });
+  it("GitHub tree/blob 分支段识别（默认分支非 main 的仓库）", () => {
+    expect(resolveGalleryManifestUrl("https://github.com/user/vela-presets/tree/master")).toBe(
+      "https://raw.githubusercontent.com/user/vela-presets/master/gallery-manifest.json"
+    );
+    expect(resolveGalleryManifestUrl("https://github.com/user/vela-presets/blob/dev/sub/x")).toBe(
+      "https://raw.githubusercontent.com/user/vela-presets/dev/gallery-manifest.json"
+    );
+    // tree 段后无分支名：回退 main（视为普通仓库地址）。
+    expect(resolveGalleryManifestUrl("https://github.com/user/vela-presets/tree")).toBe(
+      "https://raw.githubusercontent.com/user/vela-presets/main/gallery-manifest.json"
+    );
+  });
+  it("www.github.com 与 github.com 同站处理（浏览器地址栏常带 www）", () => {
+    expect(resolveGalleryManifestUrl("https://www.github.com/user/vela-presets")).toBe(
+      "https://raw.githubusercontent.com/user/vela-presets/main/gallery-manifest.json"
+    );
+  });
 });
 
 describe("safeGalleryFilePath", () => {

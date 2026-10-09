@@ -30,16 +30,21 @@ pub struct OsNotifyActivation {
     pub action: Option<String>,
 }
 
-/// 发送带点击回调的 Windows toast。任何 webview 都可调用（与既有
-/// sourceNotify 的来源门控在前端完成，此处只做展示层）。
+/// 发送带点击回调的 Windows toast。窗口闸门：系统 toast 是钓鱼面
+/// （注入的 web-preview 页可伪造任意标题正文），与 sourceNotify 的来源
+/// 门控双保险——此处按窗口再拦一道。
 #[tauri::command]
 pub fn send_os_notification(
     app: AppHandle,
+    window: tauri::Window,
     title: String,
     body: String,
     source: Option<String>,
     instance_id: Option<String>,
 ) -> Result<(), String> {
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
     let activation = OsNotifyActivation {
         source: source.unwrap_or_else(|| "app".to_string()),
         instance_id,
@@ -63,4 +68,13 @@ pub fn send_os_notification(
             Ok(())
         });
     toast.show().map_err(|e| e.to_string())
+}
+
+/// Rust 侧直发系统 Toast（无点击回调；快捷动作的结果反馈用，如系统代理
+/// 切换）。失败静默——反馈性通知不应让动作本身报错。
+pub fn notify_internal(title: &str, body: &str) {
+    let _ = Toast::new(Toast::POWERSHELL_APP_ID)
+        .title(title)
+        .text2(body)
+        .show();
 }

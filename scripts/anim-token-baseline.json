@@ -27,37 +27,22 @@
   "src/styles/feature-animations.css": {
     "dur": 2,
     "ease": 2,
-    "delay": 38
-  },
-  "src/styles/feature-calendar.css": {
-    "dur": 0,
-    "ease": 0,
-    "delay": 4
+    "delay": 29
   },
   "src/styles/feature-dock.css": {
-    "dur": 10,
+    "dur": 6,
     "ease": 0,
     "delay": 0
   },
   "src/styles/feature-fx.css": {
     "dur": 18,
-    "ease": 3,
-    "delay": 7
+    "ease": 2,
+    "delay": 6
   },
   "src/styles/feature-immersive.css": {
-    "dur": 9,
+    "dur": 7,
     "ease": 1,
     "delay": 0
-  },
-  "src/styles/feature-notifications.css": {
-    "dur": 0,
-    "ease": 0,
-    "delay": 1
-  },
-  "src/styles/feature-polish.css": {
-    "dur": 0,
-    "ease": 0,
-    "delay": 1
   },
   "src/styles/feature-pomodoro.css": {
     "dur": 1,
@@ -70,23 +55,23 @@
     "delay": 0
   },
   "src/styles/global.css": {
-    "dur": 13,
+    "dur": 11,
     "ease": 7,
-    "delay": 15
+    "delay": 13
   },
   "src/styles/settings.css": {
-    "dur": 2,
+    "dur": 8,
     "ease": 1,
     "delay": 2
   },
   "src/styles/widget-anim.css": {
-    "dur": 17,
+    "dur": 19,
     "ease": 3,
-    "delay": 5
+    "delay": 1
   },
   "src/styles/widget.css": {
-    "dur": 18,
-    "ease": 11,
-    "delay": 8
+    "dur": 24,
+    "ease": 12,
+    "delay": 4
   }
 }

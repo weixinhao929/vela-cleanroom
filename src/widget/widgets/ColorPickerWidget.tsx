@@ -30,7 +30,7 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
   const tr = useT();
   const safeTimeout = useSafeTimeout();
   const { config } = useWidgetConfig(instanceId);
-  // 展示的格式：hex / rgb / hsl 及 W-106 扩展格式可独立开关。
+  // 展示的格式：hex / rgb / hsl 及 扩展格式可独立开关。
   const showHex = config.showHex !== false;
   const showRgb = config.showRgb !== false;
   const showHsl = config.showHsl !== false;
@@ -43,16 +43,16 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
   const historyCap = (config.historyCap as number) || 8;
 
   const [hex, setHex] = useState("#81d4fa");
-  /** W-105 HEX 精确输入框的文本态（允许中间态非法，提交时校验）。 */
+  /** HEX 精确输入框的文本态（允许中间态非法，提交时校验）。 */
   const [hexInput, setHexInput] = useState("#81d4fa");
   const [hexBad, setHexBad] = useState(false);
   const [alpha, setAlpha] = useState(1);
   const [copied, setCopied] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [history, setHistory] = useState<HistoryColor[]>(() => loadPickerHistory(instanceId));
-  /** W-108 命名色板（跨实例共享，事件同步）。 */
+  /** 命名色板（跨实例共享，事件同步）。 */
   const [palettes, setPalettes] = useState<Palette[]>(() => loadPalettes());
-  /** W-110 屏幕取色：轮询鼠标下像素，Enter 确认 / Esc 取消。 */
+  /** 屏幕取色：轮询鼠标下像素，Enter 确认 / Esc 取消。 */
   const [picking, setPicking] = useState(false);
   const [sample, setSample] = useState<{ x: number; y: number; hex: string } | null>(null);
   const sampleRef = useRef(sample);
@@ -63,7 +63,7 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
   const [hv, sv, vv] = rgbToHsv(r, g, b);
   const [c, m, y, k] = rgbToCmyk(r, g, b);
 
-  /** 选定颜色（或重新选中）：置顶进历史，容量只约束未固定条目（W-107）。 */
+  /** 选定颜色（或重新选中）：置顶进历史，容量只约束未固定条目。 */
   const saveToHistory = (newHex: string) => {
     const normalized = newHex.toLowerCase();
     setHistory((prev) => {
@@ -87,7 +87,7 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
     saveToHistory(v);
   };
 
-  /** W-105 提交输入框：合法 hex 生效；否则标红退回当前值。 */
+  /** 提交输入框：合法 hex 生效；否则标红退回当前值。 */
   const commitHex = () => {
     const m = HEX_RE.exec(hexInput.trim());
     if (m) {
@@ -113,20 +113,39 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
     }, 1200);
   };
 
-  // 开启「自动复制」时，选色即复制 HEX 到剪贴板。
+  // 开启「自动复制」时，选色即复制 HEX 到剪贴板。：跳过首挂载——hex 未
+  // 持久化（默认 #81d4fa），此前组件每次挂载（重启/切视图）都会把当前色
+  // 静默写进剪贴板，无任何用户动作却覆盖了用户内容。此后仅「色值变化」复制。
+  const mountedRef = useRef(false);
   useEffect(() => {
-    if (autoCopy) void copy(hex);
+    const wasMounted = mountedRef.current;
+    mountedRef.current = true;
+    if (autoCopy && wasMounted) void copy(hex);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy 为组件内闭包，入依赖会每次渲染重复复制
   }, [hex, autoCopy]);
 
-  /* W-108 色板跨实例同步。 */
+  /* 色板跨实例同步：window 事件（同窗）+ Tauri 全局事件（跨窗，
+     color-shared.savePalettes 双发；本窗收到两路只是重读一次同值，无害）。 */
   useEffect(() => {
     const on = () => setPalettes(loadPalettes());
     window.addEventListener(PALETTES_EVENT, on);
-    return () => window.removeEventListener(PALETTES_EVENT, on);
+    let unRemote: (() => void) | null = null;
+    let disposed = false;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen(PALETTES_EVENT, on))
+      .then((un) => {
+        if (disposed) un();
+        else unRemote = un;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      window.removeEventListener(PALETTES_EVENT, on);
+      unRemote?.();
+    };
   }, []);
 
-  /* W-110 屏幕取色模式：事件驱动采样——pointermove 置脏标记，rAF 合帧后每帧
+  /* 屏幕取色模式：事件驱动采样——pointermove 置脏标记，rAF 合帧后每帧
      至多一次 IPC（此前 150ms 轮询 ≈ 6.6 IPC/s）。pick_screen_color 在 Rust 侧
      读全局光标位置，JS 无需传坐标，只要「动过了才采样」；指针静止自然停表，
      不再消耗任何 IPC（此前靠逐拍比较坐标跳过）。 */
@@ -134,12 +153,17 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
     if (!picking || !isTauri()) return;
     let raf = 0;
     let dirty = false;
+    // 卸载后不再采纳在途 IPC 的采样——退出取色模式/组件卸载后 .then
+    // 仍会 setSample，残留陈旧坐标/颜色（下次进入取色短暂显示旧值）。
+    let alive = true;
     const sample = () => {
       raf = 0;
       if (!dirty) return;
       dirty = false;
       invoke<{ x: number; y: number; hex: string }>("pick_screen_color")
-        .then((p) => setSample(p))
+        .then((p) => {
+          if (alive) setSample(p);
+        })
         .catch(() => {});
     };
     const onMove = () => {
@@ -151,7 +175,9 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
     raf = window.requestAnimationFrame(sample);
     window.addEventListener("pointermove", onMove, true);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Enter") {
+      /* IME 组合期 Enter（确认候选词）不当作出色——
+         此处是原生 KeyboardEvent，isComposing 直接在事件上。 */
+      if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
         const cur = sampleRef.current;
         if (cur) pickColor(cur.hex);
@@ -165,6 +191,7 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
     };
     window.addEventListener("keydown", onKey);
     return () => {
+      alive = false;
       if (raf) window.cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("keydown", onKey);
@@ -294,14 +321,14 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
           <>
             <div className={`cp-field cp-hexrow${hexBad ? " bad" : ""}`}>
               <span>HEX</span>
-              {/* W-105 可键入/粘贴精确色值；Enter 或失焦提交。 */}
+              {/* 可键入/粘贴精确色值；Enter 或失焦提交。 */}
               <input
                 className="cp-hex-input"
                 value={hexInput}
                 onChange={(e) => setHexInput(e.target.value)}
                 onBlur={commitHex}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     commitHex();
                   }
@@ -375,7 +402,7 @@ export function ColorPickerWidget({ instanceId }: { instanceId: string }) {
           ))}
         </div>
       )}
-      {/* W-108 命名色板：跨实例共享，色块点击取色，＋ 收藏当前色。 */}
+      {/* 命名色板：跨实例共享，色块点击取色，＋ 收藏当前色。 */}
       {palettes.length > 0 && (
         <div className="cp-palettes">
           {palettes.map((p) => (

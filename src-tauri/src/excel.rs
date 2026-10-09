@@ -73,7 +73,7 @@ fn read_excel_sheet_blocking(path: &str) -> Result<Vec<Vec<String>>, String> {
 
 /// 遍历工作簿所有工作表，把每张表转成字符串矩阵。单表失败不致命。
 fn read_all_sheets(workbook: &mut impl Reader<BufReader<File>>) -> Vec<Vec<Vec<String>>> {
-    // R4（审计）：先按表尺寸（行×列）预检、再展开字符串矩阵。教务导出常含
+    // 先按表尺寸（行×列）预检、再展开字符串矩阵。教务导出常含
     // 整列引用的超大维度表，64MB 的 xlsx 展开后可达数倍内存直至 OOM——
     // 必须在逐格映射之前拒绝（全局 MAX_CELLS 检查在展开之后，来不及）。
     const MAX_SHEET_CELLS: usize = 2_000_000;
@@ -124,7 +124,7 @@ fn cell_to_string(d: &Data) -> String {
 }
 
 /// UTF-8 / GB18030 尝试的 CSV 读取（教务系统导出的 CSV 常是 GBK）。
-/// 完整 RFC4180 状态机：支持引号包裹、引号转义，以及引号字段内换行
+/// 完整 状态机：支持引号包裹、引号转义，以及引号字段内换行
 /// （多行单元格在课程表导出中很常见，不能按行切分）。
 fn read_csv(path: &str) -> Result<Vec<Vec<String>>, String> {
     // 体积上限：GB 级 CSV 全量进内存会长时间占满 worker 甚至 OOM。

@@ -83,9 +83,12 @@ describe("formatRateStyled（W-167 全局显示选项）", () => {
     expect(formatRateStyled(1024 * 1024)).toBe("1.00 MB/s");
   });
 
-  it("bits：值 ×8 且单位换 bps", () => {
-    expect(formatRateStyled(1024, { bits: true })).toBe("8.0 Kbps");
-    expect(formatRateStyled(500, { bits: true })).toBe("3.9 Kbps"); // 500B ×8 = 4000bit ≈ 3.9Kbps
+  it("bits：值 ×8、十进制档位、单位换 bps（与测速结果的 Mbps 口径一致）", () => {
+    expect(formatRateStyled(1024, { bits: true })).toBe("8.2 Kbps"); // 8192 bit ÷ 1000
+    expect(formatRateStyled(500, { bits: true })).toBe("4.0 Kbps"); // 4000 bit ÷ 1000
+    // 1 Mbps = 125 000 B/s：应显示 1.00 Mbps，而不是二进制档的 976.6 Kbps。
+    expect(formatRateStyled(125_000, { bits: true })).toBe("1.00 Mbps");
+    expect(formatRateStyled(125, { bits: true })).toBe("1.0 Kbps");
   });
 
   it("compact：档位字母紧跟数字、省略 /s", () => {

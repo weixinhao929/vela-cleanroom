@@ -1,5 +1,5 @@
 /**
- * FocusTimer 借鉴（MPRIS 插件）：专注期系统媒体自动暂停 / 智能恢复。
+ * （MPRIS 插件）：专注期系统媒体自动暂停 / 智能恢复。
  *
  *  - 专注段开始运行 → 暂停全部在播媒体会话（黑名单除外），记下哪些是
  *    我们暂停的（auto_paused 语义）；
@@ -9,14 +9,14 @@
  *
  * Rust 侧提供两条无状态命令（pomodoro_media_pause_all / pomodoro_media_resume），
  * 会话清单不跨进程持久化——重启丢失 auto_paused 只是少恢复一次，无副作用。
- * 仅挂载在 primary widget 窗口（D-1）。
+ * 仅挂载在 primary widget 窗口。
  */
 
 import { invoke, isTauri } from "./tauri";
 import { onPomodoroEvent, type PomodoroEventName } from "../domain/automation";
 import { useSettingsStore } from "../store/settings-store";
 
-/** 被本引擎暂停的媒体会话 AUMID（FocusTimer 的 auto_paused 集合）。 */
+/** 被本引擎暂停的媒体会话 AUMID（ auto_paused 集合）。 */
 let autoPausedAumids: string[] = [];
 /** 恢复流程互斥（focus-finish 与 break-start 常连续触发）。 */
 let resuming = false;
@@ -41,7 +41,7 @@ async function smartResume(): Promise<void> {
   const aumids = autoPausedAumids;
   autoPausedAumids = [];
   try {
-    // FocusTimer 的恢复前检查：有别处在播（非我们所暂停）就不恢复。
+    // 恢复前检查：有别处在播（非我们所暂停）就不恢复。
     const sessions = await invoke<MediaSessionBrief[]>("list_media_sessions");
     const othersPlaying = (sessions ?? []).some((s) => s.playing && !aumids.includes(s.id));
     if (!othersPlaying) {

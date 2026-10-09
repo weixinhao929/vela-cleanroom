@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { isOnline, subscribeOnline, waitForOnline, __resetOnlineStatusForTests } from "./online-status";
 
 /**
- * 离线感知模块测试（S3）。
+ * 离线感知模块测试。
  *
  * 关注四件事：
  *  1. isOnline 的保守语义：只有明确 false 才判定离线。

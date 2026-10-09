@@ -5,6 +5,7 @@ import {
   mondayOf,
   parseISODate,
   toISODate,
+  weekMatches,
   type TimetableData,
   type TimetableSession
 } from "./timetable";
@@ -23,12 +24,16 @@ export type TimetableConflict = {
 
 const overlaps = (a1: number, a2: number, b1: number, b2: number): boolean => a1 <= b2 && b1 <= a2;
 
-/** 两节课在给定周是否节次重叠。 */
+/** 两节课在给定周是否节次重叠。空周次 = 每周都上（weekMatches 口径）。 */
 function sessionOverlaps(a: TimetableSession, b: TimetableSession): { day: number; weeks: number[] } | null {
   if (a.day !== b.day) return null;
   if (!overlaps(a.startSection, a.endSection, b.startSection, b.endSection)) return null;
-  const weeks = a.weeks.filter((w) => b.weeks.includes(w));
-  return weeks.length ? { day: a.day, weeks } : null;
+  // 任一方空周次（= 每周）时，交叠周取另一方的周次表；双方都空 = 每周重叠
+  //（weeks 为空数组仍算冲突，展示层把空数组理解为「每周」）。
+  const weeks =
+    a.weeks.length === 0 ? b.weeks : b.weeks.length === 0 ? a.weeks : a.weeks.filter((w) => b.weeks.includes(w));
+  if (weeks.length === 0 && a.weeks.length > 0 && b.weeks.length > 0) return null;
+  return { day: a.day, weeks };
 }
 
 /** 全表两两冲突检测（课程数通常 < 100，O(n²) 足够）。 */
@@ -81,14 +86,16 @@ export function sessionsOnDate(
 ): SyncedCourseEvent[] {
   const start = parseISODate(data.semesterStart);
   if (!start) return [];
-  const days = Math.floor((mondayOf(date).getTime() - mondayOf(start).getTime()) / 86400000);
+  // 与 weekNumberFor 同口径的 DST 修正：本地午夜差在 DST 切换周是 N*86400000
+  // ±3600000，floor 会少一天、整周错档（此处此前漏改，仅 weekNumberFor 修过）。
+  const days = Math.round((mondayOf(date).getTime() - mondayOf(start).getTime()) / 86400000);
   const week = Math.floor(days / 7) + 1;
   if (week < 1 || week > data.totalWeeks) return [];
   const day = ((date.getDay() + 6) % 7) + 1;
   const starts = sectionTimes.length ? sectionTimes : DEFAULT_SECTION_TIMES;
   const out: SyncedCourseEvent[] = [];
   for (const s of data.sessions) {
-    if (s.day !== day || !s.weeks.includes(week)) continue;
+    if (s.day !== day || !weekMatches(s.weeks, week)) continue;
     const st = starts[s.startSection - 1] ?? starts[0] ?? "08:00";
     /* 结束时间优先用逐节结束表；缺失时与 ICS 导出同规则：
        最后一节的开始时间 + 45 分钟。 */
@@ -107,7 +114,7 @@ export function sessionsOnDate(
 }
 
 /* ------------------------------------------------------------------ */
-/* 今日课程时段（W-021 提醒 / W-022 实时高亮共用）                     */
+/* 今日课程时段（提醒 / 实时高亮共用） */
 /* ------------------------------------------------------------------ */
 
 export type TodayClassSlot = {
@@ -133,14 +140,15 @@ export function todayClassSlots(
 ): TodayClassSlot[] {
   const start = parseISODate(data.semesterStart);
   if (!start) return [];
-  const days = Math.floor((mondayOf(now).getTime() - mondayOf(start).getTime()) / 86400000);
+  // 同 sessionsOnDate：round 吸收 DST 时区午夜差的 ±1h。
+  const days = Math.round((mondayOf(now).getTime() - mondayOf(start).getTime()) / 86400000);
   const week = Math.floor(days / 7) + 1;
   if (week < 1 || week > data.totalWeeks) return [];
   const day = ((now.getDay() + 6) % 7) + 1;
   const starts = sectionTimes.length ? sectionTimes : DEFAULT_SECTION_TIMES;
   const out: TodayClassSlot[] = [];
   for (const s of data.sessions) {
-    if (s.day !== day || !s.weeks.includes(week)) continue;
+    if (s.day !== day || !weekMatches(s.weeks, week)) continue;
     const st = starts[s.startSection - 1] ?? starts[0] ?? "08:00";
     const en = sectionTimesEnd[s.endSection - 1] || addMinutesToTime(starts[s.endSection - 1] ?? st, 45);
     out.push({ session: s, start: st, end: en, startMin: hhmmMinutes(st), endMin: hhmmMinutes(en) });
@@ -194,7 +202,7 @@ const HOLIDAYS: Record<string, "rest" | "work"> = {
 };
 
 export function holidayKind(iso: string): "rest" | "work" | null {
-  // W-018 远程数据优先（内置表只到 2026，跨年靠在线更新补齐）。
+  // 远程数据优先（内置表只到 2026，跨年靠在线更新补齐）。
   const remote = remoteHoliday(iso);
   if (remote) return remote.off ? "rest" : "work";
   return HOLIDAYS[iso] ?? null;
@@ -237,8 +245,15 @@ export type IcsOptions = {
 /**
  * 课表 → .ics 文本。每节课按周展开为带 RRULE 之外的独立 VEVENT（学期
  * 周次常含单双周/区间，独立事件最直观，且量级 < 千级，日历可承受）。
+ * 自定义节次结束时间（sectionTimesEnd）优先：末节结束时刻直接取表值，
+ * 缺失才回退「末节开始 + 默认时长」。
  */
-export function buildIcs(data: TimetableData, sectionTimes: string[], options: IcsOptions = {}): string {
+export function buildIcs(
+  data: TimetableData,
+  sectionTimes: string[],
+  sectionTimesEnd: string[] = [],
+  options: IcsOptions = {}
+): string {
   const lines: string[] = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -253,8 +268,10 @@ export function buildIcs(data: TimetableData, sectionTimes: string[], options: I
     for (const s of data.sessions) {
       const startMin = sectionTimes[s.startSection - 1] ? hhmmToMin(sectionTimes[s.startSection - 1]) : 8 * 60;
       const endIdx = Math.min(s.endSection, sectionTimes.length) - 1;
-      const endMin =
-        sectionTimes[endIdx] !== undefined
+      const customEnd = sectionTimesEnd[endIdx];
+      const endMin = customEnd
+        ? hhmmToMin(customEnd)
+        : sectionTimes[endIdx] !== undefined
           ? hhmmToMin(sectionTimes[endIdx]) + duration
           : startMin + duration * (s.endSection - s.startSection + 1);
       // 审计修复：weeks=[] 的 UI 语义是"每周都上"（sessionsInWeek 同口径），
@@ -289,8 +306,8 @@ export function buildIcs(data: TimetableData, sectionTimes: string[], options: I
 }
 
 /** 触发浏览器下载 .ics。 */
-export function downloadIcs(data: TimetableData, sectionTimes: string[]): void {
-  const blob = new Blob([buildIcs(data, sectionTimes)], { type: "text/calendar;charset=utf-8" });
+export function downloadIcs(data: TimetableData, sectionTimes: string[], sectionTimesEnd: string[] = []): void {
+  const blob = new Blob([buildIcs(data, sectionTimes, sectionTimesEnd)], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

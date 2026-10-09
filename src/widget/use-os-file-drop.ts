@@ -13,10 +13,10 @@ import { isTauri } from "../lib/tauri";
 import { useFileDragStore } from "./file-drag-store";
 
 export type OsFileDropEvent = {
-  type: "enter" | "over" | "drop";
+  type: "enter" | "over" | "drop" | "leave";
   /** drop / enter 时携带的文件路径；over 可能为空数组。 */
   paths: string[];
-  /** 光标在本窗口视口内的 CSS 像素坐标。 */
+  /** 光标在本窗口视口内的 CSS 像素坐标（leave 无有效光标位，透传 0）。 */
   x: number;
   y: number;
 };
@@ -65,7 +65,14 @@ export function useOsFileDrop(onEvent: (e: OsFileDropEvent) => void) {
               useFileDragStore.getState().setFileDragActive(false);
             }
             if (kind === "enter") void syncGeometry();
-            if (kind === "leave" || !origin) return;
+            // leave 也转发给订阅者——拖出窗口不投放时组件侧的高亮
+            //（osHover / is-over）此前永久滞留到下一次拖入。leave 无有效
+            // 光标位，坐标透传 0（订阅方按 type 判断，不使用坐标）。
+            if (kind === "leave") {
+              cb.current({ type: "leave", paths: [], x: 0, y: 0 });
+              return;
+            }
+            if (!origin) return;
             const x = (ev.payload.position.x - origin.x) / scale;
             const y = (ev.payload.position.y - origin.y) / scale;
             const paths = "paths" in ev.payload ? ev.payload.paths : [];

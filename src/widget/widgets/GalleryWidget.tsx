@@ -16,13 +16,16 @@ import { useDelayedUnmount } from "../../lib/anim";
 import { animDurations } from "../../lib/durations";
 import { useConfirmAction, useDelayedRemoval } from "../../lib/use-confirm-remove";
 import { useTauriEvent } from "../../lib/use-tauri-event";
+/* 漂移墙样式原先在 rb.css（只随设置窗懒 chunk 加载），
+   而本组件是它唯一消费方（桌面小组件窗）——改走组件附带范式随本 chunk 加载。 */
+import "../../styles/gallery-drift.css";
 
 /**
  * `storedPath`：本地图片经 `gallery_import_file` 复制进 app data/gallery 后
  * 的磁盘绝对路径（url 为其 asset 协议地址）。删除时一并清理磁盘文件；
  * 远程 URL 图片无此字段。
  *
- * `thumbUrl`：320px 缩略图的 asset 地址（P2）。网格用它、查看器用原图 ——
+ * `thumbUrl`：320px 缩略图的 asset 地址。网格用它、查看器用原图 ——
  * 之前网格直接渲染原图，9 张 4000×3000 手机照片会让浏览器解码近 1 亿像素、
  * 占用数百 MB 位图内存，仅靠 `object-fit: cover` 缩小显示并不能省下解码成本。
  * 老数据没有这个字段，取值时回退到 `url`，无需迁移。
@@ -53,7 +56,7 @@ const GRADIENTS = [
 function load(instanceId: string): Photo[] {
   const res = loadGallery(instanceId);
   if (!res) return DEMO;
-  // G12：读时截断（导入/备份恢复可带入超量数据），并清理被挤出条目的
+  // 读时截断（导入/备份恢复可带入超量数据），并清理被挤出条目的
   // 磁盘副本 + 落盘截断后的列表，否则孤儿文件永远留在 app data/gallery。
   if (res.evicted.length > 0) {
     evictGalleryFiles(res.evicted);
@@ -75,7 +78,7 @@ export function GalleryWidget({ instanceId }: { instanceId: string }) {
   const showTags = config.showTags !== false;
   const gridGap = (config.gap as number) || 8;
   const thumbShape = (config.thumbShape as string) || "rounded";
-  /** Drift Wall：图片以多列错速漂移的 3D 墙呈现，悬停暂停。 */
+  /** Drift Wall（）：图片以多列错速漂移的 3D 墙呈现，悬停暂停。 */
   const driftWall = config.driftWall === true;
   // 延迟卸载定时器里读取最新列表用（避免闭包捕获旧 photos）。
   const photosRef = useRef<Photo[]>(photos);
@@ -84,7 +87,7 @@ export function GalleryWidget({ instanceId }: { instanceId: string }) {
   const isBroken = (p: Photo) => p.url && failed.has(p.id);
 
   const viewer = viewerIdx === null ? null : (photos[viewerIdx] ?? null);
-  /* D3：查看器对称退场——关闭后保留 160ms 播淡出（此前入场有动画、Esc 关闭瞬消）。 */
+  /* 查看器对称退场——关闭后保留 160ms 播淡出（此前入场有动画、Esc 关闭瞬消）。 */
   const viewerVisible = useDelayedUnmount(viewerIdx !== null, animDurations().fxFastMs);
   const viewerClosing = viewerIdx === null && viewerVisible;
   /* 翻页方向（1 下一张 / -1 上一张）：图片按方向滑入，替代 key 重挂的硬换。 */
@@ -128,6 +131,17 @@ export function GalleryWidget({ instanceId }: { instanceId: string }) {
     if (victim?.storedPath && isTauri()) {
       void invoke("gallery_delete_file", { path: victim.storedPath }).catch(() => {});
     }
+    /* 桌面侧删除此前只写本组件 state（落盘靠下方 photos effect），
+       设置窗「图片管理」无从感知，之后在设置页任意提交会以陈旧列表整表
+       写回复活已删图片。补同款广播（CustomEvent + tauri sync:gallery，与
+       设置页 GalleryConfig.commit 同一套路）；延迟一拍让 photos effect 的
+       persistGallery 先落盘，监听方回读才不会读到旧表。 */
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("focus-desk:gallery-changed", { detail: instanceId }));
+      if (isTauri()) {
+        void import("@tauri-apps/api/event").then(({ emit }) => emit("sync:gallery", { instanceId })).catch(() => {});
+      }
+    }, 0);
   }, 160);
 
   const requestDelete = (id: string) => {
@@ -136,6 +150,10 @@ export function GalleryWidget({ instanceId }: { instanceId: string }) {
 
   useEffect(() => {
     // 只存元数据（路径 + 标签），图片字节在磁盘上。
+    // （演示数据挂载即持久化）：新实例初始 state 是 DEMO 引用——此前
+    // 直接把它写进持久层，之后真导入的图片与假演示条目混存、无法区分。
+    // 演示态不落盘；首次真实增删改时（state 已脱离 DEMO）才持久化。
+    if (photos === DEMO) return;
     persistGallery(instanceId, photos);
   }, [photos, instanceId]);
 
@@ -152,13 +170,18 @@ export function GalleryWidget({ instanceId }: { instanceId: string }) {
     if (payload?.instanceId === instanceId) setPhotos(load(instanceId));
   });
 
-  /** G12：追加并按上限截断（最旧出列；本地导入图连带清理磁盘副本）。
-   *  从 photosRef 取最新列表（防连续快速添加时闭包旧值），副作用留在
-   *  updater 外（StrictMode 双跑安全）。 */
+  /** 追加并按上限截断（最旧出列；本地导入图连带清理磁盘副本）。
+   *  （同 tick 双 append 丢图 + 演示数据混入）：函数式 setState 基于最新
+   *  state 截断（photosRef 只在渲染期同步，同一 tick 两次 append 第二次
+   *  读到旧基座，第一次的图被覆盖）；演示态追加时整组替换为纯用户数据。
+   *  磁盘清理经 microtask 移出 updater（保持纯函数；重复删除无害）。 */
   const appendPhotos = (photo: Photo) => {
-    const { kept, evicted } = trimGallery([...photosRef.current, photo]);
-    evictGalleryFiles(evicted);
-    setPhotos(kept);
+    setPhotos((prev) => {
+      const base = prev === DEMO ? [] : prev;
+      const { kept, evicted } = trimGallery([...base, photo]);
+      if (evicted.length > 0) queueMicrotask(() => evictGalleryFiles(evicted));
+      return kept;
+    });
   };
 
   const add = () => {
@@ -345,7 +368,7 @@ export function GalleryWidget({ instanceId }: { instanceId: string }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Drift Wall（CSS 复刻）：        */
+/* Drift Wall（.dev/components/drift-wall 的 CSS 复刻）：        */
 /* 三列图片以不同速度/方向纵向漂移，平面带透视倾角，上下边缘羽化遮罩；   */
 /* 悬停整墙暂停、单图提亮放大；点击磁贴打开与网格模式同一个查看器。     */
 /* ------------------------------------------------------------------ */

@@ -29,6 +29,7 @@ const entry = (over: Partial<ClipboardEntry> = {}): ClipboardEntry => ({
   kind: "text",
   preview: "零一二三四五六七八九十一二三四五六七八九二十一二三四五六七",
   text: null,
+  text_lines: 1,
   image_file: null,
   image_w: null,
   image_h: null,
@@ -57,14 +58,14 @@ afterEach(() => {
 });
 
 describe("ClipboardMini", () => {
-  it("首帧拉 list 首条（limit 1），文本摘要截到前 24 字；点击回写并闪「已复制」", async () => {
+  it("首帧拉 list_recent 首条（limit 1 + latest，置顶不霸位），文本摘要截到前 24 字；点击回写并闪「已复制」", async () => {
     const onTile = vi.fn();
     render(
       <button onClick={onTile}>
         <ClipboardMini active />
       </button>
     );
-    expect(invokeMock).toHaveBeenCalledWith("list_clipboard_history", { query: null, limit: 1 });
+    expect(invokeMock).toHaveBeenCalledWith("list_clipboard_history", { query: null, limit: 1, latest: true });
     const cell = await screen.findByText("零一二三四五六七八九十一二三四五六七八九二十一二");
     expect(cell).toHaveAttribute("role", "button");
     expect(cell).toHaveAttribute("data-interactive");
@@ -98,6 +99,41 @@ describe("ClipboardMini", () => {
     emit();
     act(() => void vi.advanceTimersByTime(500));
     expect(listCalls()).toBe(2);
+  });
+
+  it("active=false → true 重新激活时补拉一次（不等到下一次复制）", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<ClipboardMini active />);
+    expect(listCalls()).toBe(1);
+    rerender(<ClipboardMini active={false} />);
+    act(() => void vi.advanceTimersByTime(500));
+    expect(listCalls()).toBe(1);
+    rerender(<ClipboardMini active />);
+    expect(listCalls()).toBe(2);
+  });
+
+  it('clipboard:changed 载荷 "pin"（置顶切换）不触发重拉', () => {
+    vi.useFakeTimers();
+    render(<ClipboardMini active />);
+    expect(listCalls()).toBe(1);
+    act(() => eventHandlers.get("clipboard:changed")!("pin"));
+    act(() => void vi.advanceTimersByTime(500));
+    expect(listCalls()).toBe(1);
+  });
+
+  it("文件条目用 FolderClosed 图标（与全量组件一致）", async () => {
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "list_clipboard_history"
+        ? [entry({ kind: "files", preview: "报告.pdf, 图.png", files: '["C:/a/报告.pdf"]' })]
+        : null
+    );
+    const { container } = render(<ClipboardMini active />);
+    await screen.findByText("报告.pdf, 图.png");
+    // lucide 的 className 直接挂在 <svg> 上——.dock-mini-ico 本身就是图标
+    // 元素，断言其标签为 svg（在 svg 内再找 svg 恒为 null）。
+    const ico = container.querySelector(".dock-mini-ico");
+    expect(ico?.tagName.toLowerCase()).toBe("svg");
+    expect(screen.queryByText("图片")).toBeNull();
   });
 
   it("隐私总开关关闭：禁用态 + title 提示，摘要不可点", async () => {

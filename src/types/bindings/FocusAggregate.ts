@@ -2,6 +2,6 @@
 import type { DailyFocusStat } from "./DailyFocusStat";
 
 /**
- * A-4：`aggregate_sessions` 的返回体，全量专注历史按本地日历日聚合。
+ * `aggregate_sessions` 的返回体，全量专注历史按本地日历日聚合。
  */
 export type FocusAggregate = { daily: Array<DailyFocusStat>, };

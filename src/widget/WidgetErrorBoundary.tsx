@@ -9,10 +9,16 @@ interface Props {
   type: string;
   children: ReactNode;
   /** 自定义崩溃占位；传 `null` 表示崩溃后什么都不渲染（外壳类容器用：灵动岛、
-      沉浸遮罩——它们不是"卡片"，默认占位卡放在那里既错位又误导）。 */
-  fallback?: ReactNode;
+      沉浸遮罩——它们不是"卡片"，默认占位卡放在那里既错位又误导）。
+      也接受函数 `(retry) => ReactNode`——需要自定义占位又想给恢复入口的
+      壳层（岛壳 / 岛配置面板）用它渲染可点的「重试」，拿到的是边界的重试
+      动作（清错误态 + 重建子树 + 先跑 onRetry 重新 import）。 */
+  fallback?: ReactNode | ((retry: () => void) => ReactNode);
   /** 捕获到错误后的回调（如把展开态收起，免得遮罩空转、Esc 也没人接）。 */
   onError?: (error: Error) => void;
+  /** 「重试」按下时先回调这里——调用方丢弃缓存的 rejected import
+      （make-resettable-lazy 的 reset），重试才是真的重新拉 chunk。 */
+  onRetry?: () => void;
 }
 
 interface State {
@@ -53,10 +59,20 @@ export class WidgetErrorBoundary extends Component<Props, State> {
     }
   }
 
-  private reset = () => this.setState((s) => ({ error: null, attempt: s.attempt + 1 }));
+  private reset = () => {
+    // 先丢弃缓存的 rejected import 再重建子树——否则 attempt 重建的
+    // 仍是同一个 lazy 实例，重试只是重放已缓存的失败（「重试」永久失效）。
+    try {
+      this.props.onRetry?.();
+    } catch {
+      // 回调异常不得再次抛入边界
+    }
+    this.setState((s) => ({ error: null, attempt: s.attempt + 1 }));
+  };
 
   render() {
     if (this.state.error) {
+      if (typeof this.props.fallback === "function") return this.props.fallback(this.reset);
       if (this.props.fallback !== undefined) return this.props.fallback;
       return (
         <div className="widget-error" role="alert">

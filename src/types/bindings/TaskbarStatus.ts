@@ -3,7 +3,7 @@ import type { TaskbarPhase } from "./TaskbarPhase";
 import type { TaskbarType } from "./TaskbarType";
 
 /**
- * `taskbar:status` 负载 / `get_taskbar_status` 返回体（F-10 状态条）。
+ * `taskbar:status` 负载 / `get_taskbar_status` 返回体（状态条）。
  */
 export type TaskbarStatus = { phase: TaskbarPhase, 
 /**

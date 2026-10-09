@@ -5,7 +5,7 @@
   /* 大面积表面专用软弹（过冲 ≤6%）：窗口/模态等 ≥300px 元素用，
      小控件仍用 --ease-spring 的轻快回弹。anime.js createSpring 分档思想。 */
   --ease-spring-soft: cubic-bezier(0.34, 1.3, 0.64, 1);
-  /* ══ A3 动效两族分档（expressive 基准曲线，源自工作区对标分析）
+  /* ══ 动效两族分档（expressive 基准曲线，源自工作区对标分析）
      升级而非重写：三分法/三档速度/fx 门禁照旧驱动 --anim-dur；本族 token 表达
      「位移用带过冲的 Spatial、状态/颜色用近对称的 fx」的分工。 ══ */
   /* Spatial 过冲族 —— 位移/尺寸/几何变化专用（100% 标准档 = 350/500/650ms）。
@@ -14,6 +14,8 @@
   /* Spatial 过冲族 —— 位移/尺寸/几何变化专用（fast 350 / default 500 / slow 650ms） */
   --ease-spatial-fast: cubic-bezier(0.42, 1.67, 0.21, 0.9);
   --ease-spatial: cubic-bezier(0.38, 1.21, 0.22, 1);
+  /* var() 消费为零，但它是 bezier.ts BEZIER_PRESETS「过冲 · 慢」预设的契约
+     镜像（check-transitions 的 contract-sync 对账要求两侧同在），保留。 */
   --ease-spatial-slow: cubic-bezier(0.39, 1.29, 0.35, 0.98);
   --dur-spatial-fast: calc(var(--anim-dur, 0.25s) * 1.4);
   --dur-spatial: var(--anim-dur-slow, 0.5s);
@@ -32,14 +34,16 @@
      （flipReorder / WidgetCard pos-anim / WidgetExpandOverlay 消费）；
      check-transitions ease-contract 要求三个别名在 src 各至少一处真实消费。 */
   --ease-element-move: var(--ease-spatial-fast);
-  --dur-element-move: var(--dur-spatial-fast);
   /* cardReflow：卡片重排/几何重映射（默认档；widget-anim.css .pos-anim 兜底消费） */
   --ease-card-reflow: var(--ease-spatial);
-  --dur-card-reflow: var(--dur-spatial);
-  /* A4 状态层参数：hover 8% / pressed 12% 叠 On 色，150ms 过渡 */
+  /* --dur-element-move / --dur-card-reflow 两个时长
+     别名删除——全语料 0 引用（ease 侧别名有 check-transitions 契约消费，
+     dur 侧从未被引用；--dur-spatial-fast/--dur-spatial 本体另有 34+/多处
+     消费，不受影响）。 */
+  /* 状态层参数：hover 8% / pressed 12% 叠 On 色，150ms 过渡 */
   --state-layer-hover: 0.08;
   --state-layer-pressed: 0.12;
-  /* Toggle 按压几何（A4，P3 三轮 token 化）：拇指涨径系数与行程。此前
+  /* Toggle 按压几何（三轮 token 化）：拇指涨径系数与行程。此前
      scale(1.28) / translateX(20px) 在 feature-animations / feature-fx /
      feature-polish 三文件逐字重复，改参要同步三处；窄轨道（34px 轨道，
      wcfg-popover 紧凑变体）行程用 --toggle-travel-narrow。 */
@@ -47,14 +51,14 @@
   --toggle-travel: 20px;
   --toggle-travel-narrow: 14px;
 
-  /* B3 自定义曲线：动画页贝塞尔编辑器的产出由 theme-engine 以内联值写入
+  /* 自定义曲线：动画页贝塞尔编辑器的产出由 theme-engine 以内联值写入
      --ease-custom（缺省回退 Spatial 默认档）；--ease-entrance 是小组件入场与
      动画页预览卡消费的语义别名，用户启用自定义曲线时 theme-engine 让它指向
      --ease-custom，未启用回退减速曲线——两处消费同一别名，所见即所得。 */
   --ease-custom: var(--ease-spatial);
   --ease-entrance: var(--ease-out);
-  /* dockQ 弹簧（二.7，借鉴 NotchPeninsula 的统一弹簧）：s(t) = 1 −
-     cos(2π·2.65·t)·e^(−10.8·t)，450ms，峰值过冲 ≈15.8% @150ms。NPS 把岛体
+  /* dockQ 弹簧：s(t) = 1 −
+     cos(2π·2.65·t)·e^(−10.8·t)，450ms，峰值过冲 ≈15.8% @150ms。同类工具 把岛体
      宽 / 高 / 位移 / 形态 morph 全部共用同一条曲线（原话：「同一公式抄三份、
      常量各写一遍，改一处忘一处就会出现这个动画弹、那个不弹」）——Vela 的
      灵动岛几何 morph（收合位移 / 吸附 FLIP / 接管宽度 / 磁贴生长）统一走它，
@@ -71,7 +75,7 @@
   --dur-clock-hand: calc(var(--anim-dur, 0.25s) * 1.6);
 
   --dur-ft-breathe: 2.6s;
-  /* 加载 spinner 统一转速（C3 收敛：历史上 7 处 4 套 keyframes × 4 种时长
+  /* 加载 spinner 统一转速（收敛：历史上 7 处 4 套 keyframes × 4 种时长
      0.8/0.9/1/4s；keyframes 因窗口样式分包各自保留，声明时长统一走本 token）。 */
   --dur-spinner: 1s;
   /* 音乐进度条平滑周期（P-perf 三轮）：组件侧进度显示已 1Hz 节流（减少
@@ -80,7 +84,7 @@
   --dur-np-progress: 1s;
   /* 三.7 每秒 tick 数据填充的统一节奏（进度环 / 硬件条 / 系统条共用）：
      过渡时长必须 ≥ tick 周期（1s），取 1.05s 覆盖 setInterval 漂移间隙，
-     填充始终在途；配 linear 防「动-停」阶梯感（D6）。数据节拍属循环节奏，
+     填充始终在途；配 linear 防「动-停」阶梯感。数据节拍属循环节奏，
      不随速度档（--dur-ft-breathe / --dur-np-progress 同政策）。 */
   --dur-tick-fill: 1.05s;
 }
@@ -125,7 +129,7 @@ html:not([data-fx-off~="elastic"]) .ctx-menu .ctx-item {
     transform: none;
   }
 }
-/* G-4（本文件 1153 行起）：透明桌面画布上 hover 不用 transform——合成层
+/* （本文件 1153 行起）：透明桌面画布上 hover 不用 transform——合成层
    建立瞬间会闪白/闪空。右键菜单在桌面窗与设置窗共用，除 state-layer 底色
    （feature-context-menu.css）外，hover 强调统一走色彩：图标 muted → ink。 */
 .ctx-menu .ctx-item-icon {
@@ -134,12 +138,12 @@ html:not([data-fx-off~="elastic"]) .ctx-menu .ctx-item {
 .ctx-menu .ctx-item:hover .ctx-item-icon {
   color: var(--ink);
 }
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   2. 设置页控件微交互   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ────────────────────────────────────────────────   2. 设置页控件微交互   ──────────────────────────────────────────────── */
 
 .tm-toggle-knob {
   transition: transform var(--dur-fx-slow, 0.3s) var(--ease-spring);
 }
-/* A4 按压几何：拇指按压「涨径」（拇指按压涨径到 28px 的同型语义），
+/* 按压几何：拇指按压「涨径」（拇指按压涨径到 28px 的同型语义），
    18px → ×1.28 ≈ 23px，仍在 24px 轨道内；替代此前的 scaleX 挤压。
    :active 挂在 48px 命中 wrap 上（Toggle DOM 见 shared.tsx）。 */
 .tm-toggle-wrap:active .tm-toggle-knob {
@@ -283,7 +287,7 @@ html:not([data-fx-off~="elastic"]) .tm-check-badge {
 .tm-stepper-btn:active {
   transform: scale(0.94);
 }
-/* 涓嬫媺鑿滃崟椤癸細鎮仠杞诲井鍙崇Щ */
+/* 下拉菜单项：悬停轻微右移 */
 .tm-select-item {
   transition:
     background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
@@ -295,7 +299,7 @@ html:not([data-fx-off~="elastic"]) .tm-check-badge {
 }
 
 .tm-setting-row {
-  /* A4 后 hover 反馈由状态层（::after 8% On 色，见 settings.css）统一承载，
+  /* 后 hover 反馈由状态层（::after 8% On 色，见 settings.css）统一承载，
      此处只保留圆角；fx 档错落入场照旧。 */
   border-radius: var(--radius-ctl);
 }
@@ -317,17 +321,9 @@ html:not([data-fx-off~="elastic"]) .tm-check-badge {
 .tm-btn-secondary:active {
   transform: scale(0.97);
 }
-/* 日期输入 hover 寰厜 */
-.tm-date-input {
-  transition:
-    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
-}
-.tm-date-input:hover {
-  transform: translateY(-1px);
-}
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   3. 小组件层   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* .tm-date-input hover 微光已删——输入件改统一 DatePicker，0 引用
+   。 */
+/* ────────────────────────────────────────────────   3. 小组件层   ──────────────────────────────────────────────── */
 
 html:not([data-fx-off~="listStagger"]) .widget-gallery-card,
 html:not([data-fx-off~="listStagger"]) .tm-gallery-card {
@@ -361,21 +357,22 @@ html:not([data-fx-off~="listStagger"]) .tm-gallery-card {
     color var(--dur-fx, 0.2s) var(--ease-out),
     background var(--dur-fx, 0.2s) var(--ease-fx, ease);
 }
+/* 两族图库卡片共用：悬停图标芯片满填充（设置页 .tm-gallery-card 同款）。
+   此前是 18% 淡 tint——widget 窗口不加载 settings.css，桌面图库对齐设置页
+   视觉后这里必须同为满填充，否则桌面卡片悬停比设置页浅一档。 */
 .tm-gallery-card:hover .tm-gallery-card-icon,
 .widget-gallery-card:hover .widget-gallery-card-icon {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: var(--h, var(--accent));
+  color: var(--h-ink, var(--btn-fg));
 }
 
-/* G-4（见本文件 14.3）：透明桌面画布禁 transform hover——合成层建立瞬间
+/* （见本文件 14.3）：透明桌面画布禁 transform hover——合成层建立瞬间
    闪白/闪空。旧版「磁贴上浮 + 图标 scale」与后文 14.3 着色方案并存且打架
    （着色生效、transform 也在跑），统一收敛到着色：图标 tint 见 14.3，
-   磁贴悬停补一个底色，天气图标改背景 tint。 */
-.tm-shortcut-item,
-.widget-card .launcher-tile {
+   磁贴悬停补一个底色，天气图标改背景 tint。
+    */
+.tm-shortcut-item {
   transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
-}
-.widget-card .launcher-tile:hover {
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
 .widget-card .widget-weather-icon {
   transition: background var(--dur-fx, 0.2s) var(--ease-fx, ease);
@@ -387,7 +384,7 @@ html:not([data-fx-off~="listStagger"]) .tm-gallery-card {
 }
 
 /* 硬件监控 / 系统监控进度条：填充推进由组件内联 transform:scaleX 驱动，
-   此处的 width 过渡是死规则（width 从不变化），已删除（S2 违规清理）。 */
+   此处的 width 过渡是死规则（width 从不变化），已删除（违规清理）。 */
 
 .tm-conn-badge.ok .tm-conn-dot,
 .tm-conn-badge.off .tm-conn-dot {
@@ -415,16 +412,7 @@ html:not([data-fx-off~="ambientMotion"]) .tm-conn-badge.off .tm-conn-dot::after 
     opacity: 0.95;
   }
 }
-/* 鍥惧簱棰勮鍗★細杞诲井鎮仠鍏夋檿 */
-.tm-gallery-preview-card {
-  transition:
-    box-shadow var(--anim-dur, 0.25s) var(--ease-fx, ease),
-    transform var(--dur-fx, 0.2s) var(--ease-out);
-}
-.tm-gallery-preview-card:hover {
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 22%, transparent);
-  transform: translateY(-2px);
-}
+/* 画廊预览卡 hover 微光已删。 */
 
 .tm-btn-primary {
   padding: 6px 20px;
@@ -454,7 +442,7 @@ html:not([data-fx-off~="ambientMotion"]) .tm-conn-badge.off .tm-conn-dot::after 
   transform: none;
   box-shadow: none;
 }
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   6. 璁剧疆绐楀彛鏍囬鏍?/ 鎮诞绐楄鍥惧垏鎹?  鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ──────────────────────────────────────────────   6. 设置窗口标题栏 / 悬浮窗视图切换   ────────────────────────────────────────────── */
 html:not([data-fx-off~="listStagger"]) .tm-titlebar {
   animation: rb-titlebar-in var(--dur-fx-slow, 0.3s) var(--ease-out);
 }
@@ -497,7 +485,7 @@ html:not([data-fx-off~="listStagger"]) .tm-titlebar {
 .widget-editbar-bottom button:active {
   transform: scale(0.94);
 }
-/* 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€   7. 设置页各卡片 / 列表项：hover + 错落入场   鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ────────────────────────────────────────────────   7. 设置页各卡片 / 列表项：hover + 错落入场   ──────────────────────────────────────────────── */
 .tm-monitor-card,
 .tm-conn-card,
 .tm-update-card,
@@ -669,21 +657,9 @@ html:not([data-fx-off~="listStagger"]) .widget-sys-net-item {
 html:not([data-fx-off~="listStagger"]) .widget-shortcut {
   animation: rb-tile-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
-.widget-shortcuts-grid > .widget-shortcut:nth-child(1) {
-  animation-delay: 0s;
-}
-.widget-shortcuts-grid > .widget-shortcut:nth-child(2) {
-  animation-delay: 0.03s;
-}
-.widget-shortcuts-grid > .widget-shortcut:nth-child(3) {
-  animation-delay: 0.06s;
-}
-.widget-shortcuts-grid > .widget-shortcut:nth-child(4) {
-  animation-delay: 0.09s;
-}
-.widget-shortcuts-grid > .widget-shortcut:nth-child(n + 5) {
-  animation-delay: 0.12s;
-}
+/* .widget-shortcuts-grid 容器已不存在（ShortcutsWidget 根类为
+   .widget-shortcuts，逐项错落 nth-child 5 条随之失效删除——
+   门禁复核，0 引用）。 */
 .widget-shortcut {
   transition: transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
 }
@@ -713,7 +689,7 @@ html:not([data-fx-off~="elastic"]) .cp-history .cp-swatch {
 
 /* 热力格 hover 描边环改走 ::after 的 opacity 交叉淡化：月/年热力图上百格
    都是 hover 高频目标，逐帧插值 box-shadow 每帧重绘数据格；伪元素阴影只
-   画一次，过渡期仅合成 opacity（G-4 同款 accent 环，视觉不变）。 */
+   画一次，过渡期仅合成 opacity（同款 accent 环，视觉不变）。 */
 .heat-cell {
   position: relative;
 }
@@ -782,19 +758,19 @@ html:not([data-fx-off~="elastic"]) .tt-preview {
   animation: rb-modal-pop var(--dur-fx-slow, 0.3s) var(--ease-spring-soft);
 }
 
+/* 已从本公共过渡组摘除死选择器成员
+   .clock-style-pill（时钟自绘弹层）、.launcher-clear / .launcher-add-btn
+   （applauncher 退役）——全部 0 引用。 */
 .cp-field button,
 .widget-edit-toolbar-btn,
 .widget-weather-retry,
 .mail-real-badge,
 .calc-copy,
 .uc-copy,
-.clock-style-pill,
 .tt-nav-btn,
 .tt-mini-btn,
 .widget-files-clear,
 .widget-notes-search-clear,
-.launcher-clear,
-.launcher-add-btn,
 .bm-add,
 .bm-cancel {
   transition:
@@ -810,19 +786,16 @@ html:not([data-fx-off~="elastic"]) .tt-preview {
 .mail-real-badge:active,
 .calc-copy:active,
 .uc-copy:active,
-.clock-style-pill:active,
 .tt-nav-btn:active,
 .tt-mini-btn:active,
 .widget-files-clear:active,
 .widget-notes-search-clear:active,
-.launcher-clear:active,
-.launcher-add-btn:active,
 .bm-add:active,
 .bm-cancel:active {
   transform: scale(0.94);
 }
 
-/* 澶у厓绱狅紙钃濈墮鐜級鍙仛蹇収寮忔寜涓嬶紝涓嶈鐩栧叾鏃㈡湁 hover 缩放 */
+/* 大圆元素（蓝牙电池环）只做按压式按下，不覆盖其既有 hover 缩放 */
 .bt-ring-wrap {
   transition:
     transform var(--dur-fx-xfast, 0.12s) var(--ease-spring),
@@ -855,8 +828,7 @@ html:not([data-fx-off~="listStagger"]) .habit-list > .habit-row,
 html:not([data-fx-off~="listStagger"]) .bm-list > .bm-item,
 html:not([data-fx-off~="listStagger"]) .gal-grid > .gal-tile,
 html:not([data-fx-off~="listStagger"]) .widget-cal-grid .widget-cal-cell,
-html:not([data-fx-off~="listStagger"]) .tt-grid > .tt-course,
-html:not([data-fx-off~="listStagger"]) .widget-cal-detail .widget-cal-pop-item {
+html:not([data-fx-off~="listStagger"]) .tt-grid > .tt-course {
   animation: rb-row-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 .habit-list > .habit-row:nth-child(1),
@@ -969,15 +941,13 @@ html:not([data-fx-off~="elastic"]) .pomodoro-event-dropdown .pomodoro-event-item
 }
 
 .widget-notes-search,
-.widget-files-search,
-.launcher-search {
+.widget-files-search {
   transition:
     border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
     box-shadow var(--dur-fx, 0.2s) var(--ease-fx, ease);
 }
 .widget-notes-search:focus-within,
 .widget-files-search:focus-within,
-.launcher-search:focus-within,
 .uc-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
@@ -1102,11 +1072,7 @@ html:not([data-fx-off~="listStagger"]) .cd-controls {
   transform: scale(0.97);
 }
 
-.tm-slider-value {
-  transition:
-    opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-fast, 0.15s) var(--ease-out);
-}
+/* .tm-slider-value 数值淡变已删。 */
 /* 13.10 色块选中：轻弹入 */
 .tm-color-swatch {
   transition:
@@ -1182,14 +1148,7 @@ html:not([data-fx-off~="listStagger"]) .empty-state {
   animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out);
 }
 
-.launcher-tile-icon {
-  transition:
-    color var(--dur-fx, 0.2s) var(--ease-fx, ease),
-    background var(--dur-fx, 0.2s) var(--ease-fx, ease);
-}
-.launcher-tile:hover .launcher-tile-icon {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-}
+/* launcher-tile-icon 悬停动效已随 applauncher 退役删除。 */
 
 .tm-action-row svg {
   transition: color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
@@ -1268,8 +1227,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-alert-icon {
     opacity: 0.75;
   }
 }
-/* 15.5 鎵归噺鎿嶄綔宸ュ叿鏍忔寜閽細hover 弹起 */
-/* 15.5 批量操作工具栏按钮：hover 底色反馈（G-4：透明桌面画布禁 transform
+/* 15.5 批量操作工具栏按钮：hover 底色反馈（透明桌面画布禁 transform
    hover——合成层闪白）；按压回弹（:active）保留 transform。 */
 .widget-batch-btn {
   transition:
@@ -1283,7 +1241,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-weather-alert-icon {
 .widget-batch-btn:active {
   transform: scale(0.94);
 }
-/* 15.6 鏇存柊椤典笅杞?涓嬭浇椤垫寜閽細hover 寰姩 */
+/* 15.6 更新页下载按钮：hover 微动 */
 .tm-update-dl {
   transition:
     transform var(--dur-fx-xfast, 0.12s) var(--ease-spring),

@@ -76,7 +76,7 @@ describe("parseNaturalDateTime", () => {
   });
 });
 
-describe("DeskOrder 借鉴 #5：紧凑日期与 am/pm", () => {
+describe("紧凑日期与 am/pm", () => {
   it("8 位 YYYYMMDD / 6 位 YYMMDD", () => {
     const r8 = parseNaturalDateTime("交报告 20260822", NOW);
     expect(r8!.date.getMonth()).toBe(7);

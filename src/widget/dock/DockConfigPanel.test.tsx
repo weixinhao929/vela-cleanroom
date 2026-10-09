@@ -1,5 +1,5 @@
 /**
- * 编辑模式浮层 DockConfigPanel（ISLAND-CFG · F-6 快捷项 + F-2 入口 c）组件测试：
+ * 编辑模式浮层 DockConfigPanel（ISLAND-CFG · 快捷项 + 入口 c）组件测试：
  * 快捷项（启用 / 吸附 + 偏移 / 悬停 / 接管三开关）经 CORE 动作即时落盘；
  * 已入岛磁贴芯片行 ↑↓ 排序、× 移除、「+」下拉追加（registry 任意类型）。
  */

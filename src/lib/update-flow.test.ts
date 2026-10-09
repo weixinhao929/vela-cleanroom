@@ -1,5 +1,5 @@
 /**
- * 更新链共享逻辑（BentoDesk 借鉴 #10）纯函数测试：严格校验 / 调度判定 /
+ * 更新链共享逻辑纯函数测试：严格校验 / 调度判定 /
  * 跳版 / CAS 门 / 产物名单段化。
  */
 import { afterEach, describe, expect, it } from "vitest";
@@ -39,7 +39,7 @@ describe("isValidManifestVersion（严格版本形态）", () => {
 describe("manifestUrlSafe（下载 URL 附加门槛）", () => {
   it("拒绝非 https（D-1）、携带凭据、带空白的 URL", () => {
     expect(manifestUrlSafe("https://example.com/a.exe")).toBe(true);
-    // D-1：http 源对 MITM 无防御力，更新链已停用（含内网地址）
+    // http 源对 MITM 无防御力，更新链已停用（含内网地址）
     expect(manifestUrlSafe("http://192.168.1.4/pkg.exe")).toBe(false);
     expect(manifestUrlSafe("http://example.com/a.exe")).toBe(false);
     expect(manifestUrlSafe("javascript:alert(1)")).toBe(false);
@@ -94,7 +94,7 @@ describe("CAS 门", () => {
   });
 });
 
-/* ---- [UPD-CH] 通道与发布列表（借鉴 ClassSoftwareHub #6/#7）。 ---- */
+/* ---- [UPD-CH] 通道与发布列表。 ---- */
 
 describe("update channels", () => {
   it("通道跟随构建：-insider 版本默认 Insider", () => {

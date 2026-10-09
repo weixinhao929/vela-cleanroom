@@ -16,14 +16,18 @@ import { ChevronRight, X } from "lucide-react";
 import { useDelayedUnmount } from "../lib/anim";
 import { animDurations } from "../lib/durations";
 import { useDismissable } from "../lib/use-dismissable";
+import { useFocusReturn } from "../lib/use-focus-return";
+import { useSliderDraft } from "../lib/use-slider-draft";
 import { isTauri, invoke } from "../lib/tauri";
 import { useT } from "../i18n-lite";
 import { promptDialog, confirmDialog, alertDialog } from "../components/PromptDialog";
 import { pushAppToast } from "../components/ToastHost";
-/* A-2：跨层 UI 原语直取 components/ui，widget 不再反向 import features/settings。 */
+/* 跨层 UI 原语直取 components/ui，widget 不再反向 import features/settings。 */
 import { Segmented, Stepper, Toggle } from "../components/ui/controls";
 import { M3Slider as Slider } from "../components/ui/M3Slider";
 import { getWidgetMeta } from "./registry";
+import { widgetDisplayName } from "./display-name";
+import { promptRenameInstance } from "./rename";
 import { useWidgetStore } from "./widget-store";
 import { useWidgetConfig, type WidgetConfig } from "./widget-config";
 import { defaultWidgetConfig, sanitizeWidgetConfig } from "./config-schemas";
@@ -42,13 +46,12 @@ import { ALL_TIMEZONES, normalizeZoneInput } from "./clock-timezones";
 import {
   openWidgetSettingsPage,
   placePopover,
+  nextWcfgToken,
+  WCFG_OPEN_EVENT,
   type PopoverAnchor,
   type WidgetConfigPopoverProps
 } from "./WidgetConfigPopover";
 import "../styles/feature-widget-config.css";
-
-const OPEN_EVENT = "focus-desk:widget-config-popover-open";
-let openSeq = 0;
 
 type Placement = ReturnType<typeof placePopover>;
 
@@ -58,17 +61,24 @@ export function WidgetConfigPopoverInner({ instanceId, widgetType, anchor, open,
   /* 退场：关闭后保留 160ms 播 .is-closing 缩放淡出再卸载。 */
   const visible = useDelayedUnmount(open, animDurations().fxFastMs);
   const closing = !open && visible;
+  /* 关闭归还焦点：打开时记录触发元素（齿轮/右键「配置」），关闭
+     （Esc / 外点 / 互斥连坐）即归还——此前焦点跌落 body，键盘用户需重新
+     Tab 定位。记录先于下方 rAF 把焦点移入弹层，记到的才是触发元素。 */
+  useFocusReturn(open);
   const ref = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<PopoverAnchor>(anchor);
   const tokenRef = useRef(0);
   const [pos, setPos] = useState<Placement | null>(null);
+  /* 标题/aria 走显示名（重命名后弹层跟随；派生字符串订阅，改名才重渲）。 */
+  const displayName = useWidgetStore((s) => widgetDisplayName(widgetType, instanceId, s.instances, tr));
 
   /* open 翻真：快照锚点、广播单例令牌、下一帧把焦点移入弹层。 */
   useEffect(() => {
     if (!open) return;
     anchorRef.current = anchor;
-    tokenRef.current = ++openSeq;
-    window.dispatchEvent(new CustomEvent<number>(OPEN_EVENT, { detail: tokenRef.current }));
+    /* 令牌改取全局单源自增（与编组面板同源，见 nextWcfgToken 注释）。 */
+    tokenRef.current = nextWcfgToken();
+    window.dispatchEvent(new CustomEvent<number>(WCFG_OPEN_EVENT, { detail: tokenRef.current }));
     const raf = requestAnimationFrame(() => ref.current?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(raf);
     // anchor 仅在打开瞬间取快照；后续变化不重定位。
@@ -81,12 +91,36 @@ export function WidgetConfigPopoverInner({ instanceId, widgetType, anchor, open,
     const onOther = (e: Event) => {
       if ((e as CustomEvent<number>).detail !== tokenRef.current) onClose();
     };
-    window.addEventListener(OPEN_EVENT, onOther);
-    return () => window.removeEventListener(OPEN_EVENT, onOther);
+    window.addEventListener(WCFG_OPEN_EVENT, onOther);
+    return () => window.removeEventListener(WCFG_OPEN_EVENT, onOther);
   }, [open, onClose]);
 
+  /* 透明度拖动会话的了结从「卸载」改挂
+     「visible 翻假」——壳 armed 首开后 Inner 常驻挂载，Esc/互斥连坐/外点
+     关闭只把 visible 翻假（150ms 退场窗后返回 null），组件并不卸载；若用户
+     按住滑条超过退场窗才松手，WakeSlider 已随 DOM 移除、pointer capture
+     静默丢失，onCommitEnd 永不触发，瞬态 opacityPreview 残留 store。退场窗
+     结束即按预览值落盘（等效完成提交，保留用户意图），只碰本面板管辖的 id；
+     卸载兜底保留（覆盖壳整体拆除的路径）。 */
+  const commitOpacityPreview = useCallback(() => {
+    const st = useWidgetStore.getState();
+    const pv = st.opacityPreview;
+    if (pv && pv.id === instanceId) {
+      st.setOpacityPreview(null);
+      st.updateWidget(instanceId, { opacity: pv.value });
+    }
+  }, [instanceId]);
+  useEffect(() => {
+    if (!visible) commitOpacityPreview();
+  }, [visible, commitOpacityPreview]);
+  useEffect(() => () => commitOpacityPreview(), [commitOpacityPreview]);
+
   /* 定位：渲染后测量实际尺寸（useLayoutEffect 在绘制前完成，无闪动），窗口尺寸
-     变化与内容高度变化（世界时钟增删行）时重算。 */
+     变化与内容高度变化（世界时钟增删行）时重算。三个量同为布局单位——锚点是
+     调用方传入的卡片/组几何（画布布局坐标）、el.offsetWidth 与 innerWidth 都是
+     未缩放值（CSS zoom 下 fixed left/top 渲染再乘 zoom，不换算才能对准锚点）。
+     需要除 uiZoom 的是 gBCR/clientX 这类**视觉**坐标（dock 侧弹层在自己
+     place 里换算）；此前把布局锚点再除一次会在缩放 ≠100% 时向左上漂移。 */
   const place = useCallback(() => {
     const el = ref.current;
     if (!el) return;
@@ -120,6 +154,9 @@ export function WidgetConfigPopoverInner({ instanceId, widgetType, anchor, open,
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // 分层关闭：右键菜单（ctx-menu）开着时第一下 Esc 只关菜单（Host 的
+        // document 捕获处理器随后接手）；这里 stopPropagation 会拦掉它。
+        if (document.querySelector(".ctx-menu")) return;
         e.stopPropagation();
         e.preventDefault();
         onClose();
@@ -160,7 +197,7 @@ export function WidgetConfigPopoverInner({ instanceId, widgetType, anchor, open,
       ref={ref}
       className={`wcfg-popover${closing ? " is-closing" : ""}${pos?.below ? " is-below" : ""}`}
       role="dialog"
-      aria-label={`${tr(meta.name)} ${tr("配置")}`}
+      aria-label={`${displayName} ${tr("配置")}`}
       tabIndex={-1}
       data-interactive
       style={style}
@@ -176,7 +213,7 @@ export function WidgetConfigPopoverInner({ instanceId, widgetType, anchor, open,
       }}
     >
       <div className="wcfg-header">
-        <span className="wcfg-title">{tr(meta.name)}</span>
+        <span className="wcfg-title">{displayName}</span>
         <button type="button" className="wcfg-close" onClick={onClose} aria-label={tr("关闭")} data-interactive>
           <X size={13} />
         </button>
@@ -224,6 +261,18 @@ function InstanceRows({ instanceId }: { instanceId: string }) {
   }, [instanceId, updateWidget]);
   return (
     <>
+      {/* 显示名入口（与卡片右键/设置页同一共享实现，独立卡最高频的就地面
+          此前无重命名入口）。按钮文案即当前自定义名，留空回落「重命名」。 */}
+      <Row label={tr("名称")}>
+        <button
+          type="button"
+          className="wcfg-mini-btn"
+          onClick={() => void promptRenameInstance(instanceId, tr)}
+          data-interactive
+        >
+          {inst?.label?.trim() || tr("重命名")}
+        </button>
+      </Row>
       <Row label={tr("透明度")}>
         <Slider
           label="透明度"
@@ -315,14 +364,14 @@ function QuickFieldRow({
       return (
         <Row label={tr(def.label)}>
           {def.kind === "slider" ? (
-            <Slider
+            <DraftSlider
               label={def.label}
               value={num}
               min={def.min}
               max={def.max}
               step={def.step ?? 1}
               suffix={def.suffix ?? ""}
-              onChange={onChange}
+              onCommit={onChange}
             />
           ) : (
             <Stepper
@@ -380,8 +429,44 @@ function Row({ label, stack, children }: { label: string; stack?: boolean; child
   );
 }
 
+/** quick 滑条拖动期只进草稿、松手一次提交（useSliderDraft）——此前逐
+ *  input 事件都走 commit（zod sanitize + update 落盘 + 跨窗广播），拖一次
+ *  触发几十轮；本文件透明度滑条的「瞬态预览 + onCommitEnd 提交」是同款先例。
+ *  Stepper 是离散控件，维持原样。 */
+function DraftSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  suffix,
+  onCommit
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  suffix: string;
+  onCommit: (v: number) => void;
+}) {
+  const draft = useSliderDraft(onCommit);
+  return (
+    <Slider
+      label={label}
+      value={draft.draft ?? value}
+      min={min}
+      max={max}
+      step={step}
+      suffix={suffix}
+      onChange={draft.slide}
+      onCommitEnd={draft.commitEnd}
+    />
+  );
+}
+
 /* ------------------------------------------------------------------ */
-/*  样式预设卡（DeskOrder 借鉴 #4）：存当前样式 / 套用同类型预设            */
+/*  样式预设卡：存当前样式 / 套用同类型预设            */
 /* ------------------------------------------------------------------ */
 
 function PresetRow({ instanceId, widgetType }: { instanceId: string; widgetType: string }) {
@@ -412,7 +497,9 @@ function PresetRow({ instanceId, widgetType }: { instanceId: string; widgetType:
     if (
       !(await confirmDialog({
         title: tr("删除样式预设"),
-        message: `${tr("确定删除预设「")}${preset.name}${tr("」吗？")}`,
+        /* 整句模板 + {name} 占位符——拼接式（「确定删除预设「」+名+「」吗？」）
+           的语序在英文里不成立，占位符模板才能给出自然译文。 */
+        message: tr("确定删除预设「{name}」吗？", { name: preset.name }),
         danger: true
       }))
     )
@@ -422,7 +509,7 @@ function PresetRow({ instanceId, widgetType }: { instanceId: string; widgetType:
     setSelId("");
   };
 
-  /* BentoDesk 借鉴 #12：预设包导入 / 导出（Rust zip 加固校验 + 前端
+  /* 预设包导入 / 导出（Rust zip 加固校验 + 前端
      zod 重清洗 + 同名跳过；浏览器模式不显示）。 */
   const exportPackage = async () => {
     if (listStylePresets().length === 0) {
@@ -534,7 +621,7 @@ function ZonesEditor({ label, zones, onChange }: { label: string; zones: string[
         </ul>
       )}
       <div className="wcfg-zone-add">
-        {/* W-006 全量时区搜索：datalist 枚举全部 IANA 时区，输入即过滤 */}
+        {/* 全量时区搜索：datalist 枚举全部 IANA 时区，输入即过滤 */}
         <input
           className="wcfg-input"
           list="wcfg-all-timezones"

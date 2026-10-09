@@ -29,7 +29,7 @@ const frame = (cpu: number, mem: number) => ({
   stats: { cpu_usage: cpu, mem_percent: mem, mem_used_gb: 8, mem_total_gb: 16, cores: 8, cpu_per_core: [] },
   disks: [],
   networks: [],
-  battery: { present: false, percent: 0, charging: false }
+  battery: { present: false, percent: 0, charging: false, secs_left: 0 }
 });
 
 beforeEach(() => {
@@ -52,7 +52,7 @@ describe("SystemMini", () => {
     act(() => listeners.get("sys:stats")!({ payload: frame(42.4, 61) }));
     expect(screen.getByText("42%")).toBeInTheDocument();
     expect(screen.getByText("61%")).toBeInTheDocument();
-    // W-145：CPU/MEM/NET 三行细条；NET 行数值显示 ↓ 下载速率（空网络列表 → 0B）。
+    // CPU/MEM/NET 三行细条；NET 行数值显示 ↓ 下载速率（空网络列表 → 0B）。
     expect(document.querySelectorAll(".dock-mini-bar")).toHaveLength(3);
     expect(screen.getByText(/↓/)).toBeInTheDocument();
     expect(document.querySelector(".dock-mini-system")).toHaveClass("dock-mini");

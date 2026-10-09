@@ -1,10 +1,10 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 文件夹悬浮预览小窗（DeskOrder 借鉴 #13）：快捷方式组件里的文件夹条目
+ * 文件夹悬浮预览小窗：快捷方式组件里的文件夹条目
  * 单击不再跳资源管理器，而是就地弹出图标网格浮层——不离开桌面即可浏览、
  * 下钻子文件夹、打开文件；「在资源管理器中打开」保留在浮层头部与条目右键。
  *
- * 定位（DeskOrder ComputePosAndAnchor 的翻侧策略）：锚定条目矩形，优先向
+ * 定位：锚定条目矩形，优先向
  * 右展开，右侧放不下翻到左侧，底部越界贴底钳制；打开动画从靠锚点一侧生长。
  * 纯函数 placeFolderPopup 便于单测。
  *
@@ -12,17 +12,21 @@
  * 列入 useClickThrough 的 OVERLAY_SELECTOR——打开期间整窗可交互，外点才能被
  * 捕获用于关闭（与 wcfg-popover / 右键菜单同语义）。
  *
- * 竞态防护（DeskOrder token 世代校验的等价简化）：
+ * 竞态防护：
  *  - 目录加载世代号守卫：快速下钻时慢请求不得覆盖新目录结果；
  *  - 关闭动画 160ms 后才回调 onClose，期间重复关闭幂等；父组件用 key 换弹
  *    层（换目录）时本实例卸载、关闭计时器随之清除，不会误关后来者。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ArrowUp, File, FolderOpen, RefreshCw, Search, X } from "lucide-react";
+import { ArrowLeft, ArrowUpDown, ArrowUp, Eye, File, FolderOpen, RefreshCw, Search, X } from "lucide-react";
 import { invoke, isTauri } from "../../lib/tauri";
 import { useT } from "../../i18n-lite";
 import { animDurations } from "../../lib/durations";
+import { armPopupClickShield } from "../../lib/click-shield";
+import { isContextMenuOpen } from "../../components/ContextMenu";
+import { cachedAppIcon, storeAppIcon } from "../../lib/app-icon-cache";
+import { pushAppToast } from "../../components/ToastHost";
 import type { PopoverAnchor } from "../WidgetConfigPopover";
 
 type FileEntry = {
@@ -45,7 +49,8 @@ const GAP = 8;
 export type FolderPopupProps = {
   /** 初始目录（真实路径，非 shell: 位置）。 */
   path: string;
-  /** 锚定条目矩形（视口 CSS 像素，getBoundingClientRect 直取）。 */
+  /** 锚定条目矩形（布局单位：调用方把 gBCR 视觉值除回 uiZoom 后传入——
+   *  placeFolderPopup 内与 offsetWidth/innerWidth 等布局值混算）。 */
   anchor: PopoverAnchor;
   onClose: () => void;
 };
@@ -77,12 +82,13 @@ export type Crumb = { name: string; path: string; current: boolean };
 
 /**
  * 面包屑段：深路径只保留
- * 最后 keep 段（更早的折叠为「…」），点击段与下钻同走 navigate——返回栈语义
+ * 最后 keep 段（更早的折叠为「…」；默认 2 段，与卡片态 CRUMB_KEEP 一致
+ * 「最多两条」的用户偏好），点击段与下钻同走 navigate——返回栈语义
  * 不变（祖先也在栈上，返回逐步回退）。路径用 "/" 逐段累积重建（Windows 侧
  * 接受正斜杠）；UNC 根（\\server\share）在此场景（快捷方式指向的普通文件夹）
  * 不多见，不做专门处理。纯函数便于单测。
  */
-export function breadcrumbSegments(dir: string, keep = 3): { items: Crumb[]; truncated: boolean } {
+export function breadcrumbSegments(dir: string, keep = 2): { items: Crumb[]; truncated: boolean } {
   const segs = dir.split(/[\\/]+/).filter(Boolean);
   const total = segs.length;
   const start = Math.max(0, total - keep);
@@ -109,6 +115,9 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
   const [dir, setDir] = useState(path);
   const [stack, setStack] = useState<string[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  /* 显示开关（会话态）：隐藏文件（list_directory 参数）/ 按修改时间排序。 */
+  const [showHidden, setShowHidden] = useState(false);
+  const [sortByTime, setSortByTime] = useState(false);
   const dirRef = useRef(dir);
   dirRef.current = dir;
   const navigate = useCallback((next: string) => {
@@ -124,7 +133,9 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
   };
   const parent = dir.replace(/[\\/][^\\/]+$/, "");
   const atRoot = parent === dir;
-  const crumbs = useMemo(() => breadcrumbSegments(dir), [dir]);
+  /* 面包屑保留段数与卡片态一致（默认 keep=2）：弹层与卡片同一
+     「最多两条」的观感。 */
+  const crumbs = useMemo(() => breadcrumbSegments(dir, 2), [dir]);
 
   /* ---- 关闭：folder-pop-out（--dur-fx-fast）缩放淡出后回调 onClose，+20ms
           余量随速度档；实例卸载（父组件 key 换弹层）时计时器随 effect 清理，
@@ -133,7 +144,10 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const requestClose = useCallback(() => {
-    if (!closing) setClosing(true);
+    if (closing) return;
+    // [CLICK-SHIELD]：退场开始屏蔽连点穿透（默认关）。
+    armPopupClickShield();
+    setClosing(true);
   }, [closing]);
   useEffect(() => {
     if (!closing) return;
@@ -141,7 +155,8 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
     return () => window.clearTimeout(t);
   }, [closing]);
 
-  /* ---- 目录加载：世代号守卫（慢请求不得覆盖新目录）。 ---- */
+  /* ---- 目录加载：世代号守卫（慢请求不得覆盖新目录）。raw 原始序返回，
+          排序收进 memo（排序开关切换不重拉）。 ---- */
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -153,8 +168,8 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
       setLoading(true);
       setError(null);
       try {
-        const list = await invoke<FileEntry[]>("list_directory", { path: dir, showHidden: false });
-        if (seq === loadSeq.current && !disposed) setEntries(sortEntries(list));
+        const list = await invoke<FileEntry[]>("list_directory", { path: dir, showHidden });
+        if (seq === loadSeq.current && !disposed) setEntries(list);
       } catch (e) {
         if (seq === loadSeq.current && !disposed) {
           setError(String(e));
@@ -167,26 +182,40 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
     return () => {
       disposed = true;
     };
-  }, [dir, reloadKey]);
+  }, [dir, reloadKey, showHidden]);
 
-  /* BentoDesk 借鉴 #9：行内筛选——在大目录（200 项展示上限）里就地找文件；
+  /** 排序：目录前置；组内按名称（区域感知）或修改时间倒序。 */
+  const sorted = useMemo(() => {
+    const list = entries ?? [];
+    if (!sortByTime) return sortEntries(list);
+    const mtime = (s: string | null) => {
+      const t = s ? new Date(s).getTime() : 0;
+      return Number.isFinite(t) ? t : 0;
+    };
+    return [...list].sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return mtime(b.modified) - mtime(a.modified);
+    });
+  }, [entries, sortByTime]);
+
+  /* 行内筛选——在大目录（200 项展示上限）里就地找文件；
      筛选作用于完整条目集，能翻出上限之外的内容。 */
   const [query, setQuery] = useState("");
   useEffect(() => {
     setQuery("");
   }, [dir]);
   const visible = useMemo(() => {
-    const list = entries ?? [];
+    const list = sorted;
     const q = query.trim().toLowerCase();
     const filtered = q ? list.filter((e) => e.name.toLowerCase().includes(q)) : list;
     return filtered.slice(0, DISPLAY_LIMIT);
-  }, [entries, query]);
+  }, [sorted, query]);
   const overflow = useMemo(() => {
-    const list = entries ?? [];
+    const list = sorted;
     const q = query.trim().toLowerCase();
     const total = q ? list.filter((e) => e.name.toLowerCase().includes(q)).length : list.length;
     return total > visible.length;
-  }, [entries, query, visible.length]);
+  }, [sorted, query, visible.length]);
 
   /* ---- 真实图标：分批并发提取，icons 只作去重缓存（签名驱动，不进重提循环）。 ---- */
   const [icons, setIcons] = useState<Record<string, string>>({});
@@ -196,11 +225,21 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
     let cancelled = false;
     const pending = visible.filter((e) => !icons[e.path]).slice(0, ICON_LIMIT);
     if (pending.length === 0) return;
+    /* 模块级共享缓存（app-icon-cache）先行：ShortcutsWidget 等其它组件已提取
+       过的路径直接复用；未命中才分批提取并回写共享缓存。 */
+    const seeded: Record<string, string> = {};
+    for (const e of pending) {
+      const hit = cachedAppIcon(e.path);
+      if (hit) seeded[e.path] = hit;
+    }
+    if (Object.keys(seeded).length > 0) setIcons((prev) => ({ ...prev, ...seeded }));
+    const toFetch = pending.filter((e) => !seeded[e.path]);
+    if (toFetch.length === 0) return;
     void (async () => {
-      for (let i = 0; i < pending.length; i += ICON_BATCH) {
+      for (let i = 0; i < toFetch.length; i += ICON_BATCH) {
         if (cancelled) return;
         const results = await Promise.all(
-          pending.slice(i, i + ICON_BATCH).map((e) =>
+          toFetch.slice(i, i + ICON_BATCH).map((e) =>
             invoke<string | null>("get_app_icon", { path: e.path })
               .then((b64) => (b64 ? ([e.path, `data:image/png;base64,${b64}`] as const) : null))
               .catch(() => null)
@@ -208,7 +247,11 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
         );
         if (cancelled) return;
         const next: Record<string, string> = {};
-        for (const r of results) if (r) next[r[0]] = r[1];
+        for (const r of results)
+          if (r) {
+            next[r[0]] = r[1];
+            storeAppIcon(r[0], r[1]);
+          }
         if (Object.keys(next).length > 0) setIcons((prev) => ({ ...prev, ...next }));
       }
     })();
@@ -243,17 +286,21 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
     return () => window.removeEventListener("resize", onResize);
   }, [pos, place]);
 
-  /* ---- 外点 / Esc 关闭（capture 阶段，先于画布与编辑模式的 Esc）。 ---- */
+  /* ---- 外点 / Esc 关闭（capture 阶段，先于画布与编辑模式的 Esc）。
+          右键菜单（ctx-menu，app 级 Host 渲染）开着时：菜单内的按下不是
+          「弹层外点」；第一下 Esc 只关菜单（stopPropagation 会拦掉 Host 的
+          document 捕获处理，须放行）。 ---- */
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
+      if ((e.target as HTMLElement | null)?.closest?.(".ctx-menu")) return;
       if (ref.current && !ref.current.contains(e.target as Node)) requestClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        e.preventDefault();
-        requestClose();
-      }
+      if (e.key !== "Escape") return;
+      if (isContextMenuOpen()) return;
+      e.stopPropagation();
+      e.preventDefault();
+      requestClose();
     };
     document.addEventListener("pointerdown", onDown, true);
     window.addEventListener("keydown", onKey, true);
@@ -266,7 +313,12 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
   const openEntry = (entry: FileEntry) => {
     if (!isTauri()) return;
     if (entry.is_dir) navigate(entry.path);
-    else void invoke("open_path", { path: entry.path }).catch(() => {});
+    // 与 ShortcutsWidget.openCustom 同款：打开失败（无关联程序 / 复检间隙被
+    // 删等）不静默，用户不用猜「点了没反应」的原因。
+    else
+      void invoke("open_path", { path: entry.path }).catch(() => {
+        pushAppToast(tr("打开失败"), entry.name, "error");
+      });
   };
 
   if (!isTauri()) return null;
@@ -312,7 +364,7 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
         >
           <ArrowUp size={13} />
         </button>
-        {/* B4 面包屑：点击祖先段就地下钻（返回栈不变）；当前段纯文本高亮。 */}
+        {/* 面包屑：点击祖先段就地下钻（返回栈不变）；当前段纯文本高亮。 */}
         <nav className="folder-popup-crumbs" aria-label={tr("路径")} title={dir}>
           {crumbs.truncated && <span className="folder-popup-crumb-ellipsis">…</span>}
           {crumbs.items.map((c) =>
@@ -336,7 +388,11 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
         <button
           type="button"
           className="folder-popup-act"
-          onClick={() => void invoke("open_path", { path: dir }).catch(() => {})}
+          onClick={() =>
+            void invoke("open_path", { path: dir }).catch(() => {
+              pushAppToast(tr("打开失败"), dir, "error");
+            })
+          }
           aria-label={tr("在资源管理器中打开")}
           title={tr("在资源管理器中打开")}
           data-interactive
@@ -352,6 +408,29 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
           data-interactive
         >
           <RefreshCw size={13} />
+        </button>
+        {/* 显示开关（会话态）：隐藏文件 / 名称⇄修改时间排序。 */}
+        <button
+          type="button"
+          className={`folder-popup-act${showHidden ? " is-on" : ""}`}
+          onClick={() => setShowHidden((v) => !v)}
+          aria-pressed={showHidden}
+          aria-label={tr("显示隐藏文件")}
+          title={tr("显示隐藏文件")}
+          data-interactive
+        >
+          <Eye size={13} />
+        </button>
+        <button
+          type="button"
+          className={`folder-popup-act${sortByTime ? " is-on" : ""}`}
+          onClick={() => setSortByTime((v) => !v)}
+          aria-pressed={sortByTime}
+          aria-label={sortByTime ? tr("排序：按名称") : tr("排序：按时间")}
+          title={sortByTime ? tr("排序：按名称") : tr("排序：按时间")}
+          data-interactive
+        >
+          <ArrowUpDown size={13} />
         </button>
         <button
           type="button"
@@ -424,7 +503,7 @@ export function FolderPopup({ path, anchor, onClose }: FolderPopupProps) {
       </div>
       {overflow && (
         <div className="folder-popup-foot">
-          {tr("仅显示前")} {DISPLAY_LIMIT} {tr("项，共")} {entries!.length} {tr("项")}
+          {tr("仅显示前")} {DISPLAY_LIMIT} {tr("项，共")} {sorted.length} {tr("项")}
         </div>
       )}
     </div>,

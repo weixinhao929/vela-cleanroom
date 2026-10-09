@@ -1,11 +1,13 @@
 /**
  * 连接类小组件的设置页配置表单（天气/邮件/蓝牙等）：
- * 城市解析、IMAP 凭据（系统凭据库）与设备过滤选项。
+ * 城市解析、IMAP 凭据（DPAPI 加密存本地数据库，见 email.rs ）与设备
+ * 过滤选项。
  */
 import { useEffect, useState } from "react";
 import { ClipboardList, Trash2 } from "lucide-react";
 import { invoke, isTauri } from "../../../lib/tauri";
 import { useSafeTimeout } from "../../../lib/use-safe-timeout";
+import { useSliderDraft } from "../../../lib/use-slider-draft";
 import { useShallow } from "zustand/react/shallow";
 import { useSettingsStore, type ClipboardPrivacySettings } from "../../../store/settings-store";
 import { useT } from "../../../i18n-lite";
@@ -40,9 +42,58 @@ export function EmailConfig({ config, update }: { config: WidgetConfig; update: 
   const safeTimeout = useSafeTimeout();
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
   const [draft, setDraft] = useState<EmailAccount>(EMPTY_EMAIL_ACCOUNT);
+  /* 刷新间隔 / 每账户条数拖动期草稿、松手一次 update()（同
+     widget-configs TimetableConfig 的 useSliderDraft 用法）。 */
+  const refreshInterval = useSliderDraft((v) => update({ refreshInterval: v }));
+  const maxItems = useSliderDraft((v) => update({ maxItems: v }));
+  /* 端口走字符串草稿、提交（blur/回车）时钳 1–65535 再入 draft
+     （notification-center 推送端口同款）——此前 Number(v)||993 让清空瞬间
+     跳回 993，且无范围校验（0 / 超大数都能进表单）。非法输入回退旧值时
+     闪一条行内提示（否则用户以为改成功了）。 */
+  const [portDraft, setPortDraft] = useState(String(draft.port));
+  const [portRejected, setPortRejected] = useState(false);
+  useEffect(() => setPortDraft(String(draft.port)), [draft.port]);
+  const commitPort = () => {
+    const parsed = Number.parseInt(portDraft, 10);
+    const ok = Number.isFinite(parsed) && parsed >= 1 && parsed <= 65535;
+    const port = ok ? parsed : draft.port;
+    setDraft({ ...draft, port });
+    setPortDraft(String(port));
+    if (!ok) {
+      setPortRejected(true);
+      window.setTimeout(() => setPortRejected(false), 2500);
+    }
+  };
   const [saving, setSaving] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  /* IMAP 连接测试（test_email_account）：配完当场验证，不用等轮询才发现
+     密码/端口错。测试中的账户草稿与服务端校验互不干扰。 */
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
+  const [testOk, setTestOk] = useState(false);
+
+  const testAccount = () => {
+    const payload = { ...draft, email: draft.email.trim(), server: draft.server.trim() };
+    if (!payload.server || !payload.email || !payload.password) {
+      setTestOk(false);
+      setTestMsg(tr("请填写服务器、邮箱与密码"));
+      return;
+    }
+    setTesting(true);
+    setTestMsg(null);
+    invoke<string>("test_email_account", { account: payload })
+      .then(() => {
+        setTestOk(true);
+        setTestMsg(tr("连接成功"));
+        safeTimeout(() => setTestMsg(null), 3000);
+      })
+      .catch((e) => {
+        setTestOk(false);
+        setTestMsg(String(e));
+      })
+      .finally(() => setTesting(false));
+  };
 
   // Load saved accounts on mount (Tauri only)
   useEffect(() => {
@@ -111,12 +162,13 @@ export function EmailConfig({ config, update }: { config: WidgetConfig; update: 
         </div>
         <Slider
           label="刷新间隔"
-          value={(config.refreshInterval as number) || 5}
+          value={refreshInterval.draft ?? ((config.refreshInterval as number) || 5)}
           min={1}
           max={60}
           step={1}
           suffix={tr("分钟")}
-          onChange={(v) => update({ refreshInterval: v })}
+          onChange={refreshInterval.slide}
+          onCommitEnd={refreshInterval.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -126,12 +178,13 @@ export function EmailConfig({ config, update }: { config: WidgetConfig; update: 
         </div>
         <Slider
           label="每账户条数"
-          value={(config.maxItems as number) || 20}
+          value={maxItems.draft ?? ((config.maxItems as number) || 20)}
           min={5}
           max={50}
           step={5}
           suffix={tr("封")}
-          onChange={(v) => update({ maxItems: v })}
+          onChange={maxItems.slide}
+          onCommitEnd={maxItems.commitEnd}
         />
       </div>
       <SettingToggleRow
@@ -189,7 +242,7 @@ export function EmailConfig({ config, update }: { config: WidgetConfig; update: 
                   <button
                     className="tm-shortcut-del"
                     onClick={async () => {
-                      /* B1：删除账户会清空其保存的连接配置（不可撤销），补确认。 */
+                      /* 删除账户会清空其保存的连接配置（不可撤销），补确认。 */
                       if (
                         await confirmDialog({
                           title: tr("删除账户"),
@@ -239,14 +292,24 @@ export function EmailConfig({ config, update }: { config: WidgetConfig; update: 
               className="tm-text-input"
               style={{ width: 96 }}
               type="number"
-              value={draft.port}
+              min={1}
+              max={65535}
+              value={portDraft}
               inputMode="numeric"
-              onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) || 993 })}
+              onChange={(e) => setPortDraft(e.target.value)}
+              onBlur={commitPort}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitPort();
+              }}
               autoComplete="off"
               aria-label={tr("IMAP 端口")}
+              aria-invalid={portRejected}
               data-interactive
             />
           </div>
+          {portRejected && (
+            <p className="tm-setting-error">{tr("端口需为 1–65535 之间的整数，已还原为上次保存的值")}</p>
+          )}
           <div className="tm-setting-row">
             <div className="tm-setting-text">
               <span className="tm-setting-title">{tr("邮箱")}</span>
@@ -290,11 +353,26 @@ export function EmailConfig({ config, update }: { config: WidgetConfig; update: 
             onChange={(v) => setDraft({ ...draft, use_tls: v })}
           />
           <div className="tm-setting-row">
+            <button className="tm-btn-secondary" onClick={testAccount} disabled={testing || saving} data-interactive>
+              {testing ? (
+                <>
+                  <span className="tm-spinner" />
+                  {tr("测试中…")}
+                </>
+              ) : (
+                tr("测试连接")
+              )}
+            </button>
             <button className="tm-btn-primary" onClick={addAccount} disabled={saving} data-interactive>
               {saving ? tr("保存中…") : tr("添加账户")}
             </button>
             {savedMsg && <span className="tm-setting-saved">{savedMsg}</span>}
           </div>
+          {testMsg && (
+            <p className={testOk ? "tm-setting-saved" : "tm-setting-error"} role="status">
+              {testMsg}
+            </p>
+          )}
           {accountError && <p className="tm-setting-error">{accountError}</p>}
           <p className="tm-note">
             {tr("使用应用专用密码（App Password），不要使用主密码。Gmail 需开启 IMAP 并生成应用专用密码。")}
@@ -453,7 +531,6 @@ export function BluetoothConfig({
 export function ClipboardConfig() {
   const tr = useT();
   const clip = useSettingsStore(useShallow((s) => s.general.clipboard));
-  const setGeneral = useSettingsStore((s) => s.setGeneral);
   const safeTimeout = useSafeTimeout();
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -461,7 +538,12 @@ export function ClipboardConfig() {
     setMsg({ ok, text });
     safeTimeout(() => setMsg(null), 2600);
   };
-  const patch = (p: Partial<ClipboardPrivacySettings>) => setGeneral({ clipboard: { ...clip, ...p } });
+  /* （同型，单写者潜伏面）：整节切片写前现取最新基底，与 media
+     切片口径统一——防未来新增写者（如跨窗快捷开关）时复发整节回退。 */
+  const patch = (p: Partial<ClipboardPrivacySettings>) => {
+    const cur = useSettingsStore.getState().general.clipboard;
+    useSettingsStore.getState().setGeneral({ clipboard: { ...cur, ...p } });
+  };
 
   const clearAll = async () => {
     if (clearing) return;
@@ -477,7 +559,7 @@ export function ClipboardConfig() {
       await invoke("clear_clipboard_history");
       flash(true, tr("剪贴板历史已清空"));
     } catch (err) {
-      flash(false, `${tr("清空失败：")}${String(err)}`);
+      flash(false, tr("清空失败：{err}", { err: String(err) }));
     } finally {
       setClearing(false);
     }
@@ -502,7 +584,7 @@ export function ClipboardConfig() {
           />
           <SettingToggleRow
             title="记录文件"
-            desc="文件资源管理器里复制的文件记为文件条目（ZTools 借鉴 #8）"
+            desc="文件资源管理器里复制的文件记为文件条目"
             on={clip.captureFiles}
             onChange={(v) => patch({ captureFiles: v })}
           />

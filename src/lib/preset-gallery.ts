@@ -1,5 +1,5 @@
 /**
- * 在线预设画廊（借鉴 ClassSoftwareHub #9：GitHub 仓库当内容后端）：
+ * 在线预设画廊：
  * 用户配置画廊源（GitHub 仓库地址或 manifest 直链），拉取
  * { version, presets: [...] } 清单 → 卡片列表 → 下载（sha256 强校验 +
  * .part 原子落盘，Rust download_gallery_file）→ 走既有预设包导入链
@@ -24,18 +24,25 @@ export type GalleryPreset = {
 export type InstallResult = { added: number; skipped: number };
 
 /** 画廊源 → manifest 地址：GitHub 仓库地址映射到 raw.githubusercontent
- *  的 gallery-manifest.json（main 分支）；其余按直链使用。 */
+ *  的 gallery-manifest.json；`/tree/<branch>`（或 blob）段识别分支，缺省
+ *  main；其余按直链使用。 */
 export function resolveGalleryManifestUrl(source: string): string | null {
   const src = source.trim();
   if (!src) return null;
   try {
     const u = new URL(src);
     if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-    const host = u.hostname.toLowerCase();
+    // www.github.com 与 github.com 同站（粘贴浏览器地址栏常带 www）。
+    const host = u.hostname.toLowerCase().replace(/^www\.github\.com$/, "github.com");
     if (host === "github.com") {
       const segs = u.pathname.split("/").filter(Boolean);
       if (segs.length < 2 || u.pathname.includes("/releases")) return null;
-      return `https://raw.githubusercontent.com/${segs[0]}/${segs[1]}/main/gallery-manifest.json`;
+      // /tree/<branch>（网页分支视图）或 /blob/<branch>（文件视图）指定分支；
+      // 默认分支不是 main 的仓库此前被硬编码 main 映射到 404。
+      let branch = "main";
+      const ti = segs.findIndex((seg) => seg === "tree" || seg === "blob");
+      if (ti >= 0 && segs.length > ti + 1) branch = segs[ti + 1];
+      return `https://raw.githubusercontent.com/${segs[0]}/${segs[1]}/${branch}/gallery-manifest.json`;
     }
     return u.href;
   } catch {

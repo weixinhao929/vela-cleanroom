@@ -7,12 +7,12 @@ export type NetworkInfo = { name: string,
  */
 rx_bps: number, tx_bps: number, 
 /**
- * W-153 开机以来累计收发字节（sysinfo 绝对计数器，跨采样帧单调递增；
+ * 开机以来累计收发字节（sysinfo 绝对计数器，跨采样帧单调递增；
  * 网卡重置时归零重来，前端仅作展示不作差分）。
  */
 total_received: number, total_transmitted: number, 
 /**
- * W-145 连接状态：true = 本帧在 sysinfo 列表中（sysinfo 会过滤掉媒体
+ * 连接状态：true = 本帧在 sysinfo 列表中（sysinfo 会过滤掉媒体
  * 断开的网卡）；false = 刚断开的幽灵行（保留 `NET_GHOST_FRAMES` 帧）。
  */
 up: boolean, };

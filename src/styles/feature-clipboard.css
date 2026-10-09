@@ -13,6 +13,8 @@
   gap: 8px;
   height: 100%;
   min-height: 0;
+  /* 查看全文浮层（clipw-detail）的定位锚。 */
+  position: relative;
 }
 
 .clipw-head {
@@ -294,35 +296,7 @@
   opacity: 1;
 }
 
-/* ---- 空状态（与通知中心同语言） ---- */
-
-.clipw-empty {
-  margin: 14px 4px;
-  padding: 24px 16px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 7px;
-  text-align: center;
-  color: var(--muted);
-  font-size: var(--fs-12);
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--rad-14);
-  background: color-mix(in srgb, var(--surface-soft) 55%, transparent);
-  animation: clipw-empty-in var(--dur-fx-slow) var(--ease-out) backwards;
-}
-
-@keyframes clipw-empty-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
-
-.clipw-empty-sub {
-  font-size: var(--fs-11);
-  color: var(--muted-2);
-}
+/* ---- 空状态已删除 ---- */
 
 /* ---- 底栏 ---- */
 
@@ -395,4 +369,114 @@
 }
 .clipw-more:hover {
   background: var(--layer2, rgba(127, 127, 127, 0.12));
+}
+
+/* ---- 查看全文浮层（列表只有 200 字摘要，长文本此前无任何查看入口） ---- */
+
+.clipw-detail {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--rad-12);
+  border: 1px solid var(--line-soft);
+  /* 与 wcfg-popover 同款浮层表面（--paper-solid + blur），widget 内嵌浮层
+     不该透出底下的列表内容。 */
+  background: var(--paper-solid);
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(180%);
+  backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(180%);
+  box-shadow: var(--shadow);
+  animation: clip-detail-in var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
+}
+
+@keyframes clip-detail-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.clipw-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px;
+}
+
+.clipw-detail-ico {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.clipw-detail-title {
+  flex: 1;
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.clipw-detail-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--rad-10);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+
+.clipw-detail-close:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
+.clipw-detail-text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--rad-8);
+  background: color-mix(in srgb, var(--surface-soft) 60%, transparent);
+  color: var(--ink);
+  font-size: var(--fs-12);
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.clipw-detail-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.clipw-detail-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--rad-10);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-ink);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    border-color var(--dur-fx) var(--ease-out);
+}
+
+.clipw-detail-copy:hover {
+  border-color: var(--accent);
 }

@@ -1,10 +1,10 @@
 /**
- * 滑条（WakeSlider 集成）：波形手感、弹簧物理全部由基础
+ * 滑条（Wake Slider" 集成）：波形手感、弹簧物理全部由官方
  * WakeSlider 组件承担（components/WakeSlider.tsx，motion 驱动）。本文件只是
  * 设置行适配层——沿用既有调用方 API（value/min/max/step/suffix/label/onChange），
  * 映射主题色与设置行尺寸，挂在 .tm-slider-row 上以继承两窗的宽度约束
  * （feature-polish.css 的 .wake-slider.tm-slider-row）。
- * A-2：自 features/settings 上移 components/ui（widget 层为借它反向 import
+ * 自 features/settings 上移 components/ui（widget 层为借它反向 import
  * features 的目录级耦合源头之一）；settings 侧经 shared.tsx 以 `Slider` 名
  * 再导出，原调用点不改一行。
  */
@@ -20,7 +20,8 @@ export function M3Slider({
   label,
   variant = "default",
   onChange,
-  onCommitEnd
+  onCommitEnd,
+  defaultValue
 }: {
   value: number;
   min: number;
@@ -34,11 +35,13 @@ export function M3Slider({
   onChange: (v: number) => void;
   /** 提交会话结束（松手 / 键盘步进后），透传 WakeSlider。 */
   onCommitEnd?: () => void;
+  /** 双击恢复的默认值（提供即启用双击重置；外观滑条防「调乱回不去」）。 */
+  defaultValue?: number;
 }) {
   const tr = useT();
   const shownSuffix = suffix ? tr(suffix) : "";
   const mini = variant === "mini";
-  return (
+  const slider = (
     <WakeSlider
       className="tm-slider-row"
       value={value}
@@ -57,5 +60,11 @@ export function M3Slider({
       onChange={onChange}
       onCommitEnd={onCommitEnd}
     />
+  );
+  if (defaultValue === undefined) return slider;
+  return (
+    <div className="tm-slider-reset-wrap" title={tr("双击恢复默认")} onDoubleClick={() => onChange(defaultValue)}>
+      {slider}
+    </div>
   );
 }

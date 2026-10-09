@@ -44,6 +44,12 @@ function chord(accel: string): string[] {
 
 const ARROWS = ["↑", "↓", "←", "→"];
 
+/** 速查表呼出键的展示文案（Ctrl+?）：处理器固定在 lib/cheatsheet-store
+ *  .isCheatsheetHotkey（Ctrl+?，`?` 多数布局是 Shift+/ 也接）。导出给
+ *  OnboardingOverlay 的引导文案共用——此前两处各自写死，注释承诺「实时值」
+ *  与硬编码互相矛盾；常量化后语义不变。 */
+export const CHEATSHEET_HOTKEY_DISPLAY = "Ctrl+?";
+
 export function ShortcutCheatsheetHost() {
   const tr = useT();
   const open = useSyncExternalStore(subscribeShortcutCheatsheet, isShortcutCheatsheetOpen);
@@ -179,7 +185,7 @@ export function ShortcutCheatsheetHost() {
       id: "common",
       title: tr("通用"),
       rows: [
-        { label: tr("呼出 / 收起本速查表"), keys: [["Ctrl", "?"]] },
+        { label: tr("呼出 / 收起本速查表"), keys: [chord(CHEATSHEET_HOTKEY_DISPLAY)] },
         { label: tr("关闭弹层、菜单或对话框"), keys: [["Esc"]] },
         { label: tr("菜单项间移动"), keys: [["↑"], ["↓"], ["Home"], ["End"]] },
         { label: tr("激活菜单项 / 确认对话框"), keys: [["Enter"], ["␣"]] }

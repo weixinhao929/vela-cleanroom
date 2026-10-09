@@ -11,10 +11,10 @@ import type { TaskbarStates } from "./TaskbarStates";
  */
 export type TaskbarSettings = { 
 /**
- * 总开关（D1：默认 false，新功能默认关，F-1）。
+ * 总开关（默认 false，新功能默认关）。
  */
 enabled: boolean, states: TaskbarStates, rules: TaskbarRules, ignoredWindows: TaskbarIgnoredWindows, 
 /**
- * 逐显示器独立配置（P2，F-6；默认 false）。
+ * 逐显示器独立配置（默认 false）。
  */
 perMonitor: boolean, monitorOverrides: { [key in string]: TaskbarOverride }, };

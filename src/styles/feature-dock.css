@@ -1,17 +1,17 @@
 /* ────────────────────────────────────────────────────────────── *
- * 灵动岛（C2 → 2.0，Vela 版 Keystone）
+ * 灵动岛（→ 2.0，Vela 版 Keystone）
  *  区段标记与 src/widget/dock/ 组件一一对应，后续并行会话只在各自区段内改：
- *  ══ POLISH ══   （跨区段）      焦点环 / 投影 token 单源、48px 命中区、reduce-motion 兜底
- *  ══ SHELL ══    DockShell        岛本体几何 / 玻璃条 / 编辑态描边 / 层叠放 / bangs 外形
- *  ══ TILES ══    DockTiles        磁贴层（排布 / 接管期隐藏 / FLIP 排序）
- *  ══ TILE ══     DockTile         单磁贴（富 / 通用 / 打开态 / 加载占位）
- *  ══ DROP ══     DockDropZone     画布卡片拖入的命中高亮与插入位预览
- *  ══ PANEL ══    DockTile / DockPanel  展开面板内容（外壳由 WidgetExpandOverlay 提供）
- *  ══ TAKEOVER ══ DockTakeover     接管层（与磁贴层常驻叠放，只切 opacity/transform）
- *  ══ CONFIG ══   DockConfigPanel  编辑模式配置面板（落点对齐 .widget-template-panel）
- *  ══ MINI ══     widgets/mini/*   迷你形态内部样式（时钟 / 番茄钟环 / 通知角标）
+ *  ══ POLISH ══ （跨区段） 焦点环 / 投影 token 单源、48px 命中区、reduce-motion 兜底
+ *  ══ SHELL ══ DockShell 岛本体几何 / 玻璃条 / 编辑态描边 / 层叠放 / bangs 外形
+ *  ══ TILES ══ DockTiles 磁贴层（排布 / 接管期隐藏 / FLIP 排序）
+ *  ══ TILE ══ DockTile 单磁贴（富 / 通用 / 打开态 / 加载占位）
+ *  ══ DROP ══ DockDropZone 画布卡片拖入的命中高亮与插入位预览
+ *  ══ PANEL ══ DockTile / DockPanel 展开面板内容（外壳由 WidgetExpandOverlay 提供）
+ *  ══ TAKEOVER ══ DockTakeover 接管层（与磁贴层常驻叠放，只切 opacity/transform）
+ *  ══ CONFIG ══ DockConfigPanel 编辑模式配置面板（落点对齐 .widget-template-panel）
+ *  ══ MINI ══ widgets/mini/*   迷你形态内部样式（时钟 / 番茄钟环 / 通知角标）
  *
- * 动效规范（F-9，ISLAND-POLISH 统一，详见 docs/ui-guidelines.md §4）：
+ * 动效规范（ISLAND-POLISH 统一，详见 docs/ui-guidelines.md §4）：
  *  · 几何落位（FLIP / 吸附 / 换边 / 磁贴弹入 / 岛宽 spring）→ Spatial 过冲族：
  *    --ease-spatial-fast 350 / --ease-spatial 500 / --ease-island-expand 500（基准样条）
  *  · 收回 / 退场 → --ease-in（磁贴移除 160 / 接管收回 360）
@@ -40,7 +40,7 @@
   --dock-shadow: var(--widget-hover-shadow);
 }
 
-/* F-12 焦点环：全部可聚焦控件同一副环，只在键盘来源（:focus-visible）显示。
+/* 焦点环：全部可聚焦控件同一副环，只在键盘来源（:focus-visible）显示。
    backdrop-filter 表面上 outline 不参与合成层重建，可安全使用。 */
 .dock-tile:focus-visible,
 .dock-tile-add:focus-visible,
@@ -63,12 +63,12 @@
   outline-offset: 1px;
 }
 
-/* F-12 触控命中 ≥48px（ui-guidelines §2）：视觉尺寸不变，用伪元素外扩命中区。
+/* 触控命中 ≥48px（ui-guidelines §2）：视觉尺寸不变，用伪元素外扩命中区。
    · 桌面层：岛本体 .dock（data-interactive）整块上报命中矩形，岛内 3px padding 带
      由外扩覆盖——整条岛无死角；超出岛包围盒的上下各 8px 在 Tauri 非 overlay 态
      仍穿透到桌面（指到空处 = 穿透，不构成「看得见点不中」），浏览器 / 触屏 /
      编辑模式（整窗可交互）下完整生效。要让 48px 在桌面层也成为真实盒子，走
-     F-6 密度 48 档（CFG 持有，尚未消费）。
+     密度 48 档（CFG 持有，尚未消费）。
    · 弹层 / 面板：整窗或整层已上报，外扩完整生效。
    · 相邻控件的外扩在间隙中点相接，不互相覆盖。 */
 .dock-tile,
@@ -176,17 +176,16 @@
     inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent),
     0 2px 10px var(--dock-shadow);
   z-index: var(--z-float-menu);
-  /* padding / border-radius 服务 F-9 hover 微涨（is-peak，--dur-spatial-fast fx 曲线，
+  /* padding / border-radius 服务 hover 微涨（is-peak，--dur-spatial-fast fx 曲线，
      标准档 350ms 与历史硬编码 360ms 手感一致，随「设置→动效」速度档缩放）；
      translate 服务 QQ 式自动隐藏（is-tucked）——二.7 起与吸附 FLIP / 接管宽度
-     共用 dockQ 弹簧（--ease-dock-spring，NPS 统一曲线思想：所有几何 morph
-     同一条带过冲曲线，手感一致）。
+     共用 dockQ 弹簧。
      几何位移不在此列：拖动期由 TSX 内联 transition:none 直写 transform，松手 FLIP
      再内联挂 transform 过渡（吸附 450ms --ease-dock-spring）。
      top 是例外：胶囊 ↔ 贴边刘海切换时岛从 topInset 上移到 0（或回落），这一步
      不经 FLIP，靠这里的过渡与玻璃面轮廓形变同步；FLIP 期间内联 transition
      整体覆盖此列表，互不干扰。岛宽随内容 spring 见下方 @supports (interpolate-size) 块。 */
-  /* layout-anim: ok padding/top 为有意的离散形变（F-9 hover 涨距、胶囊↔贴边刘海切换，不经 FLIP），与玻璃轮廓同步 */
+  /* layout-anim: ok padding/top 为有意的离散形变（hover 涨距、胶囊↔贴边刘海切换，不经 FLIP），与玻璃轮廓同步 */
   transition:
     border-color var(--dur-fx) var(--ease-fx),
     box-shadow var(--dur-fx) var(--ease-fx),
@@ -288,7 +287,7 @@
    为什么不像早先那样「岛体自己是玻璃 + 两枚伪元素翼各自做玻璃」：backdrop-filter 的
    模糊按元素边界镜像采样，三块玻璃在接缝两侧算出的颜色不一样，用户看到的就是两角
    与岛体「颜色不是一体的、中间一道曲线」。同一块玻璃内部没有接缝可言。
-   F-10 主题：底色 = A1 层级求解的 L2（弹层层，随不透明度滑条与壁纸 token 联动），
+   主题：底色 = 层级求解的 L2（弹层层，随不透明度滑条与壁纸 token 联动），
    theme-engine 写入前回退纸色。z-index:-1 落在 .dock 的层叠上下文里：在本元素的边线 /
    投影之上、磁贴与按钮之下。 */
 .dock::before {
@@ -307,6 +306,43 @@
   transition:
     clip-path var(--dur-spatial-fast) var(--ease-fx),
     background var(--dur-fx) var(--ease-fx);
+}
+
+/* [DOCK-COVER]：媒体封面 / 专注态背景层。铺满玻璃
+   面（含两翼，与 ::before 同几何），叠在玻璃之上、磁贴之下（同为 z-index:-1，
+   树序在伪元素之后）。自带模糊压暗（模糊按元素自身边界镜像采样，不用
+   backdrop-filter）；入场 key 重挂淡入 / 退场淡出，双层即 crossfade。
+   reduce-motion 由全局门控压为瞬切。 */
+.dock-cover-bg {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: -9px;
+  right: -9px;
+  z-index: -1;
+  background-size: cover;
+  background-position: center;
+  filter: blur(16px) saturate(1.15) brightness(0.6);
+  /* blur 边缘透明化补偿：放大一档避免四边露出未经模糊的原图边。 */
+  transform: scale(1.12);
+  clip-path: var(--dock-shape-pill);
+  pointer-events: none;
+}
+.dock-cover-bg.is-in {
+  animation: dock-cover-in var(--dur-fx-slow) var(--ease-out) both;
+}
+.dock-cover-bg.is-out {
+  animation: dock-cover-out var(--dur-fx) var(--ease-in) both;
+}
+@keyframes dock-cover-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes dock-cover-out {
+  to {
+    opacity: 0;
+  }
 }
 
 .dock.is-editing {
@@ -329,7 +365,7 @@
   cursor: grabbing;
 }
 
-/* F-9 hover 微涨（dock.mouse.hover = peak，折叠态）：宽 +16 / 高 +6 / 圆角 +3，
+/* hover 微涨（dock.mouse.hover = peak，折叠态）：宽 +16 / 高 +6 / 圆角 +3，
    走 padding 过渡（任务口径：transform scale 或 padding 均可）。
    --dock-r 同步 +3：玻璃多边形圆角与边线（22 = 21 + 1）一起涨，44px 高仍 ≥ 半高。 */
 .dock.is-peak {
@@ -348,7 +384,7 @@
   translate: 0 calc(6px - 100% - var(--dock-inset, 0px));
 }
 
-/* F-4 拖动柄：六点纹（两列 × 三点）。两列合画在 ::before 的两层 radial-gradient
+/* 拖动柄：六点纹（两列 × 三点）。两列合画在 ::before 的两层 radial-gradient
    上（各自 background-position 定列位），把 ::after 让给 POLISH 的 44×48 命中区。 */
 .dock-handle {
   position: absolute;
@@ -396,7 +432,7 @@
   color: var(--accent-ink, var(--ink));
 }
 
-/* F-9 接管：磁贴层与接管层常驻叠放，切换只是 200ms 交叉淡化（fx 族）。 */
+/* 接管：磁贴层与接管层常驻叠放，切换只是 200ms 交叉淡化（fx 族）。 */
 .dock-tiles,
 .dock-takeover {
   grid-area: stack;
@@ -408,8 +444,17 @@
 /* 五.11 岛启停出入场：启用/挂载时从上缘外弹入（dockQ 弹簧，backwards 起
    始帧防闪现）；关闭时 TSX 保持挂载、is-leaving 收出后再卸载——此前开关
    岛都是瞬现瞬失。translate 属性归 autoHide 收合专用，与本条 transform
-   互不覆盖。 */
+   互不覆盖。：from 帧 / is-leaving 目标必须携带与静止基线**相同的函数
+   列表**（center/free 基线是 translateX(-50%)，start/end 基线是 none）——
+   函数列表不匹配会退化为矩阵插值，X 分量从 0 过渡到 −50%：默认 center
+   吸附下开关岛呈横向漂移半个岛宽的对角轨迹。 */
 @keyframes dock-boot-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(calc(-100% - var(--dock-inset, 0px)));
+  }
+}
+@keyframes dock-boot-in-flush {
   from {
     opacity: 0;
     transform: translateY(calc(-100% - var(--dock-inset, 0px)));
@@ -418,16 +463,24 @@
 .dock {
   animation: dock-boot-in var(--dur-dock-spring) var(--ease-dock-spring) backwards;
 }
+.dock[data-snap="start"],
+.dock[data-snap="end"] {
+  animation-name: dock-boot-in-flush;
+}
 .dock.is-leaving {
   opacity: 0;
   /* layout-anim: ok 岛关闭一次性收出（与 autoHide 收合同语言，离散事件） */
-  transform: translateY(calc(-100% - var(--dock-inset, 0px)));
+  transform: translateX(-50%) translateY(calc(-100% - var(--dock-inset, 0px)));
   transition:
     opacity var(--dur-fx) var(--ease-in),
     transform var(--dur-fx) var(--ease-in);
 }
+.dock[data-snap="start"].is-leaving,
+.dock[data-snap="end"].is-leaving {
+  transform: translateY(calc(-100% - var(--dock-inset, 0px)));
+}
 
-/* ---- F-9「岛宽随内容 spring」（ISLAND-POLISH，渐进增强） ----
+/* ---- 「岛宽随内容 spring」（ISLAND-POLISH，渐进增强） ----
    两层叠在同一格，格宽 = 两层里较宽者。让接管层隐藏时 width 归零、可见时取
    max-content，并用 interpolate-size 让 0 ↔ max-content 可插值：接管进场
    500ms --ease-island-expand（过冲样条，基准峰值 1.035）撑开，岛宽随之 spring
@@ -455,8 +508,7 @@
   }
 
   /* 可见态：不裁切（保住 48px 命中外扩与焦点环），标题 / 副标自身 ellipsis 自裁。
-     二.7：撑开曲线换成 dockQ 弹簧（与收合位移 / 吸附 FLIP 同一条带过冲曲线，
-     NPS 统一手感），时长随曲线 450ms；回落仍走 --ease-in（退场减速，见文件头）。 */
+     二.7：撑开曲线换成 dockQ 弹簧，时长随曲线 450ms；回落仍走 --ease-in（退场减速，见文件头）。 */
   .dock.has-takeover .dock-takeover {
     width: max-content;
     overflow: visible;
@@ -468,7 +520,7 @@
   }
 }
 
-/* ---- F-11 bangs 外形（D5 · ISLAND-POLISH 实现，仅顶边）----
+/* ---- bangs 外形（· ISLAND-POLISH 实现，仅顶边）----
    贴屏幕上边缘的「刘海」：玻璃面轮廓换 --dock-shape-bangs（上两角是 8×14 过渡翼的
    贝塞尔采样折线，下两角圆弧 --dock-r），岛从 topInset 上移到贴屏（top 过渡 360ms），
    边线整圈隐去——翼与岛体在同一块玻璃里，颜色天然一体。底边 / 竖边不支持（保持
@@ -555,6 +607,7 @@
   position: relative;
   display: flex;
   align-items: center;
+  /* 与 dock-logic.DOCK_TILE_GAP_PX 同值（改值两处同步）：插入竖条/让位步长按它算。 */
   gap: 4px;
 }
 
@@ -564,7 +617,7 @@
   pointer-events: none;
 }
 
-/* ---- 岛内拖动排序（ISLAND-SORT，F-3；幽灵芯片 + 插入位预览） ---- */
+/* ---- 岛内拖动排序（ISLAND-SORT，；幽灵芯片 + 插入位预览） ---- */
 
 /* 拖动进行中：整层抓手光标；其余磁贴的让位 translate 由 JS 内联写入
    （transition 按 pickSpatialEase 选档同样内联），松手 flipReorder 回弹后清空。 */
@@ -605,7 +658,7 @@
   opacity: 0.55;
 }
 
-/* 拖出松手：幽灵原地缩到 .8 并淡出（F-9「删除 160ms 收缩」，退场走 --ease-in）。 */
+/* 拖出松手：幽灵原地缩到 .8 并淡出（「删除 160ms 收缩」，退场走 --ease-in）。 */
 .dock-drag-ghost.is-exiting {
   animation: dock-ghost-out var(--dur-fx-fast, 0.15s) var(--ease-in) both;
 }
@@ -657,7 +710,7 @@
   transform: scale(0.8);
 }
 
-/* ---- 「+」磁贴（F-2 入口 b，编辑模式显示于末尾） ---- */
+/* ---- 「+」磁贴（入口 b，编辑模式显示于末尾） ---- */
 
 .dock-tile-add {
   display: inline-flex;
@@ -983,7 +1036,7 @@
   color: var(--accent-ink);
 }
 
-/* 长按 600ms 就位（松手即弹菜单，F-7 · CFG）：与 :active 同档缩放提示「可以松手了」。 */
+/* 长按 600ms 就位（松手即弹菜单，· CFG）：与 :active 同档缩放提示「可以松手了」。 */
 .dock-tile.is-armed {
   transform: scale(0.94);
 }
@@ -992,7 +1045,8 @@
    --dock-press-dur（DockShell 根上由 TILE_MENU_LONG_PRESS_MS 注入，真单点化；
    600ms 仅为变量缺失时的首帧兜底），就位时上面的 is-armed 0.94 接管（弹簧快档
    小步收拢），全程有连续的按下手感——此前按住 0–600ms 零反馈、缩放提示
-   在触发那一刻才出现。滑动取消（>6px）由组件摘类，磁贴沿基类过渡弹回。
+   在触发那一刻才出现。滑动取消（>4px，DockTile.LONG_PRESS_CANCEL_PX 与
+   DockTiles 编辑模式起拖阈值同值）由组件摘类，磁贴沿基类过渡弹回。
    注意：勿与 DockTiles 的拖动长按 TILE_DRAG_LONG_PRESS_MS = 300 混淆。 */
 .dock:not(.is-editing) .dock-tiles:not(.is-sorting) .dock-tile.is-pressing:not(.is-armed) {
   transform: scale(0.97);
@@ -1015,6 +1069,13 @@
   color: var(--muted);
   font-size: var(--fs-11-5);
   font-weight: 500;
+  /* 二.10 摘要安全上限：磁贴宽度随内容自适应（min-width 40 + 无上限），
+     摘要超长（长路径 / 长任务名）会把单枚磁贴撑过半屏——同类工具 的「装不下
+     整枚不显示」由既有 >8 枚横向滚动承接；这里给摘要补一道 240px 截断
+     （ellipsis + title 悬停全文，磁贴本就带 title），磁贴名不截断。 */
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 迷你形态 chunk 加载中的占位：撑住磁贴最小宽度，不闪文字。 */
@@ -1076,7 +1137,7 @@ body:has(.dock-tiles > .dock-insert-bar) .dock-drop-bar {
   display: none;
 }
 
-/* 指针处幽灵芯片：类型图标 + 名称 + D1 语义提示，scale 1.04（拖动 ghost 芯片）。 */
+/* 指针处幽灵芯片：类型图标 + 名称 + 语义提示，scale 1.04（拖动 ghost 芯片）。 */
 .dock-drop-ghost {
   position: fixed;
   top: 0;
@@ -1124,29 +1185,12 @@ body:has(.dock-tiles > .dock-insert-bar) .dock-drop-bar {
     transform var(--dur-fx-fast, 0.15s) var(--ease-spring);
 }
 
-/* 图库预览头部动作区：「添加到灵动岛」（次级描边样式）与「添加」并排。 */
-.widget-gallery-preview-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.widget-gallery-preview-add.is-dock {
-  background: transparent;
-  color: var(--ink);
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-
-/* 已在灵动岛：禁用态；pointer-events:none 一并挡掉基础类的 hover 提亮 / 按压缩放。 */
-.widget-gallery-preview-add.is-dock:disabled {
-  opacity: 0.55;
-  cursor: default;
-  pointer-events: none;
-}
+/* （图库预览面板已移除：灵动岛入口收编为图库卡片的悬停「岛」钮，
+   见 widget.css 图库区段 .widget-gallery-card-dock。） */
 
 /* ══ PANEL ══ */
 
-/* F-10 主题：面板层 = L4。外壳 .wexp-panel 的底色属 EXP（feature-immersive.css）；
+/* 主题：面板层 = L4。外壳 .wexp-panel 的底色属 EXP（feature-immersive.css）；
    本文件管内容色 = L4 的 On 色（theme-engine 写入前回退墨色）。 */
 .dock-panel {
   display: flex;
@@ -1590,7 +1634,10 @@ body:has(.dock-tiles > .dock-insert-bar) .dock-drop-bar {
   color: var(--accent);
 }
 
-/* reduce-motion 双信号：settle / 圆点 / 按钮过渡与骨架脉动全部压到近零。 */
+/* reduce-motion 双信号：settle / 圆点 / 按钮过渡与骨架脉动全部压到近零。
+   @media (prefers-reduced-motion) 变体已删——global.css 的 OS 级门控
+   （* 选择器 0.001s）完全覆盖；此处保留 data-reduce-motion 属性版作为
+   「全局门控日后收窄作用域」的文件内契约（与 POLISH 区段同口径）。 */
 html[data-reduce-motion="1"] .dp-strip,
 html[data-reduce-motion="1"] .dp-dot,
 html[data-reduce-motion="1"] .dp-dot::after,
@@ -1601,20 +1648,6 @@ html[data-reduce-motion="1"] .dp-card-title {
 
 html[data-reduce-motion="1"] .dp-card-skeleton {
   animation-duration: 0.001s !important;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .dp-strip,
-  .dp-dot,
-  .dp-dot::after,
-  .dp-iconbtn,
-  .dp-card-title {
-    transition-duration: 0.001s !important;
-  }
-
-  .dp-card-skeleton {
-    animation-duration: 0.001s !important;
-  }
 }
 
 /* ══ TAKEOVER ══ */
@@ -1650,7 +1683,7 @@ html[data-reduce-motion="1"] .dp-card-skeleton {
   color: var(--accent);
 }
 
-/* W-131 媒体接管条的封面缩略图（NextUp 样式）：替代缺省 Music 图标。 */
+/* 媒体接管条的封面缩略图（NextUp 样式）：替代缺省 Music 图标。 */
 .dock-takeover-thumb {
   flex-shrink: 0;
   width: 18px;
@@ -1710,7 +1743,11 @@ html[data-reduce-motion="1"] .dp-card-skeleton {
   position: absolute;
   bottom: 68px;
   left: 50%;
-  transform: translateX(-50%);
+  /* 水平定位经 --panel-tx 参数化（与 .widget-template-panel 同款）：锚点跟随
+     工具栏自定义位置时（WidgetCanvas 内联覆写 left/bottom/top），pop 动画
+     关键帧引用同一变量，位移方向才不会把面板甩回屏幕中央。 */
+  --panel-tx: -50%;
+  transform: translateX(var(--panel-tx, -50%));
   width: min(380px, calc(100vw - 48px));
   max-height: calc(100vh - 120px);
   overflow: auto;
@@ -1729,23 +1766,25 @@ html[data-reduce-motion="1"] .dp-card-skeleton {
 @keyframes dock-cfg-pop {
   from {
     opacity: 0;
-    transform: translateX(-50%) translateY(6px);
+    transform: translateX(var(--panel-tx, -50%)) translateY(6px);
   }
   to {
     opacity: 1;
-    transform: translateX(-50%) translateY(0);
+    transform: translateX(var(--panel-tx, -50%)) translateY(0);
   }
 }
 
-/* 退场（useDelayedUnmount 关闭窗口内播放，播完卸载）：入场反向。 */
+/* 退场（useDelayedUnmount 关闭窗口内播放，播完卸载）：入场反向。
+   退场窗口内禁点——此前 180ms 内浮层仍可真实提交修改（开关 / 移除磁贴）。 */
 .dock-cfg.is-closing {
   animation: dock-cfg-out var(--dur-fx-fast) var(--ease-in) both;
+  pointer-events: none;
 }
 
 @keyframes dock-cfg-out {
   to {
     opacity: 0;
-    transform: translateX(-50%) translateY(6px);
+    transform: translateX(var(--panel-tx, -50%)) translateY(6px);
   }
 }
 
@@ -1799,7 +1838,7 @@ html[data-reduce-motion="1"] .dp-card-skeleton {
     transform var(--dur-fx-xfast) var(--ease-spring);
 }
 
-/* 按压反馈（A4 弹层档，同 .dock-tile:active 缩放先例）。 */
+/* 按压反馈（弹层档，同 .dock-tile:active 缩放先例）。 */
 .dock-cfg-switch:active {
   transform: scale(0.94);
 }
@@ -1835,7 +1874,7 @@ html[data-reduce-motion="1"] .dp-card-skeleton {
 
 /* 滑行药丸：背景与阴影承接段激活底，几何只用 transform（位移 + scaleX，
    药丸无文字缩放不变形，也不触 layout-anim 门禁）；200ms --ease-out
-   （F-9 弹层档，指示不回弹）。挂载即定位，首帧不播过渡。 */
+   （弹层档，指示不回弹）。挂载即定位，首帧不播过渡。 */
 .dock-cfg-seg-pill {
   position: absolute;
   top: 2px;
@@ -2204,7 +2243,7 @@ html[data-reduce-motion="1"] .dp-card-skeleton {
 
 /* ---- ISLAND-MINI 首批九种（music/nowplaying 共用）：通用骨架 ----
    根元素 .dock-mini.dock-mini-<type>。内容宽 ≤96px：磁贴自带 2×11px 内边距，
-   合计 ≤118px，满足 F-1「单枚 ≤120px」；max-height 保证内容撑不破 32px 磁贴，
+   合计 ≤118px，满足 「单枚 ≤120px」；max-height 保证内容撑不破 32px 磁贴，
    岛高不变。文本 tabular-nums；颜色只用 token（音乐点缀色经 --mini-accent
    注入，缺省回退 --accent）。 */
 
@@ -2282,9 +2321,16 @@ html:not([data-fx-off~="ambientMotion"]) .dock-mini-music.is-marquee .dock-mini-
 }
 
 /* reduce-motion：全局把 animation-duration 压到 0.001s 会让跑马瞬跳到终点并
-   停在那里（前半段标题被裁掉），这里明确静止在起点。 */
+   停在那里（前半段标题被裁掉），这里明确静止在起点。双路声明（属性版 +
+   OS 媒体查询版）——animation:none 语义无法被 global 的 0.001s 压缩替代。 */
 [data-reduce-motion="1"] .dock-mini-music.is-marquee .dock-mini-music-text {
   animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dock-mini-music.is-marquee .dock-mini-music-text {
+    animation: none;
+  }
 }
 
 .dock-mini-music.is-playing .dock-mini-ico {
@@ -2349,7 +2395,7 @@ html:not([data-fx-off~="ambientMotion"]) .dock-mini-music.is-marquee .dock-mini-
 }
 
 .dock-mini-clipboard.is-copied .dock-mini-text {
-  /* J-4 状态小字对比度：success 直出在半透明胶囊底上偏弱（11.5px/500 细小），
+  /* 状态小字对比度：success 直出在半透明胶囊底上偏弱（11.5px/500 细小），
      文字用途向 ink 收一档 + 字重 600，状态色相不变。 */
   color: color-mix(in srgb, var(--success) 78%, var(--ink));
   font-weight: 600;
@@ -2379,7 +2425,7 @@ html:not([data-fx-off~="ambientMotion"]) .dock-mini-music.is-marquee .dock-mini-
   font-size: var(--fs-10-5);
 }
 
-/* ---- 待办：全部完成 → success（文字态同 J-4 对比度处理） ---- */
+/* ---- 待办：全部完成 → success（文字态同 对比度处理） ---- */
 
 .dock-mini-todo.is-done,
 .dock-mini-todo.is-done .dock-mini-ico {
@@ -2426,7 +2472,7 @@ html:not([data-fx-off~="ambientMotion"]) .dock-mini-music.is-marquee .dock-mini-
 }
 
 .dock-mini-habit.is-complete .dock-mini-num {
-  /* J-4：同上，数字文字态向 ink 收一档 + 加粗。 */
+  /* 同上，数字文字态向 ink 收一档 + 加粗。 */
   color: color-mix(in srgb, var(--success) 78%, var(--ink));
   font-weight: 600;
 }
@@ -2691,14 +2737,15 @@ html:not([data-fx-off~="ambientMotion"]) .dock-mini-music.is-marquee .dock-mini-
 }
 
 /* ══ POLISH · reduce-motion 兜底 ══
-   三重兜底：① global.css `:root[data-reduce-motion="1"] *` 与 ② 其 @media
-   (prefers-reduced-motion) 块已把全部 transition / animation 压到 0.001s（含 TSX
-   内联写的吸附 / 换边 / FLIP 过渡——!important 作者规则压过内联）；③ JS
+   双路兜底：global.css 的 ① :root[data-reduce-motion="1"] * 与 ② @media
+   (prefers-reduced-motion) * 已把全部 transition / animation 压到 0.001s（含
+   TSX 内联写的吸附 / FLIP 过渡——!important 作者规则压过内联）；③ JS
    prefersReducedMotion() 让 flipReorder / 幽灵退场 / 面板 settle 直接瞬移。
    这里对本文件的几何动效再显式声明一次作为文件内契约——岛宽 spring、hover
-   微涨、磁贴弹入、幽灵收缩、弹层入退场——全局门控日后收窄作用域时本处仍成立。
-   音乐跑马在 MINI 区段是 animation:none（压到 0.001s 会停在终点裁掉前半段），
-   此处补 @media 变体。 */
+   微涨、磁贴弹入、幽灵收缩、弹层入退场——全局门控日后收窄作用域时本处仍
+   成立。：@media 变体已删（global.css 的 OS 级 * 门控完全覆盖同款声明），
+   仅跑马 animation:none 特例（压 0.001s 会停在终点裁掉前半段，必须整段关）
+   在 MINI 区段保留双路声明。 */
 html[data-reduce-motion="1"] .dock,
 html[data-reduce-motion="1"] .dock::before,
 html[data-reduce-motion="1"] .dock-tiles,
@@ -2724,39 +2771,8 @@ html[data-reduce-motion="1"] .dock-cfg-add-menu {
   animation-duration: 0.001s !important;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .dock,
-  .dock::before,
-  .dock-tiles,
-  .dock-takeover,
-  .dock-tile,
-  .dock-tile-add,
-  .dock-view-arrow,
-  .dock-handle,
-  .dock-insert-bar,
-  .dock-drop-bar,
-  .widget-card.dock-drop-back {
-    transition-duration: 0.001s !important;
-  }
-
-  .dock-drag-ghost.is-exiting,
-  .dock-picker,
-  .dock-picker.is-closing,
-  .dock-drop-ring,
-  .dock-drop-bar,
-  .dock-drop-ghost,
-  .dock-cfg,
-  .dock-cfg-add-menu {
-    animation-duration: 0.001s !important;
-  }
-
-  .dock-mini-music.is-marquee .dock-mini-music-text {
-    animation: none;
-  }
-}
-
 /* ════════════════════════════════════════════════════════════════════
-   借鉴 NotchPeninsula 的增强（一.4 / 二.8 / 二.10）
+   借鉴 同类灵动岛工具 的增强（一.4 / 二.8 / 二.10）
    ════════════════════════════════════════════════════════════════════ */
 
 /* 一.4 链接快开接管条：链接语义用 accent 色的图标点亮（其余 kind 沿用
@@ -2766,23 +2782,22 @@ html[data-reduce-motion="1"] .dock-cfg-add-menu {
 }
 
 /* 二.8 悬停展开面的指针捕获壳：只承载 pointerenter / pointerleave 事件，
-   不参与视觉（块级铺满宽度，高度随内容），不干扰 wexp-content 的测量。 */
+   不参与视觉。高度必须铺满（100% + min-height:0）：下方 .widget-error-host 与
+   .dock-panel 都按「父级 100%」取高，本壳若是 auto，百分比链在第一节就断成
+   「内容高」——杂项板这类可滚面板（.misc-scroll 的 flex:1 + overflow:auto）
+   在内容高度驱动的列里永不溢出：条目放多了滚轮滚不动、超出部分被
+   .wexp-panel 的 overflow:hidden 裁掉，只能拖手柄放大面板看下面的条目。
+   .wexp-content 的高度来自 flex:1（定高），子壳铺满不参与其测量。 */
 .dock-expand-surface {
   position: relative;
   width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
-/* 二.10 通用磁贴摘要的安全上限：磁贴宽度本就随内容自适应（min-width 40 +
-   无上限），摘要超长（长路径 / 长任务名）会把单枚磁贴撑过半屏——NPS 的
-   「装不下整枚不显示」由既有 >8 枚横向滚动承接；这里给摘要补一道 240px
-   截断（ellipsis + title 悬停全文，磁贴本就带 title），磁贴名不截断。 */
-.dock-tile-generic-summary {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* （.dock-tile-generic-summary 的截断上限已并回 TILE 区段——合并分裂规则。） */
 
-/* ---- 秒表：正计时值（借鉴 ClassSoftwareHub #3） ---- */
+/* ---- 秒表：正计时值 ---- */
 
 .dock-mini-stopwatch .dock-mini-num {
   color: var(--ink);

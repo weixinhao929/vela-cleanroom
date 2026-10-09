@@ -39,7 +39,10 @@ describe("便签回收站过期清理", () => {
   });
 
   it("恰好到达保留期边界（= cutoff）算未过期（闭区间保留）", () => {
-    const boundary = new Date(Date.now() - NOTES_TRASH_RETENTION_DAYS * DAY).toISOString();
+    // +50ms 余量：purge 内部会用**更新一刻**的 Date.now() 算 cutoff，高负载
+    // 并行下本用例与 purge 之间可能跨过 1ms——严格等边界会让闭区间断言
+    // 随机翻转（全量套件偶发红的根源）。余量内仍是「紧贴边界」语义。
+    const boundary = new Date(Date.now() - NOTES_TRASH_RETENTION_DAYS * DAY + 50).toISOString();
     localStorage.setItem(
       "focus-desk.notes.n2.trash",
       JSON.stringify([{ id: "edge", text: "x", updatedAt: boundary, deletedAt: boundary }])

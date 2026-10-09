@@ -5,7 +5,10 @@
  *  - 键盘：ArrowDown 移动高亮（首跳瞬移到选中行再 +1）、Enter 选中、Esc 关闭；
  *  - 指针：pointerover 移动高亮、点击换值触发 onChange + 根节点 data-swap
  *    模糊交换标记（animationend 后摘除）；
- *  - 外点 pointerdown 关闭（is-closing 收起相位后卸载）。
+ *  - 外点 pointerdown 关闭（is-closing 收起相位后卸载）；
+ *  - 回归：弹层 portal 到 document.body + fixed 内联
+ *    left/top/min-width（定位完成前 visibility:hidden），卡片内滚动即收起
+ *    （与 DatePicker 同口径）。
  */
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -109,5 +112,45 @@ describe("WidgetSelect glide 行为", () => {
     fireEvent.click(rows[0]);
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.queryByRole("listbox")).toBeNull();
+  });
+});
+
+describe("WidgetSelect 弹层 portal 化（X-2）", () => {
+  it("打开后弹层挂载在 document.body 下（portal 生效，不在 .wsel 容器内）", () => {
+    const { container } = render(<WidgetSelect value="m" onChange={() => {}} options={opts} ariaLabel="单位" />);
+    openMenu();
+    const pop = document.querySelector(".wsel-pop");
+    expect(pop).toBeTruthy();
+    // portal：直接父节点是 body，而不是 .wsel wrap（container 内）
+    expect(pop!.parentElement).toBe(document.body);
+    expect(container.contains(pop)).toBe(false);
+  });
+
+  it("渲染后写入内联 left/top/min-width（fixed 定位完成），定位前不可见", () => {
+    render(<WidgetSelect value="m" onChange={() => {}} options={opts} ariaLabel="单位" />);
+    openMenu();
+    const pop = document.querySelector(".wsel-pop") as HTMLElement;
+    expect(pop.style.left).toMatch(/^-?\d+(\.\d+)?px$/);
+    expect(pop.style.top).toMatch(/^-?\d+(\.\d+)?px$/);
+    // jsdom gBCR 全 0 → minWidth 为 0（React 对 0 不缀 px 单位），只断言已内联写入
+    expect(pop.style.minWidth).toMatch(/^-?\d+(\.\d+)?(px)?$/);
+    // 定位完成后不再处于隐藏态（hidden 只存在于首帧定位前）
+    expect(pop.style.visibility).not.toBe("hidden");
+  });
+
+  it("卡片内滚动（capture scroll）即收起弹层（is-closing 后卸载）", async () => {
+    render(<WidgetSelect value="m" onChange={() => {}} options={opts} ariaLabel="单位" />);
+    openMenu();
+    fireEvent.scroll(window);
+    expect(document.querySelector(".wsel-pop.is-closing")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull(), { timeout: 300 });
+  });
+
+  it("菜单列表自身的滚动不收起（wsel-list 内 overflow 滚动豁免）", () => {
+    render(<WidgetSelect value="m" onChange={() => {}} options={opts} ariaLabel="单位" />);
+    const list = openMenu();
+    fireEvent.scroll(list);
+    expect(document.querySelector(".wsel-pop.is-closing")).toBeNull();
+    expect(screen.queryByRole("listbox")).not.toBeNull();
   });
 });

@@ -33,17 +33,17 @@ pub struct Task {
     pub title: String,
     pub completed: bool,
     pub created_at: String,
-    /// W-043 截止时间（ISO 字符串；空 = 无截止）。旧备份缺省为空。
+    /// 截止时间（ISO 字符串；空 = 无截止）。旧备份缺省为空。
     #[serde(default = "default_empty")]
     pub due_at: String,
-    /// W-043 优先级：0 无 / 1 低 / 2 中 / 3 高。
+    /// 优先级：0 无 / 1 低 / 2 中 / 3 高。
     #[serde(default = "default_zero")]
     #[ts(type = "number")]
     pub priority: i64,
-    /// W-043 标签（JSON 数组字符串，如 `["工作"]`）。
+    /// 标签（JSON 数组字符串，如 `["工作"]`）。
     #[serde(default = "default_tags")]
     pub tags: String,
-    /// W-045 手动排序权重（小的在前）。
+    /// 手动排序权重（小的在前）。
     #[serde(default = "default_zero")]
     #[ts(type = "number")]
     pub sort_order: i64,
@@ -57,10 +57,10 @@ pub struct Deadline {
     pub due_at: String,
     pub notified: bool,
     pub completed: bool,
-    /// W-046 已发送提醒档位（JSON 数组字符串，如 `["24h","1h"]`）。
+    /// 已发送提醒档位（JSON 数组字符串，如 `["24h","1h"]`）。
     #[serde(default = "default_tags")]
     pub notified_tiers: String,
-    /// W-049 周期规则：none/daily/weekly/monthly/yearly。
+    /// 周期规则：none/daily/weekly/monthly/yearly。
     #[serde(default = "default_repeat")]
     pub repeat: String,
 }
@@ -76,17 +76,18 @@ pub struct PomodoroSession {
     #[ts(type = "number")]
     pub planned_seconds: i64,
     pub completed: bool,
-    /// W-051 任务用时归集：关联的待办 id / 自定义事件名（老数据为 NULL）。
+    /// 任务用时归集：关联的待办 id / 自定义事件名（老数据为 NULL）。
     #[serde(default)]
     pub task_id: Option<String>,
     #[serde(default)]
     pub event_label: Option<String>,
 }
 
-/// A-4：SQLite 聚合口径的按日专注统计。由 `aggregate_sessions` 命令返回，
+/// SQLite 聚合口径的按日专注统计。由 `aggregate_sessions` 命令返回，
 /// 让前端在超大数据集（>500 段会话）下仍能得到全量累计/年度热图，而不受内存
 /// SESSIONS_CAP 截断影响。`date` 为本地日历日（YYYY-MM-DD），与前端 `toDateKey`
-/// 的本地口径一致；`focus_seconds` 为该日专注秒数合计，`focus_count` 为轮数。
+/// 的本地口径一致；`focus_seconds` 为该日专注秒数合计（含未完成段），`focus_count`
+/// 为轮数（仅完成段，落在段起始时刻所属虚拟日）。
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../src/types/bindings/")]
 pub struct DailyFocusStat {
@@ -97,14 +98,14 @@ pub struct DailyFocusStat {
     pub focus_count: i64,
 }
 
-/// A-4：`aggregate_sessions` 的返回体，全量专注历史按本地日历日聚合。
+/// `aggregate_sessions` 的返回体，全量专注历史按本地日历日聚合。
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../src/types/bindings/")]
 pub struct FocusAggregate {
     pub daily: Vec<DailyFocusStat>,
 }
 
-/// FocusTimer 借鉴：24 小时时段分布的一格。`hour` 为本地小时（0-23），
+/// 24 小时时段分布的一格。`hour` 为本地小时（0-23），
 /// `focus_seconds` 为该小时分摊到的专注秒数（跨小时段按墙钟占比切分），
 /// `focus_count` 为结束时刻落在本小时的会话数（含未完成段）。
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -116,6 +117,31 @@ pub struct HourlyFocusStat {
     pub focus_seconds: i64,
     #[ts(type = "number")]
     pub focus_count: i64,
+}
+
+/// （打断统计 SQL 全量化）：`monthly_interruption_breakdown` 的返回体——
+/// 某虚拟日历月内各中断原因的次数，突破前端 INTERRUPTIONS_CAP=300 截断。
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../src/types/bindings/")]
+pub struct ReasonCount {
+    pub reason: String,
+    #[ts(type = "number")]
+    pub count: i64,
+}
+
+/// （任务用时归集 SQL 全量化）：`task_focus_breakdown` 的返回体——按
+/// 专注事件聚合的已完成段秒数与段数（task_id / event_label 均为 NULL 的
+/// 行即「未关联」组），突破前端 SESSIONS_CAP=500 内存截断。秒数由前端
+/// 出口一次取整为分钟。
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../src/types/bindings/")]
+pub struct TaskFocusStat {
+    pub task_id: Option<String>,
+    pub event_label: Option<String>,
+    #[ts(type = "number")]
+    pub focus_seconds: i64,
+    #[ts(type = "number")]
+    pub sessions: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -150,7 +176,7 @@ fn default_schema_version() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../src/types/bindings/")]
 pub struct AppData {
-    /// 备份结构版本（S2）。导出时写入当前版本；导入旧文件时默认 1。
+    /// 备份结构版本。导出时写入当前版本；导入旧文件时默认 1。
     /// camelCase 别名让前端 `schemaVersion` 直接对应。
     #[serde(default = "default_schema_version", rename = "schemaVersion")]
     pub schema_version: u32,
@@ -210,9 +236,15 @@ pub struct ClipboardEntry {
     /// 单行摘要：文本条目为内容首行；图片条目为空串（前端用本地化文案 +
     /// 像素尺寸渲染）；文件条目为文件名列表（逗号分隔）。
     pub preview: String,
-    /// 文本条目的全文（图片条目为 None）。
+    /// 文本条目的全文（图片条目为 None）。`list` 命令不下发全文（每行至多
+    /// 512KB × 200+ 行全量过 IPC 太重），该路径下为 None，全文经
+    /// `get_clipboard_entry` 按需取。
     #[serde(default)]
     pub text: Option<String>,
+    /// 文本条目的行数（列表「{n} 行」元信息；list 路径由 SQL 现算）。非文本行为 0。
+    #[serde(default = "default_zero")]
+    #[ts(type = "number")]
+    pub text_lines: i64,
     /// 图片条目的文件名（clip 数据目录内，非完整路径；文本条目为 None）。
     #[serde(default)]
     pub image_file: Option<String>,
@@ -264,9 +296,9 @@ pub struct WallpaperPaletteInfo {
 }
 
 /* ------------------------------------------------------------------ */
-/* 任务栏自定义（TB-CORE 契约）：taskbar:* 事件负载。配置结构见         */
+/* 任务栏自定义：taskbar:* 事件负载。配置结构见                         */
 /* taskbar/mod.rs CONFIG 区（同样 TS 导出）；此处只放事件线协议。       */
-/* A-3：任务栏线协议基元（实现类型 / 七态键）定义收敛于本模块（models  */
+/* 任务栏线协议基元（实现类型 / 七态键）定义收敛于本模块（models */
 /* 是全后端的类型单一来源），taskbar 侧经 pub use re-export 维持既有   */
 /* 路径——依赖方向自此单向（taskbar → models）。唯一例外：              */
 /* PROTOCOL_VERSION 定义在 taskbar/protocol.rs（该文件被 velatap 以     */
@@ -322,7 +354,7 @@ impl TaskbarStateKey {
     }
 }
 
-/// 注入状态机 phase（F-10）：`Idle → Injecting → Ready / Failed / Degraded`。
+/// 注入状态机 phase：`Idle → Injecting → Ready / Failed / Degraded`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -339,8 +371,8 @@ pub enum TaskbarPhase {
     Degraded,
 }
 
-/// 实现路径（F-12）：`xaml` = TAP 注入（22621+）；`swca` = 路径 A（Mixed，
-/// P3）；`none` = 此系统版本暂不支持。
+/// 实现路径：`xaml` = TAP 注入（22621+）；`swca` = 路径 A（Mixed，
+/// ）；`none` = 此系统版本暂不支持。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -350,7 +382,7 @@ pub enum TaskbarPath {
     None,
 }
 
-/// `taskbar:status` 负载 / `get_taskbar_status` 返回体（F-10 状态条）。
+/// `taskbar:status` 负载 / `get_taskbar_status` 返回体（状态条）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -381,7 +413,7 @@ impl TaskbarStatus {
     }
 }
 
-/// `taskbar:capabilities` 负载（F-12 / D7）。前端按能力渲染：不可用能力
+/// `taskbar:capabilities` 负载。前端按能力渲染：不可用能力
 /// 在 UI 中不出现而非点击报错（如 XAML 下隐藏 showPeek 开关）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -396,7 +428,7 @@ pub struct TaskbarCapabilities {
     pub os_build: u32,
 }
 
-/// `taskbar:state-changed` 负载（F-14）：某显示器当前生效状态变化，
+/// `taskbar:state-changed` 负载：某显示器当前生效状态变化，
 /// 仅变化时 emit（Rust 侧合并防抖 ≤200ms）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

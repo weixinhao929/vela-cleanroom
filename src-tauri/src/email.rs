@@ -16,7 +16,7 @@ use crate::AppState;
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// C-20：每账户进程内缓存的"最近 cap 封 UID"快照。首次拉全量 SEARCH 取尾
+/// 每账户进程内缓存的"最近 cap 封 UID"快照。首次拉全量 SEARCH 取尾
 /// cap，之后每轮只 SEARCH 新增 UID（`UID <last+1>:*`）并与缓存合并，避免
 /// 大邮箱（数万封）分钟级轮询每次都做 O(n) 全量 UID 列表传输与解析。
 #[derive(Clone, Default)]
@@ -31,6 +31,18 @@ struct MailboxSnapshot {
 fn mailbox_cache() -> &'static Mutex<HashMap<(String, String), MailboxSnapshot>> {
     static CACHE: OnceLock<Mutex<HashMap<(String, String), MailboxSnapshot>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 日志用邮箱脱敏——保留首字符与域名（`a***@example.com`），滚动
+/// 日志不再留档完整 PII。仅用于 log；返回给用户的错误文案不脱敏（用户
+/// 自己输入的地址）。
+fn mask_email(email: &str) -> String {
+    match email.split_once('@') {
+        Some((user, domain)) if !user.is_empty() => {
+            format!("{}***@{}", user.chars().next().unwrap_or('*'), domain)
+        }
+        _ => "***".to_string(),
+    }
 }
 
 /// 进程内（非持久）缓存读写；锁中毒时回退为空快照，最坏退化为全量 SEARCH。
@@ -66,6 +78,293 @@ pub struct EmailMessage {
     pub preview: String,
     pub date: String,
     pub unread: bool,
+}
+
+/* ── MIME 解码（此前 subject/from/正文只 from_utf8_lossy，中文邮件是
+一片 =?utf-8?B?…?= / ==BD=编码串）。encoding_rs + base64 已是依赖。 ── */
+
+/// RFC 2047 Q 编码：`=_`→空格、`=XX`→字节，`=` 行尾软换行丢弃。
+fn decode_qp_bytes(s: &str) -> Vec<u8> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| -> Option<u8> {
+            match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
+            }
+        };
+        if b[i] == b'=' && i + 2 < b.len() {
+            let hi = b.get(i + 1).copied().and_then(hex);
+            let lo = b.get(i + 2).copied().and_then(hex);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+            // 软换行（=\r\n / =\n）或非法序列：跳过 '='，后续字符照常处理。
+            if b[i + 1] == b'\r' || b[i + 1] == b'\n' {
+                i += if b[i + 1] == b'\r' && b.get(i + 2) == Some(&b'\n') {
+                    3
+                } else {
+                    2
+                };
+                continue;
+            }
+            out.push(b[i]);
+            i += 1;
+        } else if b[i] == b'_' {
+            out.push(b' ');
+            i += 1;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn decode_base64_lenient(s: &str) -> Vec<u8> {
+    use base64::Engine;
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(cleaned.as_bytes())
+        .unwrap_or_else(|_| Vec::new())
+}
+
+/// 按 charset 标签把字节转成 String；未知/失败按有损 UTF-8 兜底。
+fn decode_charset(bytes: &[u8], charset: &str) -> String {
+    if let Some(enc) = encoding_rs::Encoding::for_label(charset.as_bytes()) {
+        let (cow, _, _) = enc.decode(bytes);
+        return cow.into_owned();
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// 解码单个 encoded-word `=?charset?B|Q?text?=`；非法返回 None（原样保留）。
+fn decode_encoded_word(w: &str) -> Option<String> {
+    let inner = w.strip_prefix("=?")?.strip_suffix("?=")?;
+    // charset?encoding?text：encoding 单字符；text 里可能含 '?'（稀少），用
+    // splitn(3) 保留。
+    let mut parts = inner.splitn(3, '?');
+    let charset = parts.next()?;
+    let enc = parts.next()?;
+    let text = parts.next()?;
+    if charset.is_empty() || enc.is_empty() {
+        return None;
+    }
+    let bytes = match enc {
+        "B" | "b" => decode_base64_lenient(text),
+        "Q" | "q" => decode_qp_bytes(text),
+        _ => return None,
+    };
+    Some(decode_charset(&bytes, charset))
+}
+
+/// 解码整段 header 值：相邻 encoded-word 之间的线性空白按 RFC 2047 忽略，
+/// 普通文本段原样保留（与编码段拼接）。
+fn decode_rfc2047(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    let mut last_was_word = false;
+    while let Some(start) = rest.find("=?") {
+        // 找配对的 "?="；encoded-word 内不允许出现空格（RFC），遇到空白即止。
+        let after = &rest[start + 2..];
+        let word_end = after
+            .char_indices()
+            .find(|(_, c)| *c == ' ' || *c == '\t' || *c == '\r' || *c == '\n')
+            .map(|(i, _)| start + 2 + i)
+            .unwrap_or(rest.len());
+        let candidate = &rest[start..word_end.max(start + 2)];
+        match decode_encoded_word(candidate) {
+            Some(decoded) => {
+                let prefix = &rest[..start];
+                // 前一段也是 encoded-word 且中间只有空白 → 按规范丢弃该空白。
+                if !(last_was_word && prefix.trim().is_empty()) {
+                    out.push_str(prefix);
+                }
+                out.push_str(&decoded);
+                rest = &rest[word_end.min(rest.len())..];
+                last_was_word = true;
+            }
+            None => {
+                out.push_str(&rest[..word_end.max(start + 2)]);
+                rest = &rest[word_end.max(start + 2).min(rest.len())..];
+                last_was_word = false;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 从 `key: value; a=b; c="d"` 形式的 header 值里取参数（大小写不敏感）。
+fn mime_param(value: &str, key: &str) -> Option<String> {
+    for seg in value.split(';').skip(1) {
+        let mut kv = seg.splitn(2, '=');
+        let k = kv.next()?.trim().to_ascii_lowercase();
+        if k == key {
+            let v = kv.next().unwrap_or("").trim();
+            return Some(v.trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
+/// 极简 HTML → 文本（预览用）：剥标签、解常见实体、压空白。
+fn strip_html(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    for (ent, ch) in [
+        ("&amp;", '&'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&quot;", '"'),
+        ("&#39;", '\''),
+        ("&nbsp;", ' '),
+        ("&mdash;", '—'),
+        ("&hellip;", '…'),
+    ] {
+        out = out.replace(ent, &ch.to_string());
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 解码一段 MIME part（已有头块）：按 CTE 解传输编码，再按 charset 转码；
+/// text/html 剥标签。头块与正文由调用方切好。
+fn decode_part_body(body: &[u8], headers: &[(String, String)]) -> String {
+    let header = |name: &str| -> Option<String> {
+        headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone())
+    };
+    let cte = header("Content-Transfer-Encoding")
+        .map(|v| v.to_ascii_lowercase())
+        .unwrap_or_default();
+    let decoded: Vec<u8> = match cte.as_str() {
+        "quoted-printable" => decode_qp_bytes(&String::from_utf8_lossy(body)),
+        "base64" => decode_base64_lenient(&String::from_utf8_lossy(body)),
+        _ => body.to_vec(),
+    };
+    let charset = header("Content-Type")
+        .and_then(|v| mime_param(&v, "charset"))
+        .unwrap_or_else(|| "utf-8".to_string());
+    let text = decode_charset(&decoded, &charset);
+    let is_html = header("Content-Type")
+        .map(|v| v.to_ascii_lowercase().contains("text/html"))
+        .unwrap_or(false);
+    if is_html {
+        strip_html(&text)
+    } else {
+        text
+    }
+}
+
+/// 把 BODY[TEXT] 原始字节解码成可读预览：multipart（边界由 TEXT 内嵌 part 头
+/// 给出）取第一个 text/plain 叶子（退化 text/html）；单 part 按其头解码；
+/// 无头的裸正文原样。最后取前 3 个非空行、共 200 字符。
+fn decode_body_preview(raw: &[u8]) -> String {
+    let lossy = String::from_utf8_lossy(raw).into_owned();
+
+    // 头块切分：开头连续的 `Key: Value` 行；空行后即正文。返回 None 表示
+    // 开头不是头块（裸正文）。
+    fn split_headers(text: &str) -> Option<(Vec<(String, String)>, &str)> {
+        let mut headers: Vec<(String, String)> = Vec::new();
+        let mut consumed = 0usize;
+        for line in text.lines() {
+            let trimmed = line.trim_end_matches('\r');
+            if trimmed.is_empty() {
+                let body_start = (consumed + 1).min(text.len());
+                if headers.is_empty() {
+                    return None;
+                }
+                return Some((headers, &text[body_start..]));
+            }
+            let (k, v) = trimmed.split_once(':')?;
+            if k.is_empty() || k.chars().any(|c| c.is_whitespace()) {
+                return None;
+            }
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+            consumed += trimmed.len() + 1;
+        }
+        None
+    }
+
+    let mut fallback: Option<String> = None; // text/html 退路
+    let mut plain: Option<String> = None; // text/plain 首选
+    let (top_headers, _) = split_headers(&lossy).unwrap_or_default();
+    let boundary = top_headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("Content-Type"))
+        .and_then(|(_, v)| {
+            if v.to_ascii_lowercase().contains("multipart") {
+                mime_param(v, "boundary")
+            } else {
+                None
+            }
+        });
+
+    if let Some(b) = boundary {
+        let delim = format!("--{}", b);
+        for section in lossy.split(delim.as_str()) {
+            let section = section.trim_start_matches("\r\n").trim_start_matches('\n');
+            if section.starts_with("--") || section.is_empty() {
+                continue; // 终止边界 / 空段
+            }
+            if let Some((ph, pb)) = split_headers(section) {
+                let ct = ph
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("Content-Type"))
+                    .map(|(_, v)| v.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if ct.starts_with("multipart") {
+                    continue; // 嵌套 multipart：浅层处理，取兄弟叶子
+                }
+                let decoded = decode_part_body(pb.as_bytes(), &ph);
+                if ct.is_empty() || ct.starts_with("text/plain") {
+                    if plain.is_none() {
+                        plain = Some(decoded);
+                    }
+                } else if ct.starts_with("text/html") && fallback.is_none() {
+                    fallback = Some(decoded);
+                }
+            }
+        }
+    } else if let Some((ph, pb)) = split_headers(&lossy) {
+        let decoded = decode_part_body(pb.as_bytes(), &ph);
+        let ct = ph
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Content-Type"))
+            .map(|(_, v)| v.to_ascii_lowercase())
+            .unwrap_or_default();
+        if ct.starts_with("text/html") {
+            fallback = Some(decoded);
+        } else {
+            plain = Some(decoded);
+        }
+    }
+
+    let text = plain.or(fallback).unwrap_or_else(|| lossy.clone());
+    let clean = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ");
+    clean.chars().take(200).collect()
 }
 
 /// 打开一个已登录、选中 INBOX 的 IMAP 会话。
@@ -115,12 +414,14 @@ fn open_session_with_validity(
             .map_err(|e| format!("IMAP 连接失败: {e}"))?;
         imap::Client::new(Box::new(stream) as imap::Connection)
     } else {
-        // D-11：明文 IMAP——口令以明文过网，仅在用户显式关闭 TLS 时到达这里。
+        // 明文 IMAP——口令以明文过网，仅在用户显式关闭 TLS 时到达这里。
         // 升级路径备注：imap 3.0-alpha 的 STARTTLS 只在 ClientBuilder 形态提供
         // （与本处手工建流加超时的封装冲突），待其 API 稳定后迁移实现。
+        // 日志不落完整邮箱（PII，随按天滚动日志明文留档）——只留首
+        // 字符 + 域名，定位账号足够、脱敏到位。
         log::warn!(
             "email: 账号 {} 走明文 IMAP（use_tls=false）——口令将明文经过网络，仅建议在可信内网使用",
-            account.email
+            mask_email(&account.email)
         );
         imap::Client::new(Box::new(tcp) as imap::Connection)
     };
@@ -138,6 +439,30 @@ fn open_session_with_validity(
     Ok((session, mailbox.uid_validity))
 }
 
+/// IMAP 连接测试（设置页「测试连接」按钮）：open_session 覆盖 DNS 解析 →
+/// TCP 建连 → TLS 握手 → 登录 → SELECT INBOX 全链路，任一阶段失败带回
+/// 具体错误文案。用户配完账户当场验证，不用等下一次轮询才发现密码错。
+/// 阻塞网络 I/O 下沉 spawn_blocking（同 fetch_emails）。
+#[tauri::command]
+pub async fn test_email_account(
+    window: tauri::Window,
+    account: EmailAccount,
+) -> Result<String, String> {
+    // 闸门同 fetch_emails：server/port 任意指定，仅受信窗口可达（防内网
+    // 端口探测侧信道）。
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut session = open_session(&account)?;
+        // 礼貌退出；logout 失败不影响「连接可用」的判定结论。
+        let _ = session.logout();
+        Ok("OK".to_string())
+    })
+    .await
+    .map_err(|e| format!("邮件任务失败：{e}"))?
+}
+
 /// Fetch recent emails from an IMAP server. Returns up to `limit` (5–50,
 /// default 20) recent messages, identified by IMAP UID.
 /// 阻塞网络 I/O 必须 spawn_blocking：async 命令体内直接阻塞会占住一个
@@ -149,36 +474,56 @@ pub async fn fetch_emails(
     account: EmailAccount,
     limit: Option<u32>,
 ) -> Result<Vec<EmailMessage>, String> {
-    // P1（审计修复）：server/port 由前端任意指定，无闸门时被注入的
+    // server/port 由前端任意指定，无闸门时被注入的
     // quick-note 页可让本进程向任意内网 host:port 发起 TCP 连接（错误信息
     // 可区分 DNS/拒绝/超时，构成内网端口扫描时序侧信道）。与 load_email_accounts
     // 一致收口到受信窗口。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
-    // M4：server 字段本身也过内网守卫——受信的 widget 窗被注入时仍可用
+    // server 字段本身也过内网守卫——受信的 widget 窗被注入时仍可用
     // 任意 host:port 借 IMAP 连接错误做内网探测。把 host 包成 URL 形式复用
     // reject_private_target 的结构化判定（数字 IP / IPv6 / localhost / 内网段）。
-    {
-        let host = account
-            .server
-            .split(':')
-            .next()
-            .unwrap_or("")
-            .trim_matches(['[', ']']);
-        let probe = format!("http://{host}/");
-        if let Err(e) = crate::system_integration::reject_private_target(&probe) {
-            return Err(format!("邮件服务器地址被拒绝：{e}"));
-        }
+    if let Err(e) = reject_private_email_server(&account) {
+        return Err(format!("邮件服务器地址被拒绝：{e}"));
     }
     tauri::async_runtime::spawn_blocking(move || {
-        // C-5：前端只回传掩码（空）密码，这里按 (email, server) 从密文库找回
+        // 前端只回传掩码（空）密码，这里按 (email, server) 从密文库找回
         // 真实口令；明文仅在本后端闭包内存在，永不回传 webview。
         let account = resolve_account(&app, &account)?;
         fetch_emails_blocking(account, limit)
     })
     .await
     .map_err(|e| format!("邮件任务失败: {e}"))?
+}
+
+/// 内网守卫（fetch/mark/delete 三条连接命令共用，补齐对称性）：把
+/// server host 包成 URL 形式复用 reject_private_target 的结构化判定。
+fn reject_private_email_server(account: &EmailAccount) -> Result<(), String> {
+    let s = account.server.trim();
+    /*IPv6 字面量——`[2001:db8::1]:993` 取方括号内为 host；裸 IPv6
+    （无方括号、含多个冒号）整体视为 host。进 probe URL 时 IPv6 必须重新
+    带上方括号：裸 `http://2001:db8::1/` 解析失败会被误报为
+    「仅支持 http/https 链接」，合法公网 IPv6 服务器被无端拒绝。 */
+    let host_raw = if let Some(rest) = s.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else if s.matches(':').count() > 1 {
+        // 裸 IPv6（多个冒号）整串作 host——此前
+        // `split(':').next()` 只取第一段，`fe80::1` 被截成 `fe80`、包成
+        // `http://fe80/` 后按数字 IP（0.0.251.128）判为公网放行，链路本地
+        // IPv6 服务器绕过了内网拒绝；与注释语义不符。`host:port` 只含一个
+        // 冒号，仍走首段提取，不受影响。
+        s
+    } else {
+        s.split(':').next().unwrap_or("")
+    };
+    let host = if host_raw.contains(':') {
+        format!("[{host_raw}]")
+    } else {
+        host_raw.to_string()
+    };
+    let probe = format!("http://{host}/");
+    crate::system_integration::reject_private_target(&probe)
 }
 
 fn fetch_emails_blocking(
@@ -188,7 +533,7 @@ fn fetch_emails_blocking(
     let (mut session, uid_validity) = open_session_with_validity(&account)?;
     let cap = limit.unwrap_or(20).clamp(5, 50) as usize;
 
-    // C-20：增量拉取。首次无缓存时全量 SEARCH 取尾 cap；之后只 SEARCH 上次
+    // 增量拉取。首次无缓存时全量 SEARCH 取尾 cap；之后只 SEARCH 上次
     // 最大 UID 之后的增量，再与缓存窗口合并去重，仍取尾 cap。这样既能保持
     // 每轮返回最近 cap 封，又避免大邮箱每轮传输/解析全量 UID 列表。
     let cache_key = (account.email.clone(), account.server.clone());
@@ -265,10 +610,11 @@ fn fetch_emails_blocking(
             .as_ref()
             .and_then(|addrs| addrs.first())
             .map(|a| {
+                // RFC 2047 encoded-word 解码（=?utf-8?B?…?= 的中文显示名）。
                 let name = a
                     .name
                     .as_ref()
-                    .map(|n| String::from_utf8_lossy(n).into_owned());
+                    .map(|n| decode_rfc2047(&String::from_utf8_lossy(n)));
                 let mailbox = a
                     .mailbox
                     .as_ref()
@@ -281,9 +627,9 @@ fn fetch_emails_blocking(
         let subject = envelope
             .subject
             .as_ref()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .map(|s| decode_rfc2047(&String::from_utf8_lossy(s)))
             .unwrap_or_default();
-        let subject = if subject.is_empty() {
+        let subject = if subject.trim().is_empty() {
             "(无主题)".to_string()
         } else {
             subject
@@ -305,16 +651,7 @@ fn fetch_emails_blocking(
 
         let body = fetch
             .body()
-            .map(|b| {
-                let text = String::from_utf8_lossy(b);
-                let clean = text
-                    .lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                clean.chars().take(200).collect()
-            })
+            .map(decode_body_preview)
             .unwrap_or_else(|| "(无预览)".to_string());
 
         messages.push(EmailMessage {
@@ -328,7 +665,7 @@ fn fetch_emails_blocking(
     }
 
     session.logout().ok();
-    // C-20：成功落盘本轮的"最近 cap 封 UID"窗口，作为下一轮增量 SEARCH 起点。
+    // 成功落盘本轮的"最近 cap 封 UID"窗口，作为下一轮增量 SEARCH 起点。
     write_snapshot(
         cache_key,
         MailboxSnapshot {
@@ -339,7 +676,7 @@ fn fetch_emails_blocking(
     Ok(messages)
 }
 
-/// C-4：UID 必须是单个非空 32 位整数，拒绝 `,` `*` `:` 等 sequence-set 注入，
+/// UID 必须是单个非空 32 位整数，拒绝 `,` `*` `:` 等 sequence-set 注入，
 /// 防止被篡改的渲染层把 `1:*` 这类区间送入 UID STORE 误删全邮箱。
 fn parse_uid(uid: &str) -> Result<u32, String> {
     if uid.is_empty() || !uid.bytes().all(|b| b.is_ascii_digit()) {
@@ -349,7 +686,7 @@ fn parse_uid(uid: &str) -> Result<u32, String> {
         .map_err(|_| format!("无效的邮件 UID: {uid}"))
 }
 
-/// W-135 已读回写：服务器侧给邮件打上 \Seen（SILENT 免回包）。
+/// 已读回写：服务器侧给邮件打上 \Seen（SILENT 免回包）。
 #[tauri::command]
 pub async fn mark_email_seen(
     window: tauri::Window,
@@ -360,9 +697,14 @@ pub async fn mark_email_seen(
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
+    // 连接前同样过内网守卫，堵住借
+    // mark/delete 的连接错误差异做内网探测的侧信道。
+    if let Err(e) = reject_private_email_server(&account) {
+        return Err(format!("邮件服务器地址被拒绝：{e}"));
+    }
     let uid = parse_uid(&uid)?.to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        // C-5：同上，明文仅在后端按需解密。
+        // 同上，明文仅在后端按需解密。
         let account = resolve_account(&app, &account)?;
         let mut session = open_session(&account)?;
         session
@@ -375,7 +717,7 @@ pub async fn mark_email_seen(
     .map_err(|e| format!("邮件任务失败: {e}"))?
 }
 
-/// W-135 删除回写：打 \Deleted 标记并 EXPUNGE，真实删除服务器邮件。
+/// 删除回写：打 \Deleted 标记并 EXPUNGE，真实删除服务器邮件。
 #[tauri::command]
 pub async fn delete_email(
     window: tauri::Window,
@@ -386,17 +728,25 @@ pub async fn delete_email(
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
+    // 同上。
+    if let Err(e) = reject_private_email_server(&account) {
+        return Err(format!("邮件服务器地址被拒绝：{e}"));
+    }
     let uid = parse_uid(&uid)?.to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        // C-5：同上，明文仅在后端按需解密。
+        // 同上，明文仅在后端按需解密。
         let account = resolve_account(&app, &account)?;
         let mut session = open_session(&account)?;
         session
             .uid_store(&uid, "+FLAGS.SILENT (\\Deleted)")
             .map_err(|e| format!("标记删除失败: {e}"))?;
-        session
-            .expunge()
-            .map_err(|e| format!("删除邮件失败: {e}"))?;
+        // UID EXPUNGE（RFC 4315 UIDPLUS）只清除本封——无参 expunge() 会
+        // 连带永久删除**其它客户端**此前打了 \Deleted 待清理的邮件（手机/网页
+        // 端回收站语义被击穿）。服务器不支持 UIDPLUS 时回退为不解删（保留
+        // \Deleted 标记，由用户自己的客户端清理）。
+        if session.uid_expunge(&uid).is_err() {
+            log::warn!("email: UID EXPUNGE unsupported; \\Deleted flag kept for uid {uid}");
+        }
         session.logout().ok();
         Ok(())
     })
@@ -404,7 +754,7 @@ pub async fn delete_email(
     .map_err(|e| format!("邮件任务失败: {e}"))?
 }
 
-/// W-134 多账户：保存账户列表（整体覆盖写，SQLite settings 表）。
+/// 多账户：保存账户列表（整体覆盖写，SQLite settings 表）。
 ///
 /// 密码经 DPAPI（CryptProtectData，当前用户 scope）加密后才入库：settings
 /// 表会随 export_all 进备份文件，明文密码等于随备份到处复制。加密值带
@@ -415,15 +765,15 @@ pub async fn save_email_accounts(
     app: tauri::AppHandle,
     accounts: Vec<EmailAccount>,
 ) -> Result<(), String> {
-    // P1（审计修复）：凭据写入路径必须受信窗口可达，与 load_email_accounts 对称。
+    // 凭据写入路径必须受信窗口可达，与 load_email_accounts 对称。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
     // 同步命令在 Tauri 主线程上锁库：备份/导入持锁期间会冻结所有窗口并让
-    // 低级鼠标钩子超时被摘（R1 规则），与其余 DB 命令一致下沉到阻塞池。
+    // 低级鼠标钩子超时被摘（规则），与其余 DB 命令一致下沉到阻塞池。
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        // C-5：前端对未改动的账户只回传掩码（空）密码；按 (email, server) 找回
+        // 前端对未改动的账户只回传掩码（空）密码；按 (email, server) 找回
         // 已加密的存量密码，避免把空密码覆盖写回导致下次登录失败。
         let stored = read_stored_accounts_encrypted(&state)?;
         let mut password_by_key: HashMap<(String, String), String> = stored
@@ -493,8 +843,11 @@ fn protect_password(plain: &str) -> Result<String, String> {
     }
 }
 
-/// DPAPI 解密；带 `dpapi:` 前缀的解密，否则视为旧版明文原样返回（向后
-/// 兼容已存的明文账户，保存一次后即自动升级为密文）。
+/// DPAPI 解密：仅解密带 `dpapi:` 前缀的值。
+/// () 文档更正：**非** dpapi 值不会「原样返回」——安全决策是 Windows
+/// 上丢弃旧版明文返回空串（防篡改恢复包夹带明文口令直通），与下方实现一致。
+/// 解密失败也返回空串；空口令随后在 resolve_account 被「未配置密码」明确
+/// 拒绝，不再以空密码静默登录。旧版明文存量用户需重输一次密码。
 fn unprotect_password(stored: &str) -> String {
     #[cfg(windows)]
     if let Some(b64) = stored.strip_prefix("dpapi:") {
@@ -532,17 +885,23 @@ fn unprotect_password(stored: &str) -> String {
         // round-trip it unchanged.
         return stored.to_string();
     }
-    // E-3: on Windows, any non-`dpapi:` value is legacy plaintext. A tampered
+    // on Windows, any non-`dpapi:` value is legacy plaintext. A tampered
     // restore could smuggle a plaintext password into `email:accounts` and have
     // it silently accepted here — do not hand it back to the webview.
     log::warn!("email password: non-dpapi value ignored (legacy plaintext unsupported)");
     String::new()
 }
 
-/// C-5：读取 `email:accounts`（仍为 DPAPI 密文），不解密。用于校验已有
+/// 读取 `email:accounts`（仍为 DPAPI 密文），不解密。用于校验已有
 /// 账户与按索引找回真实密码 —— 明文只在后端按需解密、永不下发 webview。
 fn read_stored_accounts_encrypted(state: &AppState) -> Result<Vec<EmailAccount>, String> {
     let db = lock_db(&state.db).map_err(|e| format!("数据库锁定失败: {e}"))?;
+    read_stored_accounts_from_db(&db)
+}
+
+/// 按已持锁连接读账户列表（供 load_email_accounts 在同一锁内完成
+/// 「读列表 + 探测新键行是否存在」，避免二次加锁）。
+fn read_stored_accounts_from_db(db: &rusqlite::Connection) -> Result<Vec<EmailAccount>, String> {
     let result: Result<String, _> = db.query_row(
         "SELECT value FROM settings WHERE key = 'email:accounts'",
         [],
@@ -555,7 +914,7 @@ fn read_stored_accounts_encrypted(state: &AppState) -> Result<Vec<EmailAccount>,
     }
 }
 
-/// C-5：前端只持有掩码（空）密码；按 (email, server) 从密文库找回真实
+/// 前端只持有掩码（空）密码；按 (email, server) 从密文库找回真实
 /// 解密密码填回账户。前端传入的账户密码为空时表示「沿用已存密码」。
 fn resolve_account(app: &tauri::AppHandle, account: &EmailAccount) -> Result<EmailAccount, String> {
     if !account.password.is_empty() {
@@ -567,19 +926,33 @@ fn resolve_account(app: &tauri::AppHandle, account: &EmailAccount) -> Result<Ema
         if s.email == account.email && s.server == account.server {
             let mut resolved = account.clone();
             resolved.password = unprotect_password(&s.password);
+            //存储密文解不出（DPAPI 失败 / 旧明文被 丢弃）时空
+            // 口令并入「未配置密码」明确报错——原样放行会以空密码登录 IMAP，
+            // 得到晦涩的服务器报错且无从排查。
+            if resolved.password.is_empty() {
+                return Err(format!(
+                    "账户 {} 的已存密码无法解密（旧版本明文或异机恢复数据），请在设置中重新填写",
+                    account.email
+                ));
+            }
             return Ok(resolved);
         }
     }
-    Ok(account.clone())
+    // （空密码静默登录）：新账户/键不匹配时原样放行空口令，IMAP 登录只会
+    // 给出晦涩的服务器报错——明确指出未配置密码。
+    Err(format!(
+        "账户 {} 未配置密码，请先在设置中填写",
+        account.email
+    ))
 }
 
-/// W-134 多账户：读取账户列表；旧版单账户键（email:account）自动迁移为
+/// 多账户：读取账户列表；旧版单账户键（email:account）自动迁移为
 /// 单元素列表，读后不删旧键（保留回滚能力，保存时写新键）。
 ///
-/// C-5：返回前一律把密码掩码为空串 —— DPAPI 解密后的明文绝不回传任何
+/// 返回前一律把密码掩码为空串 —— DPAPI 解密后的明文绝不回传任何
 /// webview（含 widget-* / quick-note），凭据仅在 fetch/mark/delete 时由后端
 /// 按需解密。
-/// C-19：账户元数据（邮箱/服务器/IMAP 配置）仍属敏感信息，加窗口闸门，
+/// 账户元数据（邮箱/服务器/IMAP 配置）仍属敏感信息，加窗口闸门，
 /// 仅设置窗口与桌面小组件层（EmailWidget 在 widget-*）可读。
 #[tauri::command]
 pub async fn load_email_accounts(
@@ -590,16 +963,31 @@ pub async fn load_email_accounts(
     // 与 save_email_accounts 同理：不在主线程上锁库。
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let mut accounts = read_stored_accounts_encrypted(&state)?;
-        if !accounts.is_empty() {
+        let db = lock_db(&state.db).map_err(|e| format!("数据库锁定失败: {e}"))?;
+        let mut accounts = read_stored_accounts_from_db(&db)?;
+        /* 迁移触发条件 = 新键「行不存在」，而非「列表为空」——用户把
+        账户清空保存后新键值为 "[]"（save 对空列表照写），按空列表触发会让
+        每次加载都从旧键重新搬回密文，被显式删除的账户复活并自动拉信。
+        首次迁移成功与用户主动清空之后，新键行始终存在，旧键路径不再
+        进入（旧键本身保留，回滚能力不变）。 */
+        let new_row_exists = db
+            .query_row(
+                "SELECT 1 FROM settings WHERE key = 'email:accounts'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if new_row_exists {
             for a in accounts.iter_mut() {
                 a.password = String::new();
             }
             return Ok(accounts);
         }
 
-        // 旧版迁移：单账户 → 单元素列表（同样掩码密码，永不明文回传）。
-        let db = lock_db(&state.db).map_err(|e| format!("数据库锁定失败: {e}"))?;
+        // 旧版迁移：单账户 → 单元素列表。：此处只展示不落新键会让
+        // resolve_account（只查 email:accounts）永远找不到旧密文，fetch/
+        // mark/delete 全部报「未配置密码」——改为幂等搬运：把旧键里的
+        // DPAPI 密文原样写入新键，旧键保留（回滚能力不变）。
         let old: Result<String, _> = db.query_row(
             "SELECT value FROM settings WHERE key = 'email:account'",
             [],
@@ -609,6 +997,14 @@ pub async fn load_email_accounts(
             Ok(json) => {
                 let mut account: EmailAccount =
                     serde_json::from_str(&json).map_err(|e| format!("旧账户迁移失败: {e}"))?;
+                let migrated = vec![account.clone()];
+                let new_json =
+                    serde_json::to_string(&migrated).map_err(|e| format!("序列化失败: {e}"))?;
+                db.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES ('email:accounts', ?1)",
+                    rusqlite::params![new_json],
+                )
+                .map_err(|e| format!("旧账户迁移落库失败: {e}"))?;
                 account.password = String::new();
                 Ok(vec![account])
             }
@@ -618,4 +1014,403 @@ pub async fn load_email_accounts(
     })
     .await
     .map_err(|e| format!("邮箱账户任务失败：{e}"))?
+}
+
+/* ── ①：RFC 2047 解码族测试。这些函数解析完全不可信的邮件头（任意
+服务器 / 任意转发链都可能塞进畸形 encoded-word），核心断言是「坏输入不
+panic、兜底行为可预期」。样本中的 base64/QP 串优先用依赖库在测试内构造
+（往返自验证），少量手写经典样本（=?utf-8?B?5L2g5aW9?=）双重锁定。 ── */
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    /// 测试内构造样本用：字节 → standard base64。
+    fn b64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    /// 测试内构造样本用：字符串 → RFC 2047 Q 编码（=XX / `_` 空格）。
+    fn q_encode(s: &str) -> String {
+        s.bytes()
+            .map(|b| match b {
+                b' ' => "_".to_string(),
+                b'=' | b'?' | b'_' => format!("={b:02X}"),
+                0x21..=0x7e => (b as char).to_string(),
+                _ => format!("={b:02X}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn decode_qp_bytes_table() {
+        // (输入, 期望字节, 说明)
+        let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+            ("Hello_World", b"Hello World".to_vec(), "Q 编码 `_` → 空格"),
+            ("=E4=BD=A0", vec![0xE4, 0xBD, 0xA0], "=XX 大写十六进制"),
+            ("=e4=bd=a0", vec![0xE4, 0xBD, 0xA0], "=xx 小写同样接受"),
+            ("a=\r\nb", b"ab".to_vec(), "软换行 =\\r\\n 丢弃"),
+            ("a=\nb", b"ab".to_vec(), "软换行 =\\n 丢弃"),
+            ("=ZZ", b"=ZZ".to_vec(), "非法 = 序列原样保留（不 panic）"),
+            ("=4", b"=4".to_vec(), "行尾孤立 =4 原样保留"),
+            ("A?B_C", b"A?B C".to_vec(), "其余字符原样"),
+        ];
+        for (raw, want, why) in cases {
+            assert_eq!(decode_qp_bytes(raw), want, "{why}: {raw:?}");
+        }
+    }
+
+    #[test]
+    fn decode_base64_lenient_variants() {
+        // 标准字母表 + 内嵌空白剔除。
+        assert_eq!(decode_base64_lenient("5L2g"), "你".as_bytes().to_vec());
+        assert_eq!(
+            decode_base64_lenient("5L2g\r\n5aW9"),
+            "你好".as_bytes().to_vec()
+        );
+        // 坏 base64 → 空字节兜底（不 panic、不返回半截数据）。
+        assert!(decode_base64_lenient("####").is_empty());
+        assert!(decode_base64_lenient("").is_empty());
+        // URL-safe 字母表（-/_）不属于 STANDARD 引擎 → 空兜底。
+        assert!(decode_base64_lenient("-__-").is_empty());
+    }
+
+    #[test]
+    fn decode_charset_known_labels_and_lossy_fallback() {
+        let utf8 = "你好".as_bytes();
+        assert_eq!(decode_charset(utf8, "utf-8"), "你好");
+        // WHATWG label 别名（大小写 / 连字符变体）都应命中 encoding_rs。
+        assert_eq!(decode_charset(utf8, "UTF8"), "你好");
+        let (gbk, _, _) = encoding_rs::GBK.encode("你好");
+        assert_eq!(decode_charset(gbk.as_ref(), "gbk"), "你好");
+        assert_eq!(
+            decode_charset(gbk.as_ref(), "gb2312"),
+            "你好",
+            "gb2312 是 gbk 的别名 label"
+        );
+        // 未知 charset：有损 UTF-8 兜底（出现替换符但不 panic）。
+        let out = decode_charset(gbk.as_ref(), "x-no-such-charset");
+        assert!(out.contains('\u{FFFD}'), "未知 charset 应有损兜底: {out:?}");
+    }
+
+    #[test]
+    fn decode_encoded_word_valid_and_illegal() {
+        assert_eq!(
+            decode_encoded_word("=?utf-8?B?5L2g5aW9?="),
+            Some("你好".to_string())
+        );
+        // 大小写编码字母都接受（RFC 2047 语义）。
+        assert_eq!(
+            decode_encoded_word("=?utf-8?b?5L2g5aW9?="),
+            Some("你好".to_string())
+        );
+        assert_eq!(
+            decode_encoded_word("=?utf-8?Q?=E4=BD=A0?="),
+            Some("你".to_string())
+        );
+        // 非法输入一律 None（由上层决定兜底），绝不 panic。
+        assert_eq!(decode_encoded_word("plain"), None, "无 =? 前缀");
+        assert_eq!(decode_encoded_word("=?utf-8?B?abc"), None, "未闭合 ?=");
+        assert_eq!(decode_encoded_word("=?utf-8?Z?abc?="), None, "未知编码字母");
+        assert_eq!(decode_encoded_word("=??B?abc?="), None, "空 charset");
+        assert_eq!(decode_encoded_word("=?B?abc?="), None, "缺 charset 段");
+    }
+
+    /// 整头解码主入口的表驱动覆盖：标准词 / 多段拼接空白消除 / 折叠长头 /
+    /// 非法兜底 / GBK 真实样本。GBK 段在测试内用依赖库构造（自验证）。
+    #[test]
+    fn decode_rfc2047_table() {
+        let gbk_nihao = b64(encoding_rs::GBK.encode("你好").0.as_ref());
+        let gbk_ni = b64(encoding_rs::GBK.encode("你").0.as_ref());
+        let gbk_zhangsan = b64(encoding_rs::GBK.encode("张三").0.as_ref());
+        // (输入, 期望, 说明)
+        let cases: Vec<(String, &str, &str)> = vec![
+            // ① 标准 B/Q 编码词
+            (
+                "=?utf-8?B?5L2g5aW9?=".into(),
+                "你好",
+                "B 编码 UTF-8（经典手写样本）",
+            ),
+            (
+                format!("=?gbk?B?{gbk_nihao}?="),
+                "你好",
+                "B 编码 GBK charset",
+            ),
+            (
+                "=?utf-8?Q?Hello_World?=".into(),
+                "Hello World",
+                "Q 编码 `_` → 空格",
+            ),
+            (
+                "=?utf-8?Q?=E4=BD=A0=E5=A5=BD?=".into(),
+                "你好",
+                "Q 编码 =XX 中文",
+            ),
+            (
+                "=?utf-8?q?hello_world?=".into(),
+                "hello world",
+                "小写 q 同样生效",
+            ),
+            // ② 多段拼接：相邻 encoded-word 之间的空白按 RFC 2047 消除
+            (
+                "=?utf-8?B?5L2g?= =?utf-8?B?5aW9?=".into(),
+                "你好",
+                "相邻两段：中间空格消除",
+            ),
+            (
+                "=?utf-8?B?5L2g?=\r\n =?utf-8?B?5aW9?=".into(),
+                "你好",
+                "折叠长头（CRLF+空格）unfolding 后仍消除",
+            ),
+            (
+                "=?utf-8?B?5L2g?=\r\n\t=?utf-8?B?5aW9?=".into(),
+                "你好",
+                "折叠（CRLF+TAB）",
+            ),
+            (
+                "Re: =?utf-8?B?5L2g?= =?utf-8?B?5aW9?=".into(),
+                "Re: 你好",
+                "普通文本前缀保留",
+            ),
+            (
+                "=?utf-8?B?5L2g?= 与 =?utf-8?B?5aW9?=".into(),
+                "你 与 好",
+                "两段之间夹非空白文本 → 保留",
+            ),
+            (
+                format!("=?gbk?B?{gbk_ni}?= =?utf-8?Q?=E5=A5=BD?="),
+                "你好",
+                "跨 charset / 跨 B-Q 编码的相邻拼接",
+            ),
+            // ③ 非法输入兜底（重点：不 panic，行为可预期）
+            (
+                "=?utf-8?B?!!!!?=".into(),
+                "",
+                "坏 base64 → lenient 空字节 → 空串",
+            ),
+            (
+                "=?utf-8?B?5L2g".into(),
+                "=?utf-8?B?5L2g",
+                "未闭合 ?= → 原样保留",
+            ),
+            (
+                "=?utf-8?X?5L2g?=".into(),
+                "=?utf-8?X?5L2g?=",
+                "未知编码字母 → 原样保留",
+            ),
+            ("=??B?5L2g?=".into(), "=??B?5L2g?=", "空 charset → 原样保留"),
+            ("a=?x".into(), "a=?x", "裸 =? 疑似词 → 原样保留"),
+            (
+                "=?utf-8?B?5L2g?=尾缀".into(),
+                "=?utf-8?B?5L2g?=尾缀",
+                "无空白分隔的尾缀使整词不闭合 → 原样",
+            ),
+            (
+                "=?x-nonexistent?B?5L2g5aW9?=".into(),
+                "你好",
+                "未知 charset → 有损 UTF-8 兜底（字节恰为合法 UTF-8）",
+            ),
+            // ⑤ 真实样本形态（发件人显示名 + 地址）
+            (
+                format!("=?gbk?B?{gbk_zhangsan}?= <zhangsan@example.com>"),
+                "张三 <zhangsan@example.com>",
+                "中文显示名 + 裸地址段保留",
+            ),
+            // 纯文本直通
+            ("plain subject".into(), "plain subject", "无编码词直通"),
+        ];
+        for (raw, want, why) in cases {
+            assert_eq!(decode_rfc2047(&raw), want, "{why}: {raw:?}");
+        }
+    }
+
+    /// ⑤ 中文主题/发件人的真实样本往返：测试内编码 → decode_rfc2047 还原。
+    #[test]
+    fn decode_rfc2047_roundtrip_real_samples() {
+        let samples = [
+            "会议纪要：Q3 复盘",
+            "【系统通知】服务器将于 00:00-06:00 维护",
+            "关于《2026 年度预算方案（修订版）》的确认",
+            "张三",
+            "Re: 你好世界 Hello",
+        ];
+        for s in samples {
+            let b = b64(s.as_bytes());
+            assert_eq!(
+                decode_rfc2047(&format!("=?utf-8?B?{b}?=")),
+                s,
+                "B 往返: {s}"
+            );
+            let q = q_encode(s);
+            assert_eq!(
+                decode_rfc2047(&format!("=?utf-8?Q?{q}?=")),
+                s,
+                "Q 往返: {s}"
+            );
+            // 长头按 RFC 2047 规范在**字符边界**对半切成两段相邻 encoded-word
+            // （规范禁止把多字节字符切进两个词——词各自按 charset 独立解码，
+            // 切坏边界只能有损兜底），unfolding 后拼回原文。
+            let chars: Vec<char> = s.chars().collect();
+            let mid = chars.len() / 2;
+            let (l, r) = (
+                chars[..mid].iter().collect::<String>(),
+                chars[mid..].iter().collect::<String>(),
+            );
+            let folded = format!(
+                "=?utf-8?B?{}?= =?utf-8?B?{}?=",
+                b64(l.as_bytes()),
+                b64(r.as_bytes())
+            );
+            assert_eq!(decode_rfc2047(&folded), s, "折叠两段往返: {s}");
+        }
+    }
+
+    /// 头参数解析：`Key: value; a="b"; c=d` 形式，键大小写不敏感。
+    #[test]
+    fn mime_param_extracts_quoted_and_bare() {
+        assert_eq!(
+            mime_param("text/plain; charset=\"gbk\"", "charset"),
+            Some("gbk".to_string())
+        );
+        assert_eq!(
+            mime_param("multipart/mixed; boundary=abc123", "boundary"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(
+            mime_param("text/html; CHARSET=utf-8", "charset"),
+            Some("utf-8".to_string()),
+            "键大小写不敏感"
+        );
+        assert_eq!(mime_param("text/plain", "charset"), None, "无参数");
+        assert_eq!(
+            mime_param("text/plain; name=x", "charset"),
+            None,
+            "键不存在"
+        );
+    }
+
+    /// 预览用 HTML 剥离：标签、常见实体、空白压缩。
+    #[test]
+    fn strip_html_strips_tags_and_entities() {
+        assert_eq!(strip_html("<p>Hello <b>World</b></p>"), "Hello World");
+        assert_eq!(strip_html("&lt;a&amp;b&gt;"), "<a&b>");
+        // 实体替换后无真实空格可压：`&nbsp;` 已是空格，`—` `…` 直接相邻。
+        assert_eq!(strip_html("a&nbsp;&mdash;&hellip;b"), "a —…b");
+        assert_eq!(strip_html("a\n\n  b\tc"), "a b c");
+        assert_eq!(strip_html("<"), "", "未闭合标签不 panic");
+    }
+
+    /// 单 part 正文两级解码（CTE → charset）；HTML part 再剥标签。
+    #[test]
+    fn decode_part_body_cte_then_charset() {
+        // QP + GBK：===BA=→ GBK 字节 → 你好
+        let headers = vec![
+            (
+                "Content-Transfer-Encoding".to_string(),
+                "quoted-printable".to_string(),
+            ),
+            (
+                "Content-Type".to_string(),
+                "text/plain; charset=gbk".to_string(),
+            ),
+        ];
+        assert_eq!(decode_part_body(b"=C4=E3=BA=C3", &headers), "你好");
+        // base64 + UTF-8 + HTML：解传输编码后剥标签
+        let headers = vec![
+            (
+                "Content-Transfer-Encoding".to_string(),
+                "base64".to_string(),
+            ),
+            (
+                "Content-Type".to_string(),
+                "text/html; charset=utf-8".to_string(),
+            ),
+        ];
+        let body = b64("<p>你好</p>".as_bytes());
+        assert_eq!(decode_part_body(body.as_bytes(), &headers), "你好");
+        // 无 CTE 头：按原文 + 默认 utf-8
+        let headers = vec![];
+        assert_eq!(decode_part_body("原文".as_bytes(), &headers), "原文");
+    }
+
+    /// 正文预览：multipart 优先 text/plain 叶子（html 只做退路）、裸正文直通、
+    /// 非空行取前 3 行。
+    #[test]
+    fn decode_body_preview_prefers_plain_part() {
+        let raw = concat!(
+            "Content-Type: multipart/alternative; boundary=\"XYZ\"\r\n",
+            "\r\n",
+            "--XYZ\r\n",
+            "Content-Type: text/plain; charset=utf-8\r\n",
+            "\r\n",
+            "第一行\r\n",
+            "第二行\r\n",
+            "第三行\r\n",
+            "--XYZ\r\n",
+            "Content-Type: text/html; charset=utf-8\r\n",
+            "\r\n",
+            "<p>HTML 分支</p>\r\n",
+            "--XYZ--\r\n",
+        );
+        assert_eq!(decode_body_preview(raw.as_bytes()), "第一行 第二行 第三行");
+
+        // 裸正文（无头块）直通，行数裁剪。
+        assert_eq!(decode_body_preview("裸正文".as_bytes()), "裸正文");
+        let five_lines = "1\n2\n3\n4\n5";
+        assert_eq!(
+            decode_body_preview(five_lines.as_bytes()),
+            "1 2 3",
+            "只取前 3 个非空行"
+        );
+    }
+
+    /// UID 必须是单个非空 32 位整数，拒绝 sequence-set 注入。
+    #[test]
+    fn parse_uid_rejects_injection() {
+        assert_eq!(parse_uid("1234"), Ok(1234));
+        for bad in ["", "1:*", "1,2", "abc", "-1", "4294967296"] {
+            assert!(parse_uid(bad).is_err(), "{bad:?} 应被拒绝");
+        }
+    }
+
+    /// server host 的 IPv6 提取——裸 IPv6（无方括号、
+    /// 多冒号）整串作 host 进 probe；`host:port` / 方括号形态不受影响。
+    #[test]
+    fn email_server_guard_bare_ipv6_is_whole_host() {
+        let acc = |server: &str| EmailAccount {
+            server: server.into(),
+            port: 993,
+            email: "a@b.c".into(),
+            password: String::new(),
+            use_tls: true,
+        };
+        // 公网目标照常放行：域名 / 域名+端口 / 方括号 IPv6 / 裸 IPv6。
+        assert!(reject_private_email_server(&acc("imap.example.com")).is_ok());
+        assert!(reject_private_email_server(&acc("imap.example.com:993")).is_ok());
+        assert!(
+            reject_private_email_server(&acc("[2001:4860:4860::8888]")).is_ok(),
+            "方括号公网 IPv6 应放行"
+        );
+        assert!(
+            reject_private_email_server(&acc("2001:4860:4860::8888")).is_ok(),
+            "裸公网 IPv6 应放行（整串作 host 重包方括号）"
+        );
+        // 内网目标一律拒绝——修复点：裸 IPv6 此前被 split(':') 截成
+        // 首段（如 "fe80"），按数字 IP 误判公网放行。
+        for bad in [
+            "::1",
+            "fe80::1",
+            "fd00::1",
+            "fc00::1",
+            "127.0.0.1",
+            "192.168.1.2:993",
+            "10.0.0.5",
+            "localhost",
+        ] {
+            assert!(
+                reject_private_email_server(&acc(bad)).is_err(),
+                "应拒绝内网目标：{bad}"
+            );
+        }
+    }
 }

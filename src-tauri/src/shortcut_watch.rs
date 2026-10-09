@@ -1,4 +1,4 @@
-//! 快捷方式条目监听（BentoDesk 借鉴 #4 的引用侧变体）：
+//! 快捷方式条目监听：
 //!
 //! 快捷方式组件的条目是路径引用，目标文件改名 / 删除 / 内容变更时前端需要
 //! 感知：改名 → classify 重挂（path/label/kind）、删除 → 标 missing、内容
@@ -8,10 +8,13 @@
 //! 条目路径过滤（与 live-folder「事件只当脏标记」同哲学，删除侧前端仍会
 //! check_paths_exist 核实后才标缺失）。
 //!
-//! watcher 生命周期：`apply_shortcut_watch` 全量 upsert（父目录并集哈希未变
-//! 跳过拆建；并集为空 = 移除监视）。单 watcher + 单接收线程；watcher 被
-//! drop 时 channel 断连，线程随 recv 出错退出。监视失败的目录只 log 跳过
-//! （网络盘 / 权限变化不应拖垮命令）。
+//! watcher 生命周期：`apply_shortcut_watch` **按实例 id upsert**（未提及的
+//! 实例保持不动——每个组件实例只送自己这一份，多实例互不踩踏；全量替换会让
+//! 后调用的实例拆掉先调用实例的监视）。全实例父目录并集哈希未变跳过拆建；
+//! 并集为空 = 移除监视。单 watcher + 单接收线程；watcher 被 drop 时 channel
+//! 断连，线程随 recv 出错退出。监视失败的目录只 log 跳过（网络盘 / 权限
+//! 变化不应拖垮命令）。实例被删除后其条目会残留监视（事件无消费者，无害），
+//! 与 auto_organize 的实例残留特性一致。
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -27,7 +30,7 @@ use tauri::Emitter;
 /// 同路径去抖窗口（与 auto_organize 同款 500ms）。
 const DEBOUNCE_MS: u64 = 500;
 /// 单次广播的变更条数上限：溢出部分丢弃——前端另有 60s 周期复检全量对账
-/// （BentoDesk「队列溢出 → 全量对账」的简化等价物）。
+/// 。
 const MAX_CHANGES_PER_EMIT: usize = 128;
 
 #[derive(Clone, Deserialize, PartialEq)]
@@ -127,15 +130,55 @@ pub fn classify_event(kind: &EventKind, paths: &[PathBuf]) -> Vec<WatchChange> {
 }
 
 /// watcher 本体由管理表持有：替换/移除时 drop watcher → channel 断连 →
-/// 接收线程退出（与 auto_organize 相同的停止语义）。
+/// 接收线程退出（与 auto_organize 相同的停止语义）。seq 是落座这次 apply 的
+/// 世代号（APPLY_SEQ）：并发的旧快照不得覆盖新落座者。
 struct WatchEntry {
     _watcher: notify::RecommendedWatcher,
     hash: u64,
+    seq: u64,
 }
 
 static WATCH: Mutex<Option<WatchEntry>> = Mutex::new(None);
+/// 实例 id → 归一目标路径全集（upsert 语义的管理表；单 watcher 只监视
+/// 全实例父目录并集，此表只为「未提及的实例保持不动」记账）。
+static INSTANCE_PATHS: Mutex<std::collections::BTreeMap<String, BTreeSet<String>>> =
+    Mutex::new(std::collections::BTreeMap::new());
 static DEBOUNCE: Mutex<Option<std::collections::HashMap<String, Instant>>> = Mutex::new(None);
 static APPLY_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 按实例 upsert 路径表（纯函数，可单测）：paths 为空的实例移除，其余以
+/// 归一路径集写入；表内容有变化返回 true（无变化的 apply 幂等）。
+fn upsert_instance_paths(
+    map: &mut std::collections::BTreeMap<String, BTreeSet<String>>,
+    configs: &[ShortcutWatchConfig],
+) -> bool {
+    let mut changed = false;
+    for c in configs {
+        if c.paths.is_empty() {
+            changed |= map.remove(&c.instance_id).is_some();
+            continue;
+        }
+        let set: BTreeSet<String> = c.paths.iter().map(|p| norm_path(p)).collect();
+        if map.get(&c.instance_id) != Some(&set) {
+            map.insert(c.instance_id.clone(), set);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// 全实例目标路径的父目录并集（纯函数，可单测）。
+fn union_parents(map: &std::collections::BTreeMap<String, BTreeSet<String>>) -> BTreeSet<String> {
+    let mut parents = BTreeSet::new();
+    for paths in map.values() {
+        for p in paths {
+            if let Some(dir) = parent_dir_of(p) {
+                parents.insert(dir);
+            }
+        }
+    }
+    parents
+}
 
 fn spawn_watcher(
     app: &tauri::AppHandle,
@@ -157,7 +200,15 @@ fn spawn_watcher(
     }
     std::thread::spawn(move || {
         for ev in rx {
-            let Ok(ev) = ev else { continue };
+            // notify 的运行期错误（目录失效/IO 异常）不再无痕丢弃——否则
+            // 引用侧完全失明，只剩 60s 复检兜底却不知道该看哪里。
+            let ev = match ev {
+                Ok(ev) => ev,
+                Err(e) => {
+                    log::warn!("快捷方式监听错误：{e}");
+                    continue;
+                }
+            };
             let changes = classify_event(&ev.kind, &ev.paths);
             if changes.is_empty() {
                 continue;
@@ -184,9 +235,19 @@ fn spawn_watcher(
                         map.retain(|_, t| now.duration_since(*t) < Duration::from_secs(5));
                     }
                 }
-                // 内容变更：图标磁盘缓存先失效，前端重提取才能拿到新图标。
-                if let WatchChange::Modified { path } = &change {
-                    crate::files::invalidate_icon_cache(&app, path);
+                // 图标磁盘缓存失效（扩面）：此前只清 Modified 的新路径——
+                // Renamed/Removed 后旧路径的缓存条目留盘，只能等 LRU 逐出；
+                // 缓存键即归一路径哈希，把旧路径一并删掉。
+                match &change {
+                    WatchChange::Modified { path } => {
+                        crate::files::invalidate_icon_cache(&app, path);
+                    }
+                    WatchChange::Renamed { from, .. } => {
+                        crate::files::invalidate_icon_cache(&app, from);
+                    }
+                    WatchChange::Removed { path } => {
+                        crate::files::invalidate_icon_cache(&app, path);
+                    }
                 }
                 out.push(change.to_json());
                 if out.len() >= MAX_CHANGES_PER_EMIT {
@@ -205,7 +266,9 @@ fn spawn_watcher(
     Ok(watcher)
 }
 
-/// 全量 upsert（前端每次条目集变化都重放；哈希未变跳过拆建，多实例互不踩踏）。
+/// 按实例 id upsert 监视集（未提及的实例保持不动——调用方只送自己这一份，
+/// 多实例互不踩踏）；watcher 仍单实例，监视全实例父目录并集（哈希未变跳过
+/// 拆建）。paths 为空 = 移除该实例的条目；全并集为空 = 停止监视。
 /// 返回 (监视中的父目录数, 本次是否重建)。
 #[tauri::command]
 pub fn apply_shortcut_watch(
@@ -214,15 +277,17 @@ pub fn apply_shortcut_watch(
     configs: Vec<ShortcutWatchConfig>,
 ) -> Result<(usize, usize), String> {
     crate::require_trusted(&window)?;
-    APPLY_SEQ.fetch_add(1, Ordering::Relaxed);
-    let mut parents = BTreeSet::new();
-    for c in &configs {
-        for p in &c.paths {
-            if let Some(dir) = parent_dir_of(p) {
-                parents.insert(dir);
-            }
-        }
-    }
+    let my_seq = APPLY_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    // 单锁内完成 upsert + 并集快照：并发 apply 各自拿到自己 upsert 后的
+    // 一致快照。快照 → 落座之间另一路 apply 可能带着更大的并集先行落座
+    // （INSTANCE_PATHS 锁与 WATCH 锁不原子），此时旧快照不得回退覆盖：
+    // 小并集 watcher 落在最后会让另一实例的路径漏监视到它的下一次 apply。
+    // 落座前比对世代号——序列更晚者已写入就放弃本次存储。
+    let parents = {
+        let mut guard = INSTANCE_PATHS.lock().unwrap_or_else(|p| p.into_inner());
+        upsert_instance_paths(&mut guard, &configs);
+        union_parents(&guard)
+    };
     let hash = parents_hash(&parents);
     {
         let guard = WATCH.lock().unwrap_or_else(|p| p.into_inner());
@@ -233,9 +298,13 @@ pub fn apply_shortcut_watch(
             }
         }
     }
-    let changed;
     {
         let mut guard = WATCH.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = guard.as_ref() {
+            if entry.seq > my_seq {
+                return Ok((parents.len(), 0));
+            }
+        }
         // 并集为空 = 停止监视。
         if parents.is_empty() {
             *guard = None;
@@ -245,10 +314,10 @@ pub fn apply_shortcut_watch(
         *guard = Some(WatchEntry {
             _watcher: watcher,
             hash,
+            seq: my_seq,
         });
-        changed = 1;
     }
-    Ok((parents.len(), changed))
+    Ok((parents.len(), 1))
 }
 
 #[cfg(test)]
@@ -322,5 +391,59 @@ mod tests {
         let mut c = a.clone();
         c.insert("C:/Other".into());
         assert_ne!(parents_hash(&a), parents_hash(&c));
+    }
+
+    fn cfg(id: &str, paths: &[&str]) -> ShortcutWatchConfig {
+        ShortcutWatchConfig {
+            instance_id: id.into(),
+            paths: paths.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn upsert_keeps_unmentioned_instances() {
+        // 多实例互不踩踏的核心语义：实例 2 的 apply 不清掉实例 1 的记账。
+        let mut map = std::collections::BTreeMap::new();
+        assert!(upsert_instance_paths(
+            &mut map,
+            &[cfg("w1", &["C:/a/x.exe"])]
+        ));
+        assert!(!upsert_instance_paths(
+            &mut map,
+            &[cfg("w1", &["C:/A/X.EXE"])]
+        )); // 幂等
+        assert!(upsert_instance_paths(
+            &mut map,
+            &[cfg("w2", &["C:/b/y.exe"])]
+        ));
+        assert!(map.contains_key("w1") && map.contains_key("w2"));
+        // paths 空 = 移除该实例（只移自己）。
+        assert!(upsert_instance_paths(&mut map, &[cfg("w1", &[])]));
+        assert!(!map.contains_key("w1"));
+        assert!(map.contains_key("w2"));
+        assert!(!upsert_instance_paths(&mut map, &[cfg("w1", &[])])); // 再移幂等
+    }
+
+    #[test]
+    fn union_parents_across_instances() {
+        let mut map = std::collections::BTreeMap::new();
+        assert!(upsert_instance_paths(
+            &mut map,
+            &[cfg("w1", &["C:/a/x.exe", "C:/a/y.exe"])]
+        ));
+        assert!(upsert_instance_paths(
+            &mut map,
+            &[cfg("w2", &["C:/A/z.exe"])]
+        ));
+        let parents = union_parents(&map);
+        assert_eq!(parents.len(), 1); // 同目录归一并集去重
+        assert!(parents.contains("c:\\a"));
+        assert!(upsert_instance_paths(
+            &mut map,
+            &[cfg("w2", &["C:/b/w.exe"])]
+        ));
+        let parents = union_parents(&map);
+        assert_eq!(parents.len(), 2);
+        assert!(parents.contains("c:\\b"));
     }
 }

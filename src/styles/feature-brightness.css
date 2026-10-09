@@ -91,7 +91,7 @@
   gap: 2px;
   padding: 8px 10px;
   border-radius: var(--radius, 12px);
-  /* --panel 从未定义（曾恒回退 55% 白底，暗色档白字 ≈2:1）：改接 A1 求解的
+  /* --panel 从未定义（曾恒回退 55% 白底，暗色档白字 ≈2:1）：改接 求解的
      卡面层色（跟随明暗档 / 自定义背景 / 不透明度滑条）。 */
   background: var(--layer2, var(--surface-soft));
 }

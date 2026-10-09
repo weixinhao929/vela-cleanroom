@@ -3,17 +3,34 @@ import { useSettingsStore } from "./store/settings-store";
 
 /**
  * 轻量 i18n 运行时（原 i18n.ts 的 API 部分；词典已拆到 i18n.ts 并改为
- * 独立 chunk）：以中文为唯一键，语言选择 English 时映射为英文，否则原样
- * 返回。这样无需改动既有字符串的调用位置，即可增量接入英文。
+ * 独立 chunk）：以中文为唯一键，实际语言为 English 时映射为英文，否则
+ * 原样返回。这样无需改动既有字符串的调用位置，即可增量接入英文。
+ * 「跟随系统」档在读取点按 OS locale 解析成两档实际语言。
  *
  * 词典按需加载：切到 English 时动态 import() 词典 chunk（约百 KB，中文
  * 用户与其余窗口的首屏关键路径不再解析整本词典）。加载完成前 t()/tr()
  * 回退中文原文（与缺键回退同语义），就位后经内部版本号触发订阅组件重渲。
  */
-export type Lang = "简体中文" | "English";
+export type Lang = "跟随系统" | "简体中文" | "English";
 
 /** 语言切换选项（供设置页选择器使用）。 */
-export const LANGUAGES: Lang[] = ["简体中文", "English"];
+export const LANGUAGES: Lang[] = ["跟随系统", "简体中文", "English"];
+
+/**
+ * 语言设置 → 实际生效语言（「跟随系统」档）：按 OS locale 解析，非
+ * zh* 一律视为 English（应用只有两套词典）；解析失败回简体中文。
+ */
+function effectiveLang(lang: string): "简体中文" | "English" {
+  if (lang === "English") return "English";
+  if (lang === "跟随系统") {
+    try {
+      return /^en/i.test(navigator.language) ? "English" : "简体中文";
+    } catch {
+      return "简体中文";
+    }
+  }
+  return "简体中文";
+}
 
 type Dict = Record<string, string>;
 
@@ -56,26 +73,32 @@ export function ensureEnglishDict(): Promise<void> {
  * .getState）；原 i18n.ts 的实现同样只在调用期访问 store，保持该时序。
  */
 let wired = false;
+/* 上次写入 documentElement.lang 的值（同值跳过）——该订阅对每次 store
+   写都触发，逐次重复赋值无谓且可能扰动 AT/拼写检查的重算。 */
+let lastRootLang = "";
 function wireLanguageWatch(): void {
   if (wired) return;
   wired = true;
   const syncRootLang = (lang: string) => {
-    /* html lang 随应用内语言写入（三轮审查 L-3）：AT/拼写检查/字体回退
-       跟随应用语言而非宿主 WebView 默认。 */
-    if (typeof document !== "undefined") document.documentElement.lang = lang === "English" ? "en" : "zh-CN";
+    /* html lang 随应用内语言写入（三轮审查 ）：AT/拼写检查/字体回退
+       跟随应用语言而非宿主 WebView 默认。跟随系统档先解析成实际语言。 */
+    const next = effectiveLang(lang) === "English" ? "en" : "zh-CN";
+    if (next === lastRootLang) return;
+    lastRootLang = next;
+    if (typeof document !== "undefined") document.documentElement.lang = next;
   };
   syncRootLang(useSettingsStore.getState().general.language);
-  if (useSettingsStore.getState().general.language === "English") {
+  if (effectiveLang(useSettingsStore.getState().general.language) === "English") {
     void ensureEnglishDict();
   }
   useSettingsStore.subscribe((s) => {
     syncRootLang(s.general.language);
-    if (s.general.language === "English") void ensureEnglishDict();
+    if (effectiveLang(s.general.language) === "English") void ensureEnglishDict();
   });
 }
 
 /**
- * 翻译参数：整句模板里的 `{name}` 占位符替换值（G8 引入，G14 全面铺开）。
+ * 翻译参数：整句模板里的 `{name}` 占位符替换值（引入，全面铺开）。
  * 中英文模板共用同一组占位符名，词典值保持 `{n} tasks` 形式。
  */
 export type TranslateParams = Record<string, string | number>;
@@ -107,29 +130,29 @@ export type TranslateFn = (zh: string, params?: TranslateParams) => string;
  */
 export function t(zh: string, params?: TranslateParams): string {
   wireLanguageWatch();
-  const lang = useSettingsStore.getState().general.language;
+  const lang = effectiveLang(useSettingsStore.getState().general.language);
   return fillParams(lang === "English" ? (dict?.[zh] ?? zh) : zh, params);
 }
 
 /**
- * 应用内语言对应的 BCP-47 标签（E5）。
+ * 应用内语言对应的 标签。
  * 供 Intl.DateTimeFormat / toLocaleString(locale) 使用——不传 locale 会
  * 跟随操作系统而非应用内设置，切英文后日期时间仍是中文格式。
  *
  * @returns `"en-US"` 或 `"zh-CN"`。O(1)。
  */
 export function appLocale(): string {
-  return useSettingsStore.getState().general.language === "English" ? "en-US" : "zh-CN";
+  return effectiveLang(useSettingsStore.getState().general.language) === "English" ? "en-US" : "zh-CN";
 }
 
 /**
  * Hook 版 {@link appLocale}：语言切换时触发重渲。
  *
- * @returns 当前语言的 BCP-47 标签。
+ * @returns 当前语言的 标签。
  * @throws 无。
  */
 export function useAppLocale(): string {
-  const lang = useSettingsStore((s) => s.general.language);
+  const lang = useSettingsStore((s) => effectiveLang(s.general.language));
   return lang === "English" ? "en-US" : "zh-CN";
 }
 
@@ -153,7 +176,9 @@ export function useAppLocale(): string {
  */
 export function useT(): TranslateFn {
   wireLanguageWatch();
-  const lang = useSettingsStore((s) => s.general.language);
+  /* 跟随系统档在此解析：订阅的是存储值，解析结果进 useCallback 依赖——
+     存储 enum 切换即重渲换词（OS locale 运行期变化不跟随，重启后生效）。 */
+  const lang = useSettingsStore((s) => effectiveLang(s.general.language));
   // 订阅词典版本：英文词典 chunk 到达时让全部订阅组件换词。
   useSyncExternalStore(subscribe, () => dictVersion);
   const d = dict;

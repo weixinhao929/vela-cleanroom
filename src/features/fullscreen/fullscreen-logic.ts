@@ -1,5 +1,5 @@
 /**
- * 全屏展示纯逻辑（借鉴 ClassSoftwareHub #5）：hash 模式解析、运行中倒计时
+ * 全屏展示纯逻辑：hash 模式解析、运行中倒计时
  * 扫描（localStorage 注入）、番茄钟快照插值（sync:pomodoro 载荷 + 墙钟）。
  * 独立窗口不挂桌面层 store，全部从绝对时间戳现算。
  */
@@ -80,16 +80,19 @@ export function interpolatePomodoro(
     };
   }
   const elapsed = (nowMs - snap.segmentAnchorMs) / 1000;
+  /* 插值统一 floor（与主窗走秒 wallRemaining 的 Math.floor 同式）——
+     此前用 round，全屏大字会比主面板/迷你窗快 1 秒。 */
+  const elapsedFloor = Math.floor(elapsed);
   if (countUp) {
     return {
-      seconds: Math.max(0, Math.round(snap.segmentBaseSeconds + elapsed)),
+      seconds: Math.max(0, snap.segmentBaseSeconds + elapsedFloor),
       running: true,
       countUp,
       mode: snap.pomodoro.mode
     };
   }
   return {
-    seconds: Math.max(0, Math.round(snap.segmentBaseSeconds - elapsed)),
+    seconds: Math.max(0, snap.segmentBaseSeconds - elapsedFloor),
     running: true,
     countUp,
     mode: snap.pomodoro.mode

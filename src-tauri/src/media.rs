@@ -13,7 +13,7 @@
 //! SessionsChanged 事件，仅在**有变化**时 emit `media:snapshot`（含漂移
 //! 校准：播放中每 ~5s 比对实际位置与预期推进，偏差 >1s 才发）。位置读取
 //! 含 **LastUpdatedTime 插值**（Position 是采样值，播放中真实位置 =
-//! Position + now − LastUpdatedTime，同类媒体浮窗同款口径），快照天然
+//! Position + now − LastUpdatedTime，同类媒体浮窗 同款口径），快照天然
 //! 无累计漂移；不写时间戳的播放器（网易云——采样值播放期间是陈旧静态值）
 //! 走**单调位置地板**：校准绝不回拽位置，回退只放行 timeline 事件拍
 //! （seek/单曲循环）。拉式命令对这类播放器按**位置台账**（看门线程最近
@@ -45,9 +45,9 @@ pub struct SystemMediaInfo {
     pub thumb: Option<String>,
     /// §4.3 封面取色三色板（无封面时为回退色板；拉式命令恒全量）。
     pub palette: Option<MediaPalette>,
-    /// 传输控件能力位 + 循环/随机状态（W-130，对齐同类媒体浮窗）。
+    /// 传输控件能力位 + 循环/随机状态（同类媒体浮窗 对齐）。
     pub controls: MediaControls,
-    /// 当前会话 AUMID（W-131：前端唤起播放器/调应用音量需要；空串 = 未知）。
+    /// 当前会话 AUMID（前端唤起播放器/调应用音量需要；空串 = 未知）。
     pub aumid: String,
 }
 
@@ -75,11 +75,11 @@ pub struct MediaSnapshot {
     pub palette: Option<MediaPalette>,
     /// 传输控件能力位 + 循环/随机状态（PlaybackInfoChanged 那拍变化）。
     pub controls: MediaControls,
-    /// 当前会话 AUMID（W-131：前端唤起播放器/调应用音量需要；空串 = 未知）。
+    /// 当前会话 AUMID（前端唤起播放器/调应用音量需要；空串 = 未知）。
     pub aumid: String,
 }
 
-/// 传输控件能力位与循环/随机状态（W-130，对齐同类媒体浮窗的 Controls
+/// 传输控件能力位与循环/随机状态（对齐同类媒体浮窗 的 Controls
 /// 用法）：前端据此把会话不支持的按钮置灰（浏览器视频页常无上一曲/定位），
 /// 并渲染 shuffle/repeat 的当前态。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
@@ -199,21 +199,28 @@ fn fallback_media_palette() -> MediaPalette {
     palette_from_candidate(lab.l, c, lab.hue_deg())
 }
 
-/// 单条目取色缓存（同参数去抖）：key = 曲目元数据 + 封面字节的内容哈希。
-/// 事件线程只在属性变化拍调用，拉式命令每秒轮询也复用同一条目——同一封面
-/// 不重复解码/量化。
+/// 取色缓存（同参数去抖，LRU 4 条）：key = 曲目元数据 + 封面字节的内容
+/// 哈希。事件线程只在属性变化拍调用，拉式命令每秒轮询也复用同一条目——
+/// 同一封面不重复解码/量化。此前只存 1 条：两三首歌来回切会反复
+/// 「解码封面 + 量化」，LRU 覆盖常见轮播列表。
 fn palette_cache(key: u64, compute: impl FnOnce() -> MediaPalette) -> MediaPalette {
-    static CACHE: std::sync::OnceLock<Mutex<Option<(u64, MediaPalette)>>> =
+    const CAP: usize = 4;
+    static CACHE: std::sync::OnceLock<Mutex<std::collections::VecDeque<(u64, MediaPalette)>>> =
         std::sync::OnceLock::new();
-    let cell = CACHE.get_or_init(|| Mutex::new(None));
+    let cell = CACHE.get_or_init(|| Mutex::new(std::collections::VecDeque::new()));
     let mut guard = cell.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some((k, p)) = guard.as_ref() {
-        if *k == key {
-            return p.clone();
-        }
+    if let Some(idx) = guard.iter().position(|(k, _)| *k == key) {
+        // 命中即移回队尾（最近使用）。
+        let entry = guard.remove(idx).expect("position() 命中后 remove 必在");
+        let p = entry.1;
+        guard.push_back((key, p.clone()));
+        return p;
     }
     let p = compute();
-    *guard = Some((key, p.clone()));
+    if guard.len() >= CAP {
+        guard.pop_front();
+    }
+    guard.push_back((key, p.clone()));
     p
 }
 
@@ -266,7 +273,7 @@ fn with_com<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
     // SAFETY: CoInitializeEx on a fresh thread scope.
     let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    // P2（审计修复）：RPC_E_CHANGED_MODE 不算失败——阻塞池线程会被复用，
+    // RPC_E_CHANGED_MODE 不算失败——阻塞池线程会被复用，
     // 此前可能已被其它任务初始化为 MTA。此前按致命错误处理会让媒体轮询
     // "间歇性永久空闲"。与 audio.rs::toggle_system_mute_blocking 一致：
     // S_OK/S_FALSE 都配对 CoUninitialize，仅 CHANGED_MODE 免配对且继续执行。
@@ -297,30 +304,32 @@ fn active_session() -> Option<windows::Media::Control::GlobalSystemMediaTranspor
         .ok()?
         .get()
         .ok()?;
-    pick_session(&manager)
+    pick_session(&enumerate_sessions(&manager))
 }
 
-/// 在既有 manager 上解析当前应关注的会话（拉式命令与事件线程共用）：
-/// 用户锁定（W-123）优先；自动模式按「前台且正在播放 → 正在播放 → 前台 →
-/// 第一个」取（前台优先，同类媒体浮窗同思路，多会话并存时
-/// 跟随用户正在交互的应用）。
+/// 会话枚举条目：(会话, AUMID, 在播)。单次枚举同时喂给会话选择
+/// （[`pick_session`]）、事件循环的订阅同步/独占播放、以及会话分页
+/// （[`compose_sessions_page`]）——此前 pick_session 与事件循环各自枚举
+/// 一遍，稳态下每秒两次全量 GetSessions + 逐会话 GetPlaybackInfo。
+/// 单个异常会话跳过，不拖垮整体。
 #[cfg(windows)]
-fn pick_session(
-    manager: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager,
-) -> Option<windows::Media::Control::GlobalSystemMediaTransportControlsSession> {
-    let sessions = manager.GetSessions().ok()?;
-    let count = sessions.Size().ok()?;
-    if count == 0 {
-        return None;
-    }
+type SessionEntry = (
+    windows::Media::Control::GlobalSystemMediaTransportControlsSession,
+    String,
+    bool,
+);
 
-    // 一次性收齐 (session, aumid, playing)：后续各档偏好只做筛选，不再
-    // 反复跨 WinRT 取状态。单个异常会话跳过，不拖垮整体。
-    let mut entries: Vec<(
-        windows::Media::Control::GlobalSystemMediaTransportControlsSession,
-        String,
-        bool,
-    )> = Vec::with_capacity(count as usize);
+#[cfg(windows)]
+fn enumerate_sessions(
+    manager: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager,
+) -> Vec<SessionEntry> {
+    let Ok(sessions) = manager.GetSessions() else {
+        return Vec::new();
+    };
+    let Ok(count) = sessions.Size() else {
+        return Vec::new();
+    };
+    let mut entries: Vec<SessionEntry> = Vec::with_capacity(count as usize);
     for i in 0..count {
         let Ok(session) = sessions.GetAt(i) else {
             continue;
@@ -329,10 +338,6 @@ fn pick_session(
             .SourceAppUserModelId()
             .map(|s| s.to_string())
             .unwrap_or_default();
-        // W-131 黑名单：被隐藏的应用不参与会话选择（含已失效的锁定项）。
-        if is_blocked(&aumid) {
-            continue;
-        }
         let playing = session
             .GetPlaybackInfo()
             .ok()
@@ -343,19 +348,41 @@ fn pick_session(
             .unwrap_or(false);
         entries.push((session, aumid, playing));
     }
-    if entries.is_empty() {
+    entries
+}
+
+/// 在既有 manager 上解析当前应关注的会话（拉式命令与事件线程共用）：
+/// 用户锁定优先；自动模式按「前台且正在播放 → 正在播放 → 前台 →
+/// 第一个」取（前台优先对齐同类媒体浮窗 GetFocusedSession，多会话并存时
+/// 跟随用户正在交互的应用）。
+#[cfg(windows)]
+fn pick_session(
+    entries: &[SessionEntry],
+) -> Option<windows::Media::Control::GlobalSystemMediaTransportControlsSession> {
+    // 黑名单：被隐藏的应用不参与会话选择（含已失效的锁定项）。
+    let visible: Vec<&SessionEntry> = entries
+        .iter()
+        .filter(|(_, aumid, _)| !is_blocked(aumid))
+        .collect();
+    if visible.is_empty() {
         return None;
     }
 
-    // W-123 会话选择：用户锁定某个应用（Spotify/浏览器/播放器）时只取该会话。
+    // 会话选择：用户锁定某个应用（Spotify/浏览器/播放器）时只取该会话。
     if let Some(selected) = selected_session_id() {
-        if let Some((session, _, _)) = entries
+        if let Some((session, _, _)) = visible
             .iter()
             .find(|(_, aumid, _)| aumid.as_str() == selected.as_str())
         {
             return Some(session.clone());
         }
-        // 选中的会话已退出（应用关闭）→ 回落自动模式。
+        // 选中的会话已退出（应用关闭）→ 回落自动模式；顺手清掉死锁定的 id，
+        // 否则 get_selected_media_session / 会话分页一直返回一个不存在的
+        // 条目，前端选择器永远显示一个悬空的锁定项。
+        drop(selected);
+        if let Ok(mut g) = SELECTED_SESSION.write() {
+            *g = None;
+        }
     }
 
     // 前台进程 exe 名与 AUMID 分段比对（小写）。
@@ -368,26 +395,26 @@ fn pick_session(
     };
 
     // 自动模式四档偏好。
-    entries
+    visible
         .iter()
         .find(|(_, aumid, playing)| *playing && matches_fg(aumid))
-        .or_else(|| entries.iter().find(|(_, _, playing)| *playing))
-        .or_else(|| entries.iter().find(|(_, aumid, _)| matches_fg(aumid)))
-        .or_else(|| entries.first())
+        .or_else(|| visible.iter().find(|(_, _, playing)| *playing))
+        .or_else(|| visible.iter().find(|(_, aumid, _)| matches_fg(aumid)))
+        .or_else(|| visible.first())
         .map(|(session, _, _)| session.clone())
 }
 
-/// W-123 当前锁定的媒体会话 id（SourceAppUserModelId）；None = 自动。
+/// 当前锁定的媒体会话 id（SourceAppUserModelId）；None = 自动。
 static SELECTED_SESSION: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
 fn selected_session_id() -> Option<String> {
     SELECTED_SESSION.read().ok().and_then(|g| g.clone())
 }
 
-/// W-131 媒体监控行为偏好（前端 settings.general.media 单向推送，重启回默认，
+/// 媒体监控行为偏好（前端 settings.general.media 单向推送，重启回默认，
 /// 持久化在前端设置层）：
 ///  - `pause_others`：独占播放——某会话开始播放时，自动暂停其余在播会话
-///    （同类媒体浮窗的同名开关）；
+///    （同类媒体浮窗的 PauseOtherSessionsEnabled）；
 ///  - `blocked_sessions`：会话黑名单（AUMID 精确匹配）——被隐藏的应用不参与
 ///    会话选择也不出现在选择器里（同类媒体浮窗的应用过滤，仅黑名单档）。
 static PAUSE_OTHERS: AtomicBool = AtomicBool::new(false);
@@ -412,7 +439,7 @@ fn is_blocked(aumid: &str) -> bool {
         .any(|b| b == aumid)
 }
 
-/// W-131 一个可选媒体会话（应用）的描述。
+/// 一个可选媒体会话（应用）的描述。
 #[derive(Clone, Debug, Serialize, TS)]
 #[ts(export, export_to = "../../src/types/bindings/")]
 pub struct MediaSessionInfo {
@@ -421,11 +448,11 @@ pub struct MediaSessionInfo {
     /// 应用名：取 AUMID 最后一段（`SpotifyAB.Spotify…!Spotify` → `Spotify`）。
     pub name: String,
     pub playing: bool,
-    /// W-131 已被列入黑名单（选择器里进「已隐藏」区，点击恢复）。
+    /// 已被列入黑名单（选择器里进「已隐藏」区，点击恢复）。
     pub blocked: bool,
 }
 
-/// W-131 媒体监控行为偏好快照（前端回显）。
+/// 媒体监控行为偏好快照（前端回显）。
 #[derive(Clone, Debug, Serialize, TS)]
 #[ts(export, export_to = "../../src/types/bindings/")]
 pub struct MediaBehavior {
@@ -445,8 +472,9 @@ fn timespan_secs(ts: windows::Foundation::TimeSpan) -> f64 {
 /// 播放中真实位置 = 采样值 + (now − LastUpdatedTime)。部分播放器（网易云
 /// 音乐等）从不写 LastUpdatedTime（保持 0），裸相减会把整个 FILETIME（1601
 /// 年起，~1.3e10 s）当成偏移加进来，进度显示成 "223914975:34" 这种天量。
-/// 因此只在时间戳可信时插值：LastUpdatedTime > 0，且偏移落在 [0, 1 天]
-/// （真实偏移不会超过一首歌/一路直播的长度），否则退回采样值本身。
+/// 因此只在时间戳可信时插值：LastUpdatedTime > 0，且偏移落在 [0, 30 分钟]
+/// （正常会话两次时间戳更新远小于此；超窗多为系统时钟前跳，见
+/// [`timestamp_plausible`]），否则退回采样值本身。
 fn interpolated_position_secs(raw_secs: f64, updated_100ns: i64, now_100ns: i64) -> f64 {
     if timestamp_plausible(updated_100ns, now_100ns) {
         raw_secs + (now_100ns - updated_100ns) as f64 / 10_000_000.0
@@ -455,11 +483,15 @@ fn interpolated_position_secs(raw_secs: f64, updated_100ns: i64, now_100ns: i64)
     }
 }
 
-/// LastUpdatedTime 是否可信（>0 且偏移在 [0, 1 天]）——与
+/// LastUpdatedTime 是否可信（>0 且偏移在 [0, 30 分钟]）——与
 /// [`interpolated_position_secs`] 的插值前提同一口径。调用方据此区分
 /// 「位置精确已知」与「只有陈旧采样可用」（后者见事件线程的单调地板）。
+/// 上界 30 分钟而非一天：NTP 校时 / 时区跳变会让「now」向前突跳数分钟到
+/// 一小时，插值把位置直接推到曲长末尾（进度条跳结尾，下个 timeline 事件
+/// 才校正）。超窗的会话退回采样值 + 单调地板推进（网易云路径，行为正确）；
+/// 正常会话两次时间戳更新间隔远小于 30 分钟，不受影响。
 fn timestamp_plausible(updated_100ns: i64, now_100ns: i64) -> bool {
-    const MAX_DELTA_100NS: i64 = 86_400 * 10_000_000;
+    const MAX_DELTA_100NS: i64 = 30 * 60 * 10_000_000;
     updated_100ns > 0 && (0..=MAX_DELTA_100NS).contains(&(now_100ns - updated_100ns))
 }
 
@@ -491,7 +523,7 @@ fn win_now_100ns() -> i64 {
 /// 读取 (playing, position, duration, interpolated)，position 含
 /// LastUpdatedTime 插值。
 ///
-/// 进度精确口径：SMTC 的 `Position` 只是「LastUpdatedTime
+/// 同类媒体浮窗的进度精确来源：SMTC 的 `Position` 只是「LastUpdatedTime
 /// 时刻」的采样值，播放期间真实位置 = Position + (now − LastUpdatedTime)，
 /// 由系统时间戳兜底，不依赖事件频率，也不会累计漂移。暂停时 LastUpdatedTime
 /// 停止前进、偏移无意义，只在 playing 时应用。duration > 0 时钳制到曲长
@@ -573,10 +605,29 @@ fn read_controls(
 }
 
 /// 前台窗口进程的 exe 名（去扩展名、小写）。多会话并存时「用户正在交互的
-/// 应用」优先（同类媒体浮窗同思路）：chrome 放着暂停的
+/// 应用」优先（同类媒体浮窗 GetFocusedSession 同思路）：chrome 放着暂停的
 /// 会话、Spotify 在后台播放，两者都算候选时前台匹配者胜出。
+/// 1s 结果缓存——事件线程每拍 pick 都要查一次前台（OpenProcess +
+/// QueryFullProcessImageNameW），而 resolve 粒度本就是 1s，缓存不降低
+/// 可见延迟（与 resolve_media_pid 的 2s 缓存同款思路）。
 #[cfg(windows)]
 fn foreground_process_hint() -> Option<String> {
+    use std::time::Instant;
+    static CACHE: std::sync::OnceLock<Mutex<(Option<String>, Instant)>> =
+        std::sync::OnceLock::new();
+    let cell = CACHE
+        .get_or_init(|| Mutex::new((None, Instant::now() - std::time::Duration::from_secs(3600))));
+    let mut guard = cell.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.1.elapsed() < std::time::Duration::from_secs(1) {
+        return guard.0.clone();
+    }
+    let fresh = foreground_process_hint_uncached();
+    *guard = (fresh.clone(), Instant::now());
+    fresh
+}
+
+#[cfg(windows)]
+fn foreground_process_hint_uncached() -> Option<String> {
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
     unsafe {
@@ -591,7 +642,7 @@ fn foreground_process_hint() -> Option<String> {
 }
 
 /// AUMID → 候选进程名段（'!' 与 '.' 分段、小写、去 com/github/exe 噪音段；
-/// 与同类媒体浮窗的 id 变体清洗同口径）。例：
+/// 与 同类媒体浮窗的 id 变体清洗同口径）。例：
 /// `SpotifyAB.Spotify!Spotify` → ["spotifyab", "spotify"]。
 #[cfg(windows)]
 fn aumid_variants(aumid: &str) -> Vec<String> {
@@ -702,7 +753,7 @@ fn control_session(kind: MediaControl) -> bool {
         let op = match kind {
             MediaControl::Play => session.TryPlayAsync(),
             MediaControl::Pause => session.TryPauseAsync(),
-            // 切换式播放/暂停（同类媒体浮窗同款）：不依赖可能过期的 playing
+            // 切换式播放/暂停（同类媒体浮窗 同款）：不依赖可能过期的 playing
             // 快照，SMTC 侧自行按当前态翻转。
             MediaControl::Toggle => session.TryTogglePlayPauseAsync(),
             MediaControl::Next => session.TrySkipNextAsync(),
@@ -866,36 +917,73 @@ fn emit_snapshot(app: &tauri::AppHandle, payload: Option<MediaSnapshot>) {
 pub fn start_media_event_watcher(app: tauri::AppHandle) {
     std::thread::Builder::new()
         .name("media-events".into())
-        .spawn(move || loop {
+        .spawn(move || {
+            // （启动时序）：先从设置镜像加载持久化的行为偏好，填满运行期
+            // 静态——前端 useMediaPrefsSync 要等 settings store 水合 + effect
+            // 推送，此前约一秒窗口内黑名单不过滤/独占播放不生效。镜像不可读
+            // （DB 未就绪等）保持默认，前端推送随后覆盖。
             #[cfg(windows)]
-            {
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    media_event_loop(&app)
-                }));
-                match r {
-                    Err(p) => {
-                        let msg = p
-                            .downcast_ref::<&str>()
-                            .map(|s| s.to_string())
-                            .or_else(|| p.downcast_ref::<String>().cloned())
-                            .unwrap_or_else(|| "unknown".into());
-                        log::error!("media event watcher panicked: {msg}; retry in 15s");
-                        std::thread::sleep(Duration::from_secs(15));
+            load_behavior_from_mirror(&app);
+            loop {
+                #[cfg(windows)]
+                {
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        media_event_loop(&app)
+                    }));
+                    match r {
+                        Err(p) => {
+                            let msg = p
+                                .downcast_ref::<&str>()
+                                .map(|s| s.to_string())
+                                .or_else(|| p.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "unknown".into());
+                            log::error!("media event watcher panicked: {msg}; retry in 15s");
+                            std::thread::sleep(Duration::from_secs(15));
+                        }
+                        Ok(Err(e)) => {
+                            log::warn!("media event watcher error: {e}; retry in 15s");
+                            std::thread::sleep(Duration::from_secs(15));
+                        }
+                        Ok(Ok(())) => return,
                     }
-                    Ok(Err(e)) => {
-                        log::warn!("media event watcher error: {e}; retry in 15s");
-                        std::thread::sleep(Duration::from_secs(15));
-                    }
-                    Ok(Ok(())) => return,
                 }
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = &app;
-                return;
+                #[cfg(not(windows))]
+                {
+                    let _ = &app;
+                    return;
+                }
             }
         })
         .ok();
+}
+
+/// 从设置镜像（app:settings:v1）读取 general.media 的行为偏好填满
+/// 运行期静态。形状与前端 settings-store 的持久化结构一致：
+/// `general.media.{pauseOthers, blockedSessions}`。
+#[cfg(windows)]
+fn load_behavior_from_mirror(app: &tauri::AppHandle) {
+    let Some(v) = crate::settings_mirror::read_json(app) else {
+        return;
+    };
+    let media = v.get("general").and_then(|g| g.get("media"));
+    if let Some(pause) = media
+        .and_then(|m| m.get("pauseOthers"))
+        .and_then(|b| b.as_bool())
+    {
+        PAUSE_OTHERS.store(pause, Ordering::Relaxed);
+    }
+    if let Some(list) = media
+        .and_then(|m| m.get("blockedSessions"))
+        .and_then(|s| s.as_array())
+    {
+        let blocked = list
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>();
+        *BLOCKED_SESSIONS.lock().unwrap_or_else(|p| p.into_inner()) = blocked;
+    }
 }
 
 #[cfg(windows)]
@@ -960,6 +1048,8 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
 
     // 上一轮 resolve 的在播会话集合（独占播放的「新开播」判定基准）。
     let mut prev_playing: Vec<String> = Vec::new();
+    // media:sessions 上一帧签名（会话列表/播放态/黑名单/锁定项变化才重发）。
+    let mut last_sessions_sig: Option<String> = None;
 
     // 快照状态：属性缓存（含封面字节/data URL/取色）只在 props 脏时重建。
     let mut cached_title = String::new();
@@ -972,9 +1062,28 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
     let mut last_emit_at = std::time::Instant::now();
     let mut last_resolve = std::time::Instant::now();
     let mut idle_emitted = false;
+    // props 读取连续失败计数（重试上限）：瞬时失败回置脏标记 200ms 后重试，
+    // 连续失败（会话已死等持久错误）到 5 次后放弃，避免 200ms 永久重试风暴。
+    let mut props_fail_streak = 0u32;
+    // 镜像对账节拍。media watcher 是五个镜像消费者里唯一没有「变更
+    // 唤醒 + 周期兜底」的——行为偏好（独占播放/黑名单）的运行期更新完全依赖
+    // 前端 IPC 推送，推送失败被前端 .catch 吞掉后 Rust 停留旧值直到重启；
+    // 启动窗口期（store 水合前 effect 先推默认值）还会覆盖镜像加载的初值。
+    // 这里按 30s 周期重读镜像（read_json 单次 SQLite 读，廉价），与前端挂载
+    // 对账互补，两条更新通道任一存活即收敛。
+    // 备案：30s 重读与设置窗镜像落库（saveSettings →
+    // set_setting）存在竞争窗口——tick 恰落在「前端已推新值、镜像未落库」
+    // 间隙时会把运行期静态瞬时回退到旧值，≤30s 后下一拍自愈；前端对账
+    // 重推只在 effect 重跑时触发不覆盖该窗口。概率极低、自愈确定，接受。
+    let mut last_mirror_check = std::time::Instant::now();
 
     loop {
         std::thread::sleep(Duration::from_millis(200));
+
+        if last_mirror_check.elapsed() >= Duration::from_secs(30) {
+            last_mirror_check = std::time::Instant::now();
+            load_behavior_from_mirror(app);
+        }
 
         let resolve_due = sessions_dirty.load(Ordering::Acquire)
             || last_resolve.elapsed() >= Duration::from_secs(1);
@@ -984,7 +1093,13 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
         last_resolve = std::time::Instant::now();
         let sessions_changed = sessions_dirty.swap(false, Ordering::AcqRel);
 
-        let picked = pick_session(&manager);
+        // 单次枚举共享：本拍的选择（pick）、订阅同步/独占播放、会话分页事件
+        // （media:sessions）都吃这一份 (session, aumid, playing)——此前
+        // pick_session 与下方同步块各自 GetSessions + 逐会话 GetPlaybackInfo，
+        // 稳态下每秒两次全量枚举。
+        let entries = enumerate_sessions(&manager);
+        emit_sessions_page_if_changed(app, &entries, &mut last_sessions_sig);
+        let picked = pick_session(&entries);
         let Some(session) = picked else {
             if let Some(r) = registered.take() {
                 // SAFETY: token 来自同一 session 对象的注册。
@@ -1085,36 +1200,26 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
         }
 
         // --- 全会话 PlaybackInfoChanged 订阅同步：多余的注销、缺失的补上；
-        // 顺带枚举各会话播放态，供独占播放（W-131）使用 ---
+        // 顺带从本拍共享枚举取各会话播放态，供独占播放使用 ---
         let mut playing_now: Vec<String> = Vec::new();
         {
             let picked_aumid = registered.as_ref().map(|r| r.aumid.clone());
-            let mut wanted: Vec<(
+            let wanted: Vec<(
                 String,
                 windows::Media::Control::GlobalSystemMediaTransportControlsSession,
                 bool,
-            )> = Vec::new();
-            if let Ok(sessions) = manager.GetSessions() {
-                if let Ok(size) = sessions.Size() {
-                    for i in 0..size {
-                        if let Ok(s) = sessions.GetAt(i) {
-                            if let Ok(a) = s.SourceAppUserModelId() {
-                                let aumid = a.to_string();
-                                let playing = s
-                                    .GetPlaybackInfo()
-                                    .ok()
-                                    .and_then(|info| info.PlaybackStatus().ok())
-                                    .map(|st| st == windows::Media::Control::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing)
-                                    .unwrap_or(false);
-                                if playing && !is_blocked(&aumid) {
-                                    playing_now.push(aumid.clone());
-                                }
-                                wanted.push((aumid, s, playing));
-                            }
-                        }
+            )> = entries
+                .iter()
+                // AUMID 读取失败（空串）的会话不参与订阅/独占播放（与原实现
+                // 的 Ok(a) 过滤同口径）。
+                .filter(|(_, aumid, _)| !aumid.is_empty())
+                .map(|(s, aumid, playing)| {
+                    if *playing && !is_blocked(aumid) {
+                        playing_now.push(aumid.clone());
                     }
-                }
-            }
+                    (aumid.clone(), s.clone(), *playing)
+                })
+                .collect();
             // 订阅去重按「AUMID + COM 对象身份」双重判断：仅按 AUMID 会让
             // 同应用重启（同一 AUMID、新会话对象）沿用旧对象的死订阅，新会话
             // 永远等不到事件。IUnknown 指针即 WinRT 对象身份。
@@ -1126,12 +1231,29 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
                     .map(|u| u.as_raw())
                     .unwrap_or(std::ptr::null_mut())
             }
-            extra_subs.retain(|k, (old_session, _)| {
-                *k != picked_aumid.as_deref().unwrap_or("")
-                    && wanted.iter().any(|(a, s, _)| {
-                        a == k && session_identity(s) == session_identity(old_session)
-                    })
-            });
+            // 丢条目前必须先反注册 WinRT 事件——token 从 Map 里丢掉
+            // ≠ 退订（注册仍挂在会话对象上）；选中↔非选中每切换一轮就在长命
+            // 会话上累积一个 PlaybackInfoChanged 处理器。按 key 两步走，避免
+            // 具名 token 类型。
+            let drop_keys: Vec<String> = extra_subs
+                .keys()
+                .filter(|k| {
+                    let v = match extra_subs.get(*k) {
+                        Some(v) => v,
+                        None => return false,
+                    };
+                    !(*k == picked_aumid.as_deref().unwrap_or("")
+                        && wanted.iter().any(|(a, s, _)| {
+                            a == *k && session_identity(s) == session_identity(&v.0)
+                        }))
+                })
+                .cloned()
+                .collect();
+            for k in drop_keys {
+                if let Some((old_session, old_token)) = extra_subs.remove(&k) {
+                    let _ = old_session.RemovePlaybackInfoChanged(old_token);
+                }
+            }
             for (aumid, session, _) in &wanted {
                 if Some(aumid) == picked_aumid.as_ref() {
                     continue;
@@ -1156,9 +1278,11 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
                 }
             }
 
-            // W-131 独占播放：对「本次 resolve 新开播」的会话，暂停其余在播
-            // 会话（后来者胜，同类媒体浮窗的同名逻辑同
+            // 独占播放：对「本次 resolve 新开播」的会话，暂停其余在播
+            // 会话（后来者胜，同类媒体浮窗 pauseOtherMediaSessionsIfNeeded 同
             // 语义）。取 started 首个避免多个同时开播时互相暂停。
+            // 黑名单应用不参与管理（与 pomodoro_media_pause_all 的「黑名单
+            // 除外」同口径）——「隐藏播放源」的语义是不被媒体功能打扰。
             if pause_others_enabled() {
                 let started: Vec<&String> = playing_now
                     .iter()
@@ -1166,7 +1290,7 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
                     .collect();
                 if let Some(survivor) = started.first() {
                     for (a, session, playing) in &wanted {
-                        if !playing || a == *survivor {
+                        if !playing || a == *survivor || is_blocked(a) {
                             continue;
                         }
                         let _ = session.TryPauseAsync().and_then(|op| op.get());
@@ -1225,10 +1349,31 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
                         cached_artist = artist;
                         cached_album = album;
                         cached_thumb_bytes = thumb_bytes;
+                        props_fail_streak = 0;
                     }
-                    Err(e) => log::warn!("media props read failed (skip frame): {e}"),
+                    // 读取失败时脏标记已被 swap 走，而「下一个属性事件」
+                    // 可能要等下次换曲才来、1s 兜底 resolve 在会话未变时不重置
+                    // 它——标题/封面会滞留到下一曲。失败回置脏标记在下一 200ms
+                    // tick 重试，连续 5 次失败（持久错误）放弃。
+                    Err(e) => {
+                        props_fail_streak += 1;
+                        if props_fail_streak >= 5 {
+                            log::warn!("media props read failed {props_fail_streak}x (give up until next event): {e}");
+                        } else {
+                            log::warn!("media props read failed (retry next tick): {e}");
+                            props_dirty.store(true, Ordering::Release);
+                        }
+                    }
                 },
-                Err(e) => log::warn!("media props request failed (skip frame): {e}"),
+                Err(e) => {
+                    props_fail_streak += 1;
+                    if props_fail_streak >= 5 {
+                        log::warn!("media props request failed {props_fail_streak}x (give up until next event): {e}");
+                    } else {
+                        log::warn!("media props request failed (retry next tick): {e}");
+                        props_dirty.store(true, Ordering::Release);
+                    }
+                }
             }
         }
 
@@ -1282,7 +1427,11 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
                     || prev.album != cached_album
                     || prev.playing != playing
                     || prev.duration != duration
-                    || prev.controls != controls;
+                    || prev.controls != controls
+                    // aumid 也参与发射判定——两个应用先后播完全相同的曲目
+                    // （同标题/时长/进度）时快照不重发，前端 aumid 陈旧会让滚轮
+                    // 应用音量/「打开播放器」指向旧应用。
+                    || prev.aumid != aumid;
                 let drift = if prev.playing {
                     (position - (prev.position + last_emit_at.elapsed().as_secs_f64())).abs()
                 } else {
@@ -1292,6 +1441,8 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
             }
         };
         if should_emit {
+            // 首拍（last_emit 为 None）仍带全量封面：刚挂载的订阅窗口靠它建底。
+            let last_emit_is_first = last_emit.is_none();
             let snap = MediaSnapshot {
                 title: cached_title.clone(),
                 artist: cached_artist.clone(),
@@ -1300,7 +1451,15 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
                 position,
                 duration,
                 thumb_changed,
-                thumb: cached_thumb.clone(),
+                // 增量协议语义——封面只在 thumb_changed 那拍（或会话首拍，
+                // 供刚挂载的订阅窗口建底）随包下发（数百 KB base64）；其余拍
+                // thumb 为 null（此前恒带缓存封面，每次 seek/暂停/漂移校准都
+                // 整份序列化并投给全部窗口）。
+                thumb: if thumb_changed || last_emit_is_first {
+                    cached_thumb.clone()
+                } else {
+                    None
+                },
                 palette: palette_field,
                 controls: controls.clone(),
                 aumid: aumid.clone(),
@@ -1334,8 +1493,14 @@ fn media_event_loop(app: &tauri::AppHandle) -> windows::core::Result<()> {
 /// The MusicWidget polls this every second; every WinRT call here blocks on
 /// `.get()` (up to seconds when the owning app is suspended), so the work is
 /// spawned to the blocking pool instead of squatting on an async worker.
+/// 窗口闸门：读路径回传正在播放曲目（用户内容），与通知历史同口径——
+/// web-preview 等最低信任级 webview 一律按「无会话」应答（调用方均位于
+/// widget-* 可信窗口，功能不受影响）。
 #[tauri::command]
-pub async fn get_system_media_info() -> Option<SystemMediaInfo> {
+pub async fn get_system_media_info(window: tauri::Window) -> Option<SystemMediaInfo> {
+    if !crate::trusted_window(window.label()) {
+        return None;
+    }
     tauri::async_runtime::spawn_blocking(get_system_media)
         .await
         .ok()
@@ -1376,7 +1541,7 @@ pub async fn control_system_media(
 
 /// AUMID → 用户可读的应用名（进程内缓存）。
 ///
-/// 对齐同类媒体浮窗的展示目标：会话选择器里显示「网易云音乐」
+/// 对齐同类媒体浮窗 MediaPlayerData 的目标：会话选择器里显示「网易云音乐」
 /// 而不是 `NetEase.CloudMusic...!xxx`。取名顺序：
 /// 1. 注册表 `HKCU\Software\Classes\AppUserModelId\<aumid>` 的 DisplayName
 ///    （Win32 注册方：网易云/QQ 音乐等，值即本地化应用名）；
@@ -1424,49 +1589,69 @@ fn friendly_session_name(aumid: &str) -> String {
 
 #[cfg(windows)]
 fn list_sessions() -> Vec<MediaSessionInfo> {
-    use windows::Media::Control::{
-        GlobalSystemMediaTransportControlsSessionManager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus,
-    };
+    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager;
     with_com(|| {
         let manager = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
             .ok()?
             .get()
             .ok()?;
-        let sessions = manager.GetSessions().ok()?;
-        let count = sessions.Size().ok()?;
-        let mut out = Vec::new();
-        for i in 0..count {
-            // P2（审计修复）：逐项跳过——此前 `.ok()?` 让单个异常会话把整个
-            // 会话列表清空（设置页"锁定应用"下拉变空）。
-            let Ok(session) = sessions.GetAt(i) else {
-                continue;
-            };
-            let Ok(aumid) = session.SourceAppUserModelId() else {
-                continue;
-            };
-            let id = aumid.to_string();
-            if id.is_empty() {
-                continue;
-            }
-            let name = friendly_session_name(&id);
-            let playing = session
-                .GetPlaybackInfo()
-                .ok()
-                .and_then(|info| info.PlaybackStatus().ok())
-                .map(|s| s == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing)
-                .unwrap_or(false);
-            let blocked = is_blocked(&id);
-            out.push(MediaSessionInfo {
-                id,
-                name,
-                playing,
-                blocked,
-            });
-        }
-        Some(out)
+        Some(compose_sessions_page(&enumerate_sessions(&manager)).sessions)
     })
     .unwrap_or_default()
+}
+
+/// 从枚举条目组会话分页（拉式命令与 media:sessions 事件同一口径）：
+/// 应用名走 friendly_session_name（进程内缓存），黑名单态即时读取。
+#[cfg(windows)]
+fn compose_sessions_page(entries: &[SessionEntry]) -> MediaSessionsPage {
+    MediaSessionsPage {
+        sessions: entries
+            .iter()
+            .filter(|(_, aumid, _)| !aumid.is_empty())
+            .map(|(_, aumid, playing)| MediaSessionInfo {
+                name: friendly_session_name(aumid),
+                id: aumid.clone(),
+                playing: *playing,
+                blocked: is_blocked(aumid),
+            })
+            .collect(),
+        selected_id: selected_session_id(),
+    }
+}
+
+/// （会话列表事件化）：会话列表/播放态/黑名单/锁定项变化时向小组件层
+/// 窗口 emit `media:sessions`（签名去抖，内容不变不重发）——替代前端每 3s
+/// 的 get_media_sessions_page 轮询；事件线程每拍本就枚举全量会话，知识复用。
+#[cfg(windows)]
+fn emit_sessions_page_if_changed(
+    app: &tauri::AppHandle,
+    entries: &[SessionEntry],
+    last_sig: &mut Option<String>,
+) {
+    let page = compose_sessions_page(entries);
+    let sig = format!(
+        "{:?}|{:?}",
+        page.sessions
+            .iter()
+            .map(|s| (&s.id, s.playing, s.blocked))
+            .collect::<Vec<_>>(),
+        page.selected_id
+    );
+    if last_sig.as_deref() == Some(sig.as_str()) {
+        return;
+    }
+    *last_sig = Some(sig);
+    // 投递目标扩到设置窗——常规页「媒体行为」分区（全局开关 + 黑名单
+    // 维护）消费同一份会话分页；仍不含 quick-note/taskbar-net 等最低信任层。
+    let _ = app.emit_filter("media:sessions", page, |win| match win {
+        tauri::EventTarget::WebviewWindow { label }
+        | tauri::EventTarget::Webview { label }
+        | tauri::EventTarget::Window { label }
+        | tauri::EventTarget::AnyLabel { label } => {
+            label.starts_with("widget-") || label == "settings"
+        }
+        _ => false,
+    });
 }
 
 #[cfg(not(windows))]
@@ -1474,10 +1659,10 @@ fn list_sessions() -> Vec<MediaSessionInfo> {
     Vec::new()
 }
 
-/// Tauri command: W-123 枚举当前可用的媒体会话（应用）。
+/// Tauri command: 枚举当前可用的媒体会话（应用）。
 #[tauri::command]
 pub async fn list_media_sessions(window: tauri::Window) -> Vec<MediaSessionInfo> {
-    // 隐私闸门（S4）：媒体会话名（正在听什么 / 用什么应用）属敏感枚举面。
+    // 隐私闸门：媒体会话名（正在听什么 / 用什么应用）属敏感枚举面。
     if !crate::trusted_window(window.label()) {
         return Vec::new();
     }
@@ -1486,21 +1671,25 @@ pub async fn list_media_sessions(window: tauri::Window) -> Vec<MediaSessionInfo>
         .unwrap_or_default()
 }
 
-/// Tauri command: W-123 锁定/解锁媒体会话。`id = None` 恢复自动模式。
+/// Tauri command: 锁定/解锁媒体会话。`id = None` 恢复自动模式。
 #[tauri::command]
 pub fn select_media_session(window: tauri::Window, id: Option<String>) -> Result<(), String> {
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
-    // R7（审计）：写锁中毒时静默丢弃选择会让"锁定会话"永远不生效。
+    // 写锁中毒时静默丢弃选择会让"锁定会话"永远不生效。
     let mut guard = SELECTED_SESSION.write().unwrap_or_else(|p| p.into_inner());
     *guard = id.filter(|s| !s.is_empty());
     Ok(())
 }
 
-/// Tauri command: W-123 当前锁定的会话 id（前端勾选态用）。
+/// Tauri command: 当前锁定的会话 id（前端勾选态用）。
 #[tauri::command]
-pub fn get_selected_media_session() -> Option<String> {
+pub fn get_selected_media_session(window: tauri::Window) -> Option<String> {
+    // 媒体会话状态仅本应用窗口可读。
+    if !crate::trusted_window(window.label()) {
+        return None;
+    }
     selected_session_id()
 }
 
@@ -1523,7 +1712,7 @@ pub async fn get_media_sessions_page(window: tauri::Window) -> MediaSessionsPage
     }
 }
 
-/// Tauri command: W-131 写入媒体监控行为偏好（前端 settings.general.media
+/// Tauri command: 写入媒体监控行为偏好（前端 settings.general.media
 /// 变更时推送；持久化在前端设置层，Rust 只保存运行期副本）。
 #[tauri::command]
 pub fn set_media_behavior(
@@ -1543,7 +1732,7 @@ pub fn set_media_behavior(
     Ok(())
 }
 
-/// Tauri command: W-131 当前媒体监控行为偏好（前端回显/对账）。
+/// Tauri command: 当前媒体监控行为偏好（前端回显/对账）。
 #[tauri::command]
 pub fn get_media_behavior(window: tauri::Window) -> Result<MediaBehavior, String> {
     if !crate::trusted_window(window.label()) {
@@ -1555,11 +1744,14 @@ pub fn get_media_behavior(window: tauri::Window) -> Result<MediaBehavior, String
     })
 }
 
-/// AUMID → 播放器进程 PID（W-131）。sysinfo 枚举进程，exe 文件名（去扩展
-/// 名、小写）与 AUMID 分段比对——与 pick_session 的前台匹配同一套变体口径。
-/// 结果缓存 2s：滚轮调音量/唤起是高频动作，进程全量枚举不能每次都跑。
+/// AUMID → 播放器**进程集合**。sysinfo 枚举进程，exe 文件名（去
+/// 扩展名、小写）与 AUMID 分段比对——与 pick_session 的前台匹配同一套
+/// 变体口径。返回全部匹配而非首个：浏览器是几十个同名进程（renderer/
+/// utility 混杂），音频会话可能挂在其中任意一个上——首个命中很可能没有
+/// 音频会话，滚轮音量会静默失效。结果缓存 2s：滚轮调音量/唤起是高频
+/// 动作，进程全量枚举不能每次都跑。
 #[cfg(windows)]
-fn resolve_media_pid(aumid: &str) -> Option<u32> {
+fn resolve_media_pids(aumid: &str) -> Vec<u32> {
     use std::time::Instant;
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     static CACHE: std::sync::OnceLock<Mutex<(System, Instant)>> = std::sync::OnceLock::new();
@@ -1580,13 +1772,13 @@ fn resolve_media_pid(aumid: &str) -> Option<u32> {
     }
     let variants = aumid_variants(aumid);
     if variants.is_empty() {
-        return None;
+        return Vec::new();
     }
     guard
         .0
         .processes()
         .values()
-        .find(|p| {
+        .filter(|p| {
             p.exe()
                 .and_then(|path| path.file_stem())
                 .map(|stem| {
@@ -1596,9 +1788,11 @@ fn resolve_media_pid(aumid: &str) -> Option<u32> {
                 .unwrap_or(false)
         })
         .map(|p| p.pid().as_u32())
+        .collect()
 }
 
-/// Tauri command: W-131 唤起播放器窗口（同类媒体浮窗同目的）。优先选「窗口标题含正在播放曲目」的窗口（浏览器多窗口时定位
+/// Tauri command: 唤起播放器窗口（同类媒体浮窗 TryActivateMediaPlayer
+/// 同目的）。优先选「窗口标题含正在播放曲目」的窗口（浏览器多窗口时定位
 /// 到播放那个），回退该应用任一可见窗口；最小化则先还原。
 #[tauri::command]
 pub async fn open_media_player(
@@ -1617,20 +1811,28 @@ pub async fn open_media_player(
     .unwrap_or(false))
 }
 
-/// Tauri command: W-131 读取当前媒体应用的会话音量（0–1）。该应用在默认
+/// Tauri command: 读取当前媒体应用的会话音量（0–1）。该应用在默认
 /// 输出设备上没有音频会话时为 None（前端据此不显示滚轮音量提示）。
 #[tauri::command]
-pub async fn get_media_app_volume(aumid: String) -> Option<f64> {
+pub async fn get_media_app_volume(window: tauri::Window, aumid: String) -> Option<f64> {
+    // 窗口闸门：读取经 resolve_media_pid 枚举全系统进程，与写侧
+    // adjust_media_app_volume 同标准，不受信窗口不得探测其他进程。
+    if !crate::trusted_window(window.label()) {
+        return None;
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        let pid = resolve_media_pid(&aumid)?;
-        crate::audio::media_session_volume(pid, None)
+        let pids = resolve_media_pids(&aumid);
+        if pids.is_empty() {
+            return None;
+        }
+        crate::audio::media_session_volume(&pids, None)
     })
     .await
     .ok()
     .flatten()
 }
 
-/// Tauri command: W-131 相对调整当前媒体应用的会话音量（`delta` 叠加在当前
+/// Tauri command: 相对调整当前媒体应用的会话音量（`delta` 叠加在当前
 /// 值上，结果钳 0–1），返回调整后的音量；会话不存在时 None。
 #[tauri::command]
 pub async fn adjust_media_app_volume(
@@ -1643,9 +1845,12 @@ pub async fn adjust_media_app_volume(
         return Err("untrusted window".into());
     }
     Ok(tauri::async_runtime::spawn_blocking(move || {
-        let pid = resolve_media_pid(&aumid)?;
-        let current = crate::audio::media_session_volume(pid, None)?;
-        crate::audio::media_session_volume(pid, Some(current + delta))
+        let pids = resolve_media_pids(&aumid);
+        if pids.is_empty() {
+            return None;
+        }
+        let current = crate::audio::media_session_volume(&pids, None)?;
+        crate::audio::media_session_volume(&pids, Some(current + delta))
     })
     .await
     .ok()
@@ -1653,7 +1858,7 @@ pub async fn adjust_media_app_volume(
 }
 
 /* ------------------------------------------------------------------ */
-/* FocusTimer 借鉴：专注期媒体联动（pause_all / smart resume 的 Rust 侧） */
+/* 专注期媒体联动（pause_all / smart resume 的 Rust 侧） */
 /* ------------------------------------------------------------------ */
 
 /// 暂停全部在播媒体会话（黑名单除外），返回实际被我们暂停的 AUMID 列表
@@ -1770,7 +1975,7 @@ fn resume_media_sessions(_aumids: &[String]) -> Vec<String> {
     Vec::new()
 }
 
-/// Tauri command: FocusTimer 借鉴 —— 专注开始时暂停全部在播媒体（黑名单
+/// Tauri command: 借鉴 —— 专注开始时暂停全部在播媒体（黑名单
 /// 除外），返回被暂停的 AUMID 列表（前端 auto_paused 账本）。
 #[tauri::command]
 pub async fn pomodoro_media_pause_all(window: tauri::Window) -> Result<Vec<String>, String> {
@@ -1778,14 +1983,19 @@ pub async fn pomodoro_media_pause_all(window: tauri::Window) -> Result<Vec<Strin
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
-    Ok(
-        tauri::async_runtime::spawn_blocking(pause_all_playing_sessions)
-            .await
-            .unwrap_or_default(),
-    )
+    // JoinError（工作线程 panic）不再 unwrap_or_default 静默吞——空表会
+    // 让前端 auto_paused 账本记「什么都没暂停」，专注结束时不恢复任何媒体，
+    // 账本与真实状态错位。panic 场景返回 Err 由前端走用户可见的失败路径。
+    match tauri::async_runtime::spawn_blocking(pause_all_playing_sessions).await {
+        Ok(list) => Ok(list),
+        Err(e) => {
+            log::error!("pomodoro_media_pause_all worker failed: {e}");
+            Err(format!("媒体暂停任务失败: {e}"))
+        }
+    }
 }
 
-/// Tauri command: FocusTimer 借鉴 —— 专注结束/休息开始时恢复此前被我们
+/// Tauri command: 借鉴 —— 专注结束/休息开始时恢复此前被我们
 /// 暂停的媒体会话（是否恢复由前端的「有别处在播」检查决定）。
 #[tauri::command]
 pub async fn pomodoro_media_resume(
@@ -1795,11 +2005,13 @@ pub async fn pomodoro_media_resume(
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
-    Ok(
-        tauri::async_runtime::spawn_blocking(move || resume_media_sessions(&aumids))
-            .await
-            .unwrap_or_default(),
-    )
+    match tauri::async_runtime::spawn_blocking(move || resume_media_sessions(&aumids)).await {
+        Ok(list) => Ok(list),
+        Err(e) => {
+            log::error!("pomodoro_media_resume worker failed: {e}");
+            Err(format!("媒体恢复任务失败: {e}"))
+        }
+    }
 }
 
 /// 进程映像文件的 exe 名（去扩展名、小写）。OpenProcess 失败（权限/退出）
@@ -1843,7 +2055,7 @@ fn pid_process_stem(pid: u32) -> Option<String> {
     }
 }
 
-/// 枚举顶层窗口找播放器（W-131，同类媒体浮窗同目的）：
+/// 枚举顶层窗口找播放器（同类媒体浮窗 TryActivateMediaPlayer 同目的）：
 /// AUMID 属性精确/包族前缀，或进程名与 AUMID 分段匹配；带曲目标题时优先
 /// 「标题含曲目」的窗口（浏览器窗口标题 = 活动标签页标题，多窗口时定位到
 /// 播放那个）。命中后最小化先还原，再拉到前台。
@@ -1971,6 +2183,41 @@ fn open_media_player_blocking(aumid: &str, title: Option<&str>) -> bool {
 }
 
 #[cfg(test)]
+mod session_name_tests {
+    use super::*;
+
+    /// AUMID 变体清洗（pick_session 前台匹配 / 唤起播放器的进程名口径）。
+    #[test]
+    #[cfg(windows)]
+    fn aumid_variants_splits_and_filters() {
+        let v = aumid_variants("SpotifyAB.Spotify!Spotify");
+        assert_eq!(v.first().map(String::as_str), Some("spotifyab"));
+        assert!(v.iter().all(|x| x == "spotify" || x == "spotifyab"));
+        // 噪音段（com/github/exe）与空段被过滤。
+        assert_eq!(
+            aumid_variants("com.github.app!exe"),
+            vec!["app".to_string()]
+        );
+        assert!(aumid_variants("").is_empty());
+    }
+
+    /// 封面 data URL 的 MIME 魔数判定（PNG / JPEG 两种变体 / 兜底）。
+    #[test]
+    fn thumb_data_url_mime_by_magic() {
+        assert!(
+            thumb_data_url(&[0x89, b'P', b'N', b'G', 1, 2]).starts_with("data:image/png;base64,")
+        );
+        assert!(
+            thumb_data_url(&[0xff, 0xd8, 0xff, 0xe0, 5, 6]).starts_with("data:image/jpeg;base64,")
+        );
+        assert!(
+            thumb_data_url(&[0xff, 0xd8, 0xff, 0xe1, 5, 6]).starts_with("data:image/jpeg;base64,")
+        );
+        assert!(thumb_data_url(&[0x00, 0x01, 0x02]).starts_with("data:image/jpeg;base64,"));
+    }
+}
+
+#[cfg(test)]
 mod playback_tests {
     //! 位置插值守卫：不写 LastUpdatedTime 的播放器（网易云）不得把整个
     //! FILETIME 当偏移加进进度（回归 "223914975:34" 显示）。
@@ -2007,6 +2254,28 @@ mod playback_tests {
         let stale =
             interpolated_position_secs(120.0, 1_000_000_000_000, 1_000_000_000_000 + DAY_100NS + 1);
         assert_eq!(stale, 120.0);
+    }
+
+    #[test]
+    fn clock_forward_jump_beyond_window_falls_back() {
+        // 系统时钟前跳（NTP 校时/时区，分钟级到 1 小时）不得把位置推到曲长
+        // 末尾：偏移超过 30 分钟插值窗口即判不可信，退回采样值 + 单调地板。
+        const MIN_100NS: i64 = 60 * 10_000_000;
+        let within = interpolated_position_secs(
+            120.0,
+            1_000_000_000_000,
+            1_000_000_000_000 + 29 * MIN_100NS,
+        );
+        assert!(
+            (within - (120.0 + 29.0 * 60.0)).abs() < 1e-6,
+            "29min 仍插值: {within}"
+        );
+        let jumped = interpolated_position_secs(
+            120.0,
+            1_000_000_000_000,
+            1_000_000_000_000 + 31 * MIN_100NS,
+        );
+        assert_eq!(jumped, 120.0, "31min（时钟前跳量级）退回采样值");
     }
 
     #[test]

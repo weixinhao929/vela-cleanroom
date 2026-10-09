@@ -1,5 +1,5 @@
 /**
- * 设置页 · 灵动岛（ISLAND-CFG · F-6 全量项）：B2 三段式行（leading 图标芯片 +
+ * 设置页 · 灵动岛（ISLAND-CFG · 全量项）：三段式行（leading 图标芯片 +
  * 标题/一句话说明 + trailing 控件），与编辑模式浮层 DockConfigPanel 读写同一份
  * widget-store.dock——每项改动经 CORE 动作即时生效并按屏落盘（键
  * focus-desk.screen.<N>.dock.v1），经 sync:dock 同步到桌面层，跨窗口不串屏。
@@ -12,7 +12,8 @@
  * 分段 / 下拉外包 role=group + aria-label（shared.tsx 的 Segmented / Dropdown 不接受
  * aria-label 参数，行标题即组名）。
  */
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useSliderDraft } from "../../../lib/use-slider-draft";
 import {
   AlignCenterHorizontal,
   ArrowDownFromLine,
@@ -31,10 +32,14 @@ import {
   Music,
   Rows3,
   Shapes,
-  Timer
+  SunDim,
+  Timer,
+  Volume2
 } from "lucide-react";
 import { useT } from "../../../i18n-lite";
 import { FxText } from "../../../lib/fx";
+import { invoke, isTauri } from "../../../lib/tauri";
+import { useSettingsStore } from "../../../store/settings-store";
 import {
   useWidgetStore,
   type DockConfig,
@@ -42,7 +47,11 @@ import {
   type DockSnap,
   type DockTakeoverConfig
 } from "../../../widget/widget-store";
-import { DOCK_TOP_INSET_MAX } from "../../../widget/dock/dock-logic";
+import {
+  DOCK_TOP_INSET_MAX,
+  TAKEOVER_DURATION_MAX_MS,
+  TAKEOVER_DURATION_MIN_MS
+} from "../../../widget/dock/dock-logic";
 import { Dropdown, Segmented, SettingRow, SettingToggleRow } from "../shared";
 import { M3Slider as Slider } from "../../../components/ui/M3Slider";
 
@@ -63,11 +72,45 @@ export function DockPage() {
   const dock = useWidgetStore((s) => s.dock);
   const setDock = useWidgetStore((s) => s.setDock);
   const setDockPlacement = useWidgetStore((s) => s.setDockPlacement);
-
-  const setMouse = (patch: Partial<DockMouseActions>) => setDock({ mouse: { ...dock.mouse, ...patch } });
-  const setTakeover = (patch: Partial<DockTakeoverConfig>) => setDock({ takeover: { ...dock.takeover, ...patch } });
+  /* 子对象补丁从 getState() 取**当前**兄弟字段——此前展开渲染闭包里的
+     dock.mouse / dock.takeover，滑条拖动中（useSliderDraft 连续回调）或跨窗
+     同步刚到达时闭包已陈旧，会把对端 / 上一次回调刚写的字段整包回滚
+     （setDock 的叶子合并只救「缺字段」，救不了「带陈旧全字段」）。 */
+  const setMouse = (patch: Partial<DockMouseActions>) =>
+    setDock({ mouse: { ...useWidgetStore.getState().dock.mouse, ...patch } });
+  const setTakeover = (patch: Partial<DockTakeoverConfig>) =>
+    setDock({ takeover: { ...useWidgetStore.getState().dock.takeover, ...patch } });
   const setSnap = (snap: DockSnap) =>
     snap === "free" ? setDockPlacement({ snap }) : setDockPlacement({ snap, offset: SNAP_OFFSET[snap] });
+  /* 三个滑条（偏移 / 展示时长 / 顶部内边距）拖动期只进草稿，松手一次落盘
+     （useSliderDraft 头注——此前逐 input 事件全量写 localStorage + SQLite 镜像
+     + 窗口对账 + 跨窗广播）。 */
+  const offset = useSliderDraft((v) => setDockPlacement({ snap: "free", offset: v / 100 }));
+  const duration = useSliderDraft((v) => setTakeover({ durationMs: v * 1000 }));
+  const topInset = useSliderDraft((v) => setDock({ topInset: v }));
+  /* [DOCK-COVER]：封面背景开关与专注背景文件夹。 */
+  const dockCoverBg = useSettingsStore((s) => s.extra.dockCoverBg);
+  const dockFocusBgPath = useSettingsStore((s) => s.extra.dockFocusBgPath);
+  const setExtra = useSettingsStore((s) => s.setExtra);
+  /* 路径输入走草稿、失焦 / Enter 提交（ConnectionPage 天气城市同款）——
+     此前每个按键都 setExtra（整快照落盘 + 跨窗同步广播）。「浏览」选出的
+     新路径经 effect 跟随草稿。 */
+  const [focusBgDraft, setFocusBgDraft] = useState(dockFocusBgPath);
+  useEffect(() => setFocusBgDraft(dockFocusBgPath), [dockFocusBgPath]);
+  const commitFocusBg = () => {
+    const v = focusBgDraft.trim();
+    if (v !== dockFocusBgPath) setExtra({ dockFocusBgPath: v });
+  };
+
+  const pickFocusBgFolder = async () => {
+    if (!isTauri()) return;
+    try {
+      const path = await invoke<string | null>("pick_folder");
+      if (path !== null) setExtra({ dockFocusBgPath: path });
+    } catch {
+      /* 用户取消 / 对话框失败：静默。 */
+    }
+  };
 
   return (
     <>
@@ -100,12 +143,13 @@ export function DockPage() {
           <fieldset className="tm-dock-fieldset" disabled={dock.snap !== "free"} aria-label={tr("偏移")}>
             <Slider
               label="偏移"
-              value={Math.round(dock.offset * 100)}
+              value={offset.draft ?? Math.round(dock.offset * 100)}
               min={0}
               max={100}
               step={1}
               suffix="%"
-              onChange={(v) => setDockPlacement({ snap: "free", offset: v / 100 })}
+              onChange={offset.slide}
+              onCommitEnd={offset.commitEnd}
             />
           </fieldset>
         </SettingRow>
@@ -209,6 +253,22 @@ export function DockPage() {
           on={dock.takeover.media}
           onChange={(v) => setTakeover({ media: v })}
         />
+        {/* 解析层与编辑浮层（DockConfigPanel 六开关）一直支持，设置页
+            此前漏这两项——只进设置页的用户找不到关闭键盘音量/亮度 OSD 接管的入口。 */}
+        <SettingToggleRow
+          icon={Volume2}
+          title="音量接管"
+          desc="调整音量时显示百分比"
+          on={dock.takeover.volume}
+          onChange={(v) => setTakeover({ volume: v })}
+        />
+        <SettingToggleRow
+          icon={SunDim}
+          title="亮度接管"
+          desc="调整亮度时显示临时提示"
+          on={dock.takeover.brightness}
+          onChange={(v) => setTakeover({ brightness: v })}
+        />
         <SettingToggleRow
           icon={Bell}
           title="通知接管"
@@ -226,12 +286,14 @@ export function DockPage() {
         <SettingRow icon={Hourglass} title="展示时长" desc="接管提示停留时长">
           <Slider
             label="展示时长"
-            value={Math.round(dock.takeover.durationMs / 1000)}
-            min={3}
-            max={15}
+            value={duration.draft ?? Math.round(dock.takeover.durationMs / 1000)}
+            /* 区间与 store 钳制 / 接管兜底同源（dock-logic 单点常量）。 */
+            min={TAKEOVER_DURATION_MIN_MS / 1000}
+            max={TAKEOVER_DURATION_MAX_MS / 1000}
             step={1}
             suffix="s"
-            onChange={(v) => setTakeover({ durationMs: v * 1000 })}
+            onChange={duration.slide}
+            onCommitEnd={duration.commitEnd}
           />
         </SettingRow>
       </section>
@@ -254,6 +316,43 @@ export function DockPage() {
               }
             />
           </Ctl>
+        </SettingRow>
+      </section>
+
+      <div className="tm-divider" />
+
+      {/* [DOCK-COVER]：岛体背景层。 */}
+      <section className="tm-section">
+        <div className="tm-section-title">{tr("背景")}</div>
+        <SettingToggleRow
+          title="音乐封面背景"
+          desc="媒体在播时岛体背景切换为当前曲目封面（模糊压暗，切歌淡入淡出）"
+          icon={Music}
+          on={dockCoverBg}
+          onChange={(v) => setExtra({ dockCoverBg: v })}
+        />
+        <SettingRow
+          icon={Shapes}
+          title="专注背景文件夹"
+          desc="番茄钟运行期间岛体背景随机取该文件夹中的一张图（每个专注会话换一次；留空关闭）"
+        >
+          <div className="tm-location-controls">
+            <input
+              className="tm-text-input"
+              type="text"
+              value={focusBgDraft}
+              placeholder={tr("未设置")}
+              aria-label={tr("专注背景文件夹")}
+              onChange={(e) => setFocusBgDraft(e.target.value)}
+              onBlur={commitFocusBg}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitFocusBg();
+              }}
+            />
+            <button className="tm-btn-secondary" onClick={() => void pickFocusBgFolder()}>
+              {tr("浏览")}
+            </button>
+          </div>
         </SettingRow>
       </section>
 
@@ -289,12 +388,13 @@ export function DockPage() {
         <SettingRow icon={ArrowDownFromLine} title="顶部内边距" desc="岛与屏幕上缘的间距">
           <Slider
             label="顶部内边距"
-            value={dock.topInset}
+            value={topInset.draft ?? dock.topInset}
             min={0}
             max={DOCK_TOP_INSET_MAX}
             step={1}
             suffix="px"
-            onChange={(v) => setDock({ topInset: v })}
+            onChange={topInset.slide}
+            onCommitEnd={topInset.commitEnd}
           />
         </SettingRow>
       </section>

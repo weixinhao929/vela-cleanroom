@@ -53,8 +53,8 @@ describe("useSystemBroadcast 可见性门控", () => {
   it("可见挂载即订阅", async () => {
     const { unmount } = renderHook(() => useSystemBroadcast(2));
     await vi.waitFor(() => expect(subCount()).toBe(1));
-    // intervalSec 下限 0.5，换算为毫秒传入。
-    expect(calls()[0]?.[1]).toEqual({ intervalMs: 2000 });
+    // intervalSec 下限 0.5，换算为毫秒传入；netOnly 默认 false（参数）。
+    expect(calls()[0]?.[1]).toEqual({ intervalMs: 2000, netOnly: false });
     unmount();
   });
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 
 /**
- * 返回卸载安全的 setTimeout 包装（B-21 / D-4，资源释放模式）。
+ * 返回卸载安全的 setTimeout 包装（资源释放模式）。
  *
  * 模块职责：退场动画/二次确认等延时回调若在组件卸载后触发会 setState
  * 泄漏告警并滞留句柄；本 hook 统一登记全部定时器并在卸载时批量清除。
@@ -11,11 +11,11 @@ import { useCallback, useEffect, useRef } from "react";
  * @throws 无；fn 内部异常不会被捕获吞掉。
  *
  * @example
- * ```tsx
+ * `tsx
  * const safeTimeout = useSafeTimeout();
  * const flash = () => setFlash(false);
  * safeTimeout(flash, 600); // 组件卸载则 flash 永不执行且句柄被清理
- * ```
+ * `
  */
 export function useSafeTimeout() {
   const ids = useRef<Set<number>>(new Set());

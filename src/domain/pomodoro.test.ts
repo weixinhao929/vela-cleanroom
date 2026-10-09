@@ -231,7 +231,7 @@ describe("auto-start on segment completion", () => {
   });
 });
 
-/* W-050 完整自动循环链：专注 → 长短休轮换 → 专注。 */
+/* 完整自动循环链：专注 → 长短休轮换 → 专注。 */
 describe("autoCycle focus/break loop", () => {
   const cycled = {
     ...DEFAULT_CONFIG,

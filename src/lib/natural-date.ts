@@ -1,5 +1,5 @@
 /**
- * W-047 自然语言日期解析：把「明天下午3点」「下周五 14:30」「8月18日」这类
+ * 自然语言日期解析：把「明天下午3点」「下周五 14:30」「8月18日」这类
  * 口语时间解析为具体 Date。规则式实现（无依赖、可单测），供 DDL 表单与任务
  * 截止输入做实时预览。解析失败返回 null，调用方静默回退手工输入。
  */
@@ -68,7 +68,7 @@ function matchDay(text: string, now: Date): { date: Date; matched: string } | nu
     return { date: d, matched: m[0] };
   }
 
-  // DeskOrder 借鉴 #5：紧凑纯数字日期。8 位 YYYYMMDD 与 6 位 YYMMDD 无
+  // 紧凑纯数字日期。8 位 YYYYMMDD 与 6 位 YYMMDD 无
   // 歧义（不可能是时刻），可安全出现在标题里；4 位 MMDD/HHmm 有歧义
   // （"1430" 是 14:30 还是 1月30日？"预算2000" 会误命中 20:00），刻意
   // 不在标题解析中支持，需要时走日期选择器。
@@ -89,7 +89,10 @@ function matchDay(text: string, now: Date): { date: Date; matched: string } | nu
     }
   }
 
-  m = text.match(/(\d{1,2})[/月.-](\d{1,2})/);
+  // 分隔符类去掉字面量点——"买2.5米线""体重3.5" 这类小数会被当成
+  // 「M.D 日期」静默写入荒谬截止时间（已过则顺延明年）。点分日期请写
+  // 3/5 或 3月5；斜杠/月/- 无歧义，保留。
+  m = text.match(/(\d{1,2})[/月-](\d{1,2})/);
   if (m && !/时|点|:/.test(m[0])) {
     let d = new Date(now.getFullYear(), Number(m[1]) - 1, Number(m[2]));
     if (d.getTime() < today.getTime()) d = new Date(now.getFullYear() + 1, Number(m[1]) - 1, Number(m[2]));
@@ -101,7 +104,7 @@ function matchDay(text: string, now: Date): { date: Date; matched: string } | nu
 
 /** 时间表达 → 时/分。返回 null 表示未指定时间（调用方给日末默认值）。 */
 function matchTime(text: string): { h: number; m: number; matched: string } | null {
-  // DeskOrder 借鉴 #5：am/pm 后缀式（2:30pm / 9am / 11 am）。放在 HH:mm
+  // am/pm 后缀式（2:30pm / 9am / 11 am）。放在 HH:mm
   // 规则之前——后者会先咬掉 "2:30" 丢掉 pm 语义。
   let m = text.match(/(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?(?![a-z])/i);
   if (m) {
@@ -117,7 +120,13 @@ function matchTime(text: string): { h: number; m: number; matched: string } | nu
   }
 
   m = text.match(/(\d{1,2}):(\d{2})/);
-  if (m) return { h: Number(m[1]), m: Number(m[2]), matched: m[0] };
+  if (m) {
+    // 范围校验（顺带修复审查 ）："25:30" 经 setHours 滚到次日 01:30 而非拒绝。
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h > 23 || min > 59) return null;
+    return { h, m: min, matched: m[0] };
+  }
 
   m = text.match(
     /(凌晨|清晨|早上|上午|中午|午后|下午|傍晚|晚上|夜里|今晚)?\s*(\d{1,2})\s*[点时](半|\s*(\d{1,2})\s*分?)?/

@@ -1,5 +1,5 @@
 import type { ThemePreset, ThemeMode, CustomThemeColors, CustomThemePair } from "../store/settings-store";
-import { hexToRgba, withAlpha, luminance, deriveAccent2, mixHex } from "./color";
+import { hexToRgba, withAlpha, luminance, deriveAccent2, mixHex, mixRgb, type Rgb } from "./color";
 import { toCubicBezierCss, type BezierPoints } from "./bezier";
 import { invoke, isTauri } from "./tauri";
 
@@ -10,7 +10,7 @@ import { invoke, isTauri } from "./tauri";
  */
 
 /* ══════════════════════════════════════════════════════════════════
-   A1 色彩层级求解（alpha 混合的逆运算，数学本身属公有领域）
+   色彩层级求解（alpha 混合的逆运算，数学本身属公有领域）
    ──────────────────────────────────────────────────────────────────
    目标：半透明表面在任意不透明度下保持层阶对比。给定底色 base、期望
    视觉色 target、叠加不透明度 α，反解实际涂色，使「α 混合成 base」之后
@@ -23,11 +23,7 @@ import { invoke, isTauri } from "./tauri";
    并派生 On / Hover（8% 混 On）/ Active（15% 混 On）变体。
    ══════════════════════════════════════════════════════════════════ */
 
-export interface Rgb {
-  r: number;
-  g: number;
-  b: number;
-}
+export type { Rgb };
 
 /** 解析 #rgb / #rrggbb / rgb() / rgba() 为 {rgb, a}；无法解析返回 null。 */
 function parseCssColor(input: string): { rgb: Rgb; a: number } | null {
@@ -57,18 +53,12 @@ function parseCssColor(input: string): { rgb: Rgb; a: number } | null {
   return null;
 }
 
-/** 线性混色：t 为 a 的权重（t·a + (1−t)·b）。 */
-function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
-  return {
-    r: t * a.r + (1 - t) * b.r,
-    g: t * a.g + (1 - t) * b.g,
-    b: t * a.b + (1 - t) * b.b
-  };
-}
+/* 线性混色已并入 lib/color 的共享 mixRgb（t 为向 b 的比例）；本文件原实现
+   的 t 方向相反（t·a + (1−t)·b），下列调用点统一以交换实参适配，数值不变。 */
 
 /** fg 以自身 alpha 合成到不透明底 bg 上（消去透明度）。 */
 function compositeOver(fg: { rgb: Rgb; a: number }, bg: Rgb): Rgb {
-  return mixRgb(fg.rgb, bg, fg.a);
+  return mixRgb(bg, fg.rgb, fg.a);
 }
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -159,15 +149,15 @@ export function computeLayerStack(
   const base0 = compositeOver(glass, desk.rgb);
   const steps = isLight ? ELEVATION_STEPS.light : ELEVATION_STEPS.dark;
   /** 自 base0 向 ink 方向混入 step 比例（海拔梯度的设计目标色）。 */
-  const towardInk = (step: number) => mixRgb(inkC.rgb, base0, step);
+  const towardInk = (step: number) => mixRgb(base0, inkC.rgb, step);
   const layers: LayerTokens[] = [];
   for (let n = 0; n <= 4; n++) {
     // 每层对「下一层的设计底」做 alpha 逆混合（invertAlphaBlend）。
     const solveBase = n === 0 ? desk.rgb : towardInk(steps[n - 1]);
     const target = n === 0 ? base0 : towardInk(steps[n]);
     const solved = invertAlphaBlend(solveBase, target, a);
-    const hoverT = invertAlphaBlend(solveBase, mixRgb(inkC.rgb, target, STATE_MIX.hover), a);
-    const activeT = invertAlphaBlend(solveBase, mixRgb(inkC.rgb, target, STATE_MIX.active), a);
+    const hoverT = invertAlphaBlend(solveBase, mixRgb(target, inkC.rgb, STATE_MIX.hover), a);
+    const activeT = invertAlphaBlend(solveBase, mixRgb(target, inkC.rgb, STATE_MIX.active), a);
     layers.push({
       bg: rgbaCss(solved.rgb, a),
       solid: hexCss(target),
@@ -204,7 +194,7 @@ export interface ThemeExtra {
   fxToggles: Partial<Record<FxEffectId, boolean>>;
   widgetEntrance: string;
   viewTransition: string;
-  /** B3 自定义缓动曲线（可选：旧调用方不传则不写 --ease-custom）。 */
+  /** 自定义缓动曲线（可选：旧调用方不传则不写 --ease-custom）。 */
   customEase?: BezierPoints;
   customEaseEnabled?: boolean;
 }
@@ -231,7 +221,7 @@ export function cancelDeferNextThemeApply(): void {
   inkDeferOnce = false;
 }
 
-/* P2-3（浮窗深浅接入水墨）：FloatingThemeSync 在本窗口对主题键变化独立重放
+/* （浮窗深浅接入水墨）：FloatingThemeSync 在本窗口对主题键变化独立重放
    applySettings（分体主题覆盖写），它发生在 SettingsSync 的全局写之后——
    上述 inkDeferOnce 只拦得住前者，拦不住后者，浮窗深浅档一变就是先行硬切。
    这是第二枚一次性标记：StylePage 的水墨接管流程在 arm 时一并挂上，
@@ -394,7 +384,7 @@ export const PRESET_DEFAULT_OPACITY: Record<ThemePreset, number> = {
  * - CSS 侧：applySettings 把关闭的 id 写入 html[data-fx-off="id1 id2 …"]，
  *   feature-fx.css / rb.css 的 data-fx 规则带 :not([data-fx-off~="id"]) 门控
  *   （check-fx-gate.mjs 对 src/**\/*.css 递归强制，规则缺失即 lint 失败）。
- * - JS 侧：useFxEnabled(id)（lib/fx.tsx）读取同一份开关。
+ * - JS 侧：useFxEffectEnabled(id)（lib/fx.tsx）读取同一份开关。
  * 默认全部开启（fxToggles 只存显式关闭/开启的项，缺省 = 开）。
  */
 export type FxEffectId =
@@ -409,7 +399,7 @@ export type FxEffectId =
   | "specular" // 选中高光框：分段与预设卡片选中态的圆周高光
   | "pixelSwap" // 像素涟漪：切换样式预设时荡开的像素格波纹
   | "particleText" // 粒子文字：许可证页 Vela 粒子聚合
-  | "ambientMotion" // 常驻动效：画廊漂移墙 / 快捷方式滚动带 / 岛内音乐跑马
+  | "ambientMotion" // 常驻动效：画廊漂移墙 / 岛内音乐跑马
   | "cardHover" // 悬浮窗卡片：悬停放大 / 双色描边 / 视图切换器呼吸晕
   | "springCheck"; // 弹簧勾选：待办完成的弹性填充 / 对勾描边 / 删除线滞后
 
@@ -429,6 +419,32 @@ export const FX_EFFECT_IDS: readonly FxEffectId[] = [
   "springCheck",
   "ambientMotion"
 ];
+
+/**
+ * 界面字体的 CSS 回退栈：字体下拉的可选项 → font-family 值。裸字体名在
+ * 字体缺失时（Windows 选「苹方」、未装 JetBrains Mono / Noto Sans SC 等）
+ * 会一路回落到浏览器默认衬线，中文观感骤降；按「所选字体 → 同形制替身 →
+ * 系统栈」给每一档配链。未知字体值（历史快照 / 手改存储）也兜进系统栈，
+ * 字体名内的引号剥除（font-family 单值注入面收口）。
+ */
+export const UI_FONT_STACKS: Record<string, string> = {
+  系统: "'Segoe UI','Microsoft YaHei',system-ui,sans-serif",
+  "Segoe UI": "'Segoe UI','Microsoft YaHei',system-ui,sans-serif",
+  "Microsoft YaHei": "'Microsoft YaHei','Segoe UI',system-ui,sans-serif",
+  "PingFang SC": "'PingFang SC','Microsoft YaHei','Noto Sans SC',system-ui,sans-serif",
+  "Noto Sans SC": "'Noto Sans SC','Microsoft YaHei','PingFang SC',system-ui,sans-serif",
+  Outfit: "'Outfit','Segoe UI','Microsoft YaHei',sans-serif",
+  "JetBrains Mono": "'JetBrains Mono','Geist Mono',Consolas,'Microsoft YaHei',monospace"
+};
+
+/** 字体设置值 → 完整 font-family 栈（未知值剥离引号后配系统栈兜底）。 */
+export function uiFontStack(font: string): string {
+  const known = UI_FONT_STACKS[font];
+  if (known) return known;
+  const safe = font.replace(/["']/g, "").trim();
+  if (!safe) return UI_FONT_STACKS["系统"];
+  return `'${safe}','Segoe UI','Microsoft YaHei',system-ui,sans-serif`;
+}
 
 /**
  * Applies the current settings to the CSS variables on <html>. Called on
@@ -583,7 +599,7 @@ export function applySettings(s: AppearanceLike, extra: ThemeExtra, reduceEffect
   root.setAttribute("data-theme", isLight ? "light" : "glass");
 
   // "减少特效" disables the frosted-glass blur entirely (0px) for a flat look.
-  // F3（审计）：同步挂全局属性，CSS 侧据此一键关闭所有 backdrop-filter
+  // 同步挂全局属性，CSS 侧据此一键关闭所有 backdrop-filter
   // （56 处散布各样式文件，逐条改造不现实；透明窗口多层模糊在低端机/
   // 电池模式下是主要掉帧源，reduceEffects 时统一切纯色半透明底）。
   root.setAttribute("data-no-glass", reduceEffects ? "1" : "0");
@@ -603,12 +619,15 @@ export function applySettings(s: AppearanceLike, extra: ThemeExtra, reduceEffect
   root.style.setProperty("--anim-dur-slow", `${Math.max(0.1, animDurCapped * 2)}s`);
   /* 层显隐淡出随速度档联动：把当前 --dur-fx（×0.8，与 feature-animations.css
      派生式同源）毫秒数推给 Rust，toggle 层显隐的 hide 等待取
-     max(240, fx+40)——速度档调慢后淡出不再被恒定 240ms 从中间掐断（P0-1d）。
+     max(240, fx+40)——速度档调慢后淡出不再被恒定 240ms 从中间掐断。
      动效全关（animDurCapped=0）时上报 0，Rust 侧维持保底 240ms。 */
   if (isTauri()) {
     void invoke("set_layer_fade_ms", { ms: Math.round(animDurCapped * 0.8 * 1000) }).catch(() => {});
   }
-  root.style.setProperty("--reduce-motion", !extra.enableAnimations || extra.animationMode === "reduced" ? "1" : "0");
+  // 「减少动态」总门控（应用内开关 OR 动画关闭）：CSS 侧全部消费
+  // [data-reduce-motion] 属性选择器（global.css / feature-fx.css），JS 侧由
+  // lib/anim prefersReducedMotion() 读同一属性——不写 --reduce-motion 变量
+  // （曾长期零消费者的死变量，已删）。
   root.setAttribute("data-reduce-motion", !extra.enableAnimations || extra.animationMode === "reduced" ? "1" : "0");
   // 增强动效：动效模式选「增强」时生效（feature-fx.css 消费）。
   const nextFx = extra.enableAnimations && extra.animationMode === "enhanced" ? "1" : "0";
@@ -638,7 +657,7 @@ export function applySettings(s: AppearanceLike, extra: ThemeExtra, reduceEffect
   // Widget entrance + view transition selectors drive the CSS keyframe rules.
   root.setAttribute("data-widget-entrance", extra.enableAnimations ? extra.widgetEntrance : "none");
   root.setAttribute("data-view-transition", extra.enableAnimations ? extra.viewTransition : "none");
-  // B3 自定义曲线：编辑器产出写入 --ease-custom（与 A3 两族 token 同一
+  // 自定义曲线：编辑器产出写入 --ease-custom（与 两族 token 同一
   // 命名空间，供任何样式消费）；启用时让入场语义别名 --ease-entrance 指向它，
   // 小组件入场与动画页预览卡同源同曲线。未启用则移除内联值，回退
   // feature-animations.css 的缺省（--ease-out）。
@@ -659,7 +678,7 @@ export function applySettings(s: AppearanceLike, extra: ThemeExtra, reduceEffect
   root.style.setProperty("--muted-wl", inkTokens.muted);
   root.style.setProperty("--line-wl", inkTokens.line);
   root.style.setProperty("--glass-blur", `${blurPx}px`);
-  // A10 对比度：--muted-2 深色档 .4 白在纸面上仅 ≈3.5:1（WCAG FAIL），提至 .52；
+  // 对比度：--muted-2 深色档 .4 白在纸面上仅 ≈3.5:1（WCAG FAIL），提至 .52；
   // 浅色档同步微调，保证弱化层级文本在任意预设底色上 ≥4.5:1。
   root.style.setProperty("--muted-2", isLight ? "rgba(0,0,0,.58)" : "rgba(255,255,255,.52)");
   root.style.setProperty("--muted-2-wl", inkLight ? "rgba(0,0,0,.58)" : "rgba(255,255,255,.52)");
@@ -706,7 +725,7 @@ export function applySettings(s: AppearanceLike, extra: ThemeExtra, reduceEffect
   root.style.setProperty("--warn-soft", isLight ? "rgba(180,83,9,.14)" : "rgba(245,158,11,.16)");
   // 琥珀（DDL 紧迫态等）与 --warn 同源，随明暗切换保持一致。
   root.style.setProperty("--amber", isLight ? "#b45309" : "#f59e0b");
-  // A2 单源化：设置窗原作用域覆盖的徽标语义色（审计共性#1）提升为全局
+  // 单源化：设置窗原作用域覆盖的徽标语义色（审计共性#1）提升为全局
   // 明暗双档——设置窗与右键菜单不再各自维护第二/第三套取值。
   root.style.setProperty("--amber-ink", isLight ? "#b45309" : "#fbbf24");
   root.style.setProperty("--amber-soft", isLight ? "rgba(180,83,9,.12)" : "rgba(251,191,36,.14)");
@@ -789,15 +808,17 @@ export function applySettings(s: AppearanceLike, extra: ThemeExtra, reduceEffect
   // Zoom + font size.
   root.style.setProperty("--ui-zoom", `${s.zoom / 100}`);
   root.style.setProperty("--font-scale", `${s.fontSize / 100}`);
-  root.style.setProperty("--ui-font", s.font === "系统" ? "'Segoe UI','Microsoft YaHei',sans-serif" : s.font);
+  // 字体写完整回退栈（uiFontStack）：字体缺失时回落同形制替身而非浏览器
+  // 默认衬线；此前裸写字体名，Windows 上选「苹方」等未装字体观感受损。
+  root.style.setProperty("--ui-font", uiFontStack(s.font));
 
-  /* A1 色彩层级求解：按当前小组件不透明度把 L0–L4 五层表面 + 每层
-     On/Hover/Active 写入 CSS 变量。求解保证「层 N 以 α 合成回层 N-1 的
+  /* 色彩层级求解：按当前小组件不透明度把 L0–L4 五层表面 + 每层
+     On/Hover/Active 写入 CSS 变量。求解保证「层 N 以 α 合成回层 的
      设计底」≈ 层 N 的设计目标色——透明度滑条拉低时各层通道被反解到
      极致补偿，层阶方向不反转（弹层对卡片始终抬升、明暗档方向一致）。
-       --layer{n}          求解表面色（随 widgetOpacity，卡片族表面用）
-       --layer{n}-solid    α=1 设计目标（设置窗/右键菜单等实底 chrome 用）
-       --layer{n}-on/-hover/-active   内容色与状态变体（8%/15% 混 On） */
+       --layer{n} 求解表面色（随 widgetOpacity，卡片族表面用）
+       --layer{n}-solid α=1 设计目标（设置窗/右键菜单等实底 chrome 用）
+       --layer{n}-on/-hover/-active 内容色与状态变体（8%/15% 混 On） */
   // 层阶「On/Hover/Active」文字色按 inkTokens（极性联防后）求解：自定义浅
   // 背景 + 暗色档时，卡片/弹层上的层阶文字与 --ink 同步翻深，不再白字白底。
   const layers = computeLayerStack(t.bg, effectiveBg, inkTokens.ink, s.widgetOpacity / 100, isLight);

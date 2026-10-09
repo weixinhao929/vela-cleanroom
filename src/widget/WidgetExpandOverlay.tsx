@@ -1,9 +1,9 @@
 /**
- * 小组件沉浸展开遮罩层（C1）。
+ * 小组件沉浸展开遮罩层。
  *
  * 动画配方（沉浸展开基准参数的 DOM 适配）：
  *  - 展开：从卡片原矩形生长到沉浸矩形（默认 min(720px, 90vw) × min(600px, 86vh)，
- *    用户拖过边角后按 expand-size 记住的尺寸），曲线/时长按 A3 小增量降档由
+ *    用户拖过边角后按 expand-size 记住的尺寸），曲线/时长按 小增量降档由
  *    pickSpatialEase 依生长量选档——常规卡片生长数百 px 走 cardReflow 默认档
  *    （--ease-card-reflow / 500ms Spatial 过冲族），已接近沉浸尺寸的卡片（四边
  *    变化 ≤20px）走 elementMove 快档（350ms）；
@@ -36,6 +36,7 @@ import { X } from "lucide-react";
 import { useT } from "../i18n-lite";
 import { pickSpatialEase, prefersReducedMotion, type SpatialEase } from "../lib/anim";
 import { animDurations } from "../lib/durations";
+import { uiZoom } from "../lib/ui-zoom";
 import {
   EXPAND_MIN_H,
   EXPAND_MIN_W,
@@ -78,7 +79,7 @@ type Phase = "enter" | "open" | "closing" | "idle";
 const GRIP_CORNER = 16;
 const GRIP_EDGE = 8;
 type GripId = "nw" | "ne" | "se" | "sw" | "n" | "s" | "w" | "e";
-/* F3：柄是纯指针控件（div 不可聚焦），对 AT 隐藏——键盘缩放由卡片选中后的
+/* 柄是纯指针控件（div 不可聚焦），对 AT 隐藏——键盘缩放由卡片选中后的
    Shift+方向键承担（WidgetCard keyboard nudge 同一约定），不再给读屏用户
    一个「读得到却进不去」的假入口。 */
 const GRIPS: { id: GripId; cursor: string; style: CSSProperties }[] = [
@@ -130,6 +131,10 @@ type Props = {
       命中，其余区域直达桌面），仅关闭按钮 / Esc 收回。默认 false = 既有
       模态语义（全屏遮罩 + 点击空白收回）。 */
   floating?: boolean;
+  /** 模态模式下中键点击遮罩/空白的回调（灵动岛 middle=collapse 用）：模态遮罩
+      盖住全视口，岛本体收不到 auxclick——中键收起只能由遮罩层代收。不传则
+      中键无动作（画布沉浸页等既有语义不变）。 */
+  onAuxCollapse?: () => void;
   children: ReactNode;
 };
 
@@ -141,17 +146,18 @@ export function WidgetExpandOverlay({
   sizeKey,
   scrim = true,
   floating = false,
+  onAuxCollapse,
   children
 }: Props) {
   const tr = useT();
   const [phase, setPhase] = useState<Phase>(active ? "enter" : "idle");
   const [rect, setRect] = useState<ExpandRect>(origin);
-  /* A3 小增量降档：展开生长的曲线/时长，按原矩形 → 沉浸矩形的四边最大变化量
+  /* 小增量降档：展开生长的曲线/时长，按原矩形 → 沉浸矩形的四边最大变化量
      在切目标矩形的同一帧选定；只在 open 相位内联（enter 需 transition:none
      复位、closing 走 CSS --dur-spatial-fast --ease-in 退场配方，两者都不能被
      内联覆盖）。 */
   const [growEase, setGrowEase] = useState<SpatialEase>(() => pickSpatialEase(Number.POSITIVE_INFINITY));
-  /* BentoDesk 借鉴 #7：closing 中途重开的续播时长（null = 走 growEase 默认档）。 */
+  /* closing 中途重开的续播时长（null = 走 growEase 默认档）。 */
   const [retargetDur, setRetargetDur] = useState<number | null>(null);
   const [resizing, setResizing] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -177,16 +183,19 @@ export function WidgetExpandOverlay({
     window.clearTimeout(idleTimer.current);
     if (active) {
       setRetargetDur(null);
-      /* BentoDesk 借鉴 #7：closing 中途重开不复位回原矩形——采样面板当前
+      /* closing 中途重开不复位回原矩形——采样面板当前
          视觉矩形钉住（enter 无过渡），再从那里续播展开；时长按剩余视觉
          距离相对全程的比例线性缩短（60ms 下限，反向反转更快）。 */
       if (phase === "closing" && !prefersReducedMotion() && panelRef.current) {
         const cur = panelRef.current.getBoundingClientRect();
+        /* gBCR 是视觉坐标，rect state 是布局单位——除回 uiZoom 钉住，
+           缩放 ≠100% 时续播起点不偏移。 */
+        const z = uiZoom();
         const sampled: ExpandRect = {
-          x: Math.round(cur.left),
-          y: Math.round(cur.top),
-          w: Math.round(cur.width),
-          h: Math.round(cur.height)
+          x: Math.round(cur.left / z),
+          y: Math.round(cur.top / z),
+          w: Math.round(cur.width / z),
+          h: Math.round(cur.height / z)
         };
         setRect(sampled);
         setPhase("enter");
@@ -240,15 +249,20 @@ export function WidgetExpandOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
-  /* Esc 收回 + Tab 焦点圈（F3）：仅展开态监听（同一时刻至多一个监听者）。
+  /* Esc 收回 + Tab 焦点圈：仅展开态监听（同一时刻至多一个监听者）。
      aria-modal 已向读屏隐藏背景，Tab 圈补上视觉键盘用户的一致语义——焦点
-     不再从面板走出到背景画布上「不存在」的元素。 */
+     不再从面板走出到背景画布上「不存在」的元素。
+     onClose 经 ref 读取（use-tauri-event 同款）——调用方（DockShell /
+     DockPanel 等）传的是内联箭头，身份逐渲染变化，此前依赖数组带上它会让
+     活动期每次父渲染都摘挂一次 capture 监听。 */
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key === "Tab" && panelRef.current) {
@@ -282,9 +296,9 @@ export function WidgetExpandOverlay({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [active, onClose]);
+  }, [active]);
 
-  /* F3（焦点归还）：展开时记录触发元素，收起时归还。触发按钮常是 hover 才
+  /* （焦点归还）：展开时记录触发元素，收起时归还。触发按钮常是 hover 才
      出现的 portal 快捷条，收起时多半已卸载——isConnected 守卫下退化为不动
      （焦点落 body），尽力而为不抛错。 */
   const lastFocusRef = useRef<HTMLElement | null>(null);
@@ -315,8 +329,11 @@ export function WidgetExpandOverlay({
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const r = resizeRef.current;
     if (!r || e.pointerId !== r.pointerId) return;
-    const dx = e.clientX - r.startX;
-    const dy = e.clientY - r.startY;
+    /* 指针位移是视觉坐标（含 uiZoom），rect 是布局单位——除回再参与
+       resizeRect（与 window.innerWidth 同一坐标系）。 */
+    const zoom = uiZoom();
+    const dx = (e.clientX - r.startX) / zoom;
+    const dy = (e.clientY - r.startY) / zoom;
     cancelAnimationFrame(resizeRaf.current);
     resizeRaf.current = requestAnimationFrame(() => {
       setRect(resizeRect(r.orig, r.grip, dx, dy, window.innerWidth, window.innerHeight));
@@ -327,12 +344,21 @@ export function WidgetExpandOverlay({
     if (!r || e.pointerId !== r.pointerId) return;
     cancelAnimationFrame(resizeRaf.current);
     resizeRef.current = null;
+    /* pointer **cancel**（系统夺走指针 / 触控中断）不是用户确认——
+       半途尺寸不落盘（此前与正常松手共用本处理器，取消即把中间态尺寸
+       持久化）。cancel 回退 orig，up 才算终态。 */
+    if (e.type === "pointercancel") {
+      setRect(r.orig);
+      setResizing(false);
+      return;
+    }
     // 松手那一帧的位移直接算终态，不等 rAF（避免最后 16ms 的位移丢掉）。
+    const zoom = uiZoom();
     const next = resizeRect(
       r.orig,
       r.grip,
-      e.clientX - r.startX,
-      e.clientY - r.startY,
+      (e.clientX - r.startX) / zoom,
+      (e.clientY - r.startY) / zoom,
       window.innerWidth,
       window.innerHeight
     );
@@ -352,8 +378,7 @@ export function WidgetExpandOverlay({
   if (phase === "open") {
     /* 内联优先于 .wexp.is-open 的 CSS 过渡；reduce-motion 的 !important 0.001s
        压制在层叠上仍高于内联，双信号门禁不受影响。拖动调整大小期间关掉过渡，
-       矩形逐帧跟手；松手（含双击复位）恢复过渡。retargetDur 覆盖时长（BentoDesk
-       借鉴 #7：中途重开按剩余距离缩短），曲线仍按位移量选档。 */
+       矩形逐帧跟手；松手（含双击复位）恢复过渡。retargetDur 覆盖时长，曲线仍按位移量选档。 */
     const dur = retargetDur ?? growEase.durMs;
     const t = `${dur}ms ${growEase.ease}`;
     rectStyle.transition = resizing ? "none" : `left ${t}, top ${t}, width ${t}, height ${t}`;
@@ -377,6 +402,15 @@ export function WidgetExpandOverlay({
               if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("wexp-backdrop"))
                 onClose();
             }
+      }
+      onAuxClick={
+        !floating && onAuxCollapse
+          ? (e) => {
+              if (e.button !== 1) return;
+              if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("wexp-backdrop"))
+                onAuxCollapse();
+            }
+          : undefined
       }
     >
       {!floating && <div className="wexp-backdrop" aria-hidden="true" />}

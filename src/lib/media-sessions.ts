@@ -2,14 +2,17 @@ import { useEffect, useState } from "react";
 import { invoke, isTauri } from "./tauri";
 
 /**
- * 媒体会话列表的共享轮询器（引用计数单例）。
+ * 媒体会话列表的共享数据源（引用计数单例）。
  *
- * 「正在播放」卡片（nowplaying/both 布局）与音乐沉浸页各自需要媒体会话数据
- * （get_media_sessions_page 单命令 1 IPC / 3s / 窗口），
- * 沉浸页展开时底层卡片仍挂载继续轮询——同窗口同数据 2 份并发；每多一个
- * 音乐实例再翻一倍。本模块把轮询收敛为窗口级单例：首个订阅者启动 3s
- * 定时器（页面隐藏跳拍），末个退订停止；数据经订阅分发，内容不变时分发
- * 旧引用（消费方 setState 被短路，不触发重渲）。
+ * （事件化）：此前「正在播放」卡片/沉浸页各自经 3s 轮询
+ * get_media_sessions_page 拉列表（每窗口 1 IPC / 3s，Rust 侧走一遍全量
+ * GMS 枚举）。现在 Rust 事件线程每拍本就枚举全量会话，变化时 emit
+ * `media:sessions`（签名去抖），本模块退化为：
+ *  - 初值：首个订阅者挂载时全量拉一次 get_media_sessions_page；
+ *  - 增量：订阅 media:sessions 事件（≤1s 可见延迟，事件线程 1s 粒度）；
+ *  - 兜底：30s 低频复核（事件线程 panic 退避/事件丢失时自愈）+ 恢复可见
+ *    立即拉一次（此前轮询在 document.hidden 跳拍，恢复后最长 3s 陈旧）。
+ * 数据经订阅分发，内容不变时分发旧引用（消费方 setState 被短路）。
  */
 
 /**
@@ -20,15 +23,25 @@ export interface MediaSessionEntry {
   id: string;
   name: string;
   playing: boolean;
-  /** W-131 黑名单态（渲染分组用；缺省视为未隐藏）。 */
+  /** 黑名单态（渲染分组用；缺省视为未隐藏）。 */
   blocked?: boolean;
 }
 
 type Snapshot = { sessions: MediaSessionEntry[]; selectedId: string | null };
+type PagePayload = { sessions: MediaSessionEntry[] | null; selected_id: string | null };
 
-let started = false;
-let timer = 0;
-let current: Snapshot = { sessions: [], selectedId: null };
+const EMPTY: Snapshot = { sessions: [], selectedId: null };
+
+let current: Snapshot = EMPTY;
+let installed = false;
+/** 安装代数。teardown / 测试 reset 时自增——异步 listen 注册完成时
+ *  若代数已翻（期间拆过又重装），旧代监听立即自拆，不叠加第二份。 */
+let installGen = 0;
+/** media:sessions 事件监听的反注册句柄（此前 listen 返回的 UnlistenFn
+ *  被丢弃，监听装上后永远无法移除）。 */
+let unlistenEvent: (() => void) | null = null;
+let reviewTimer = 0;
+let onVisibility: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
 function sameSessions(a: MediaSessionEntry[], b: MediaSessionEntry[]): boolean {
@@ -44,46 +57,93 @@ function notify() {
   for (const fn of listeners) fn();
 }
 
-function poll() {
-  if (document.hidden) return;
-  // 合并命令（Rust get_media_sessions_page）：列表 + 锁定 id 一次往返——
-  // 此前每 3s 两条 IPC，各走一遍 GMS 枚举/读锁。
-  void invoke<{ sessions: MediaSessionEntry[] | null; selected_id: string | null }>("get_media_sessions_page")
-    .then((page) => {
-      const next = page.sessions ?? [];
-      const selectedId = page.selected_id ?? null;
-      if (!sameSessions(current.sessions, next)) current = { ...current, sessions: next };
-      if (current.selectedId !== selectedId) current = { ...current, selectedId };
-      notify();
-    })
+function applyPage(page: PagePayload | null | undefined) {
+  if (!page) return;
+  const next = page.sessions ?? [];
+  const selectedId = page.selected_id ?? null;
+  if (sameSessions(current.sessions, next) && current.selectedId === selectedId) return;
+  current = { sessions: next, selectedId };
+  notify();
+}
+
+function pull(): void {
+  if (!isTauri()) return;
+  void invoke<PagePayload | null>("get_media_sessions_page")
+    .then(applyPage)
     .catch(() => {});
 }
 
-function ensurePolling() {
-  if (started || !isTauri()) return;
-  started = true;
-  poll();
-  timer = window.setInterval(poll, 3000);
+function ensureInstalled() {
+  if (installed || !isTauri()) return;
+  installed = true;
+  const gen = ++installGen;
+  pull();
+  void import("@tauri-apps/api/event")
+    .then(({ listen }) => listen<PagePayload | null>("media:sessions", (e) => applyPage(e.payload)))
+    .then((un) => {
+      // 异步注册完成时安装代数已翻（teardown/reset 后重装）→ 旧代
+      // 监听立即反注册；同代才持有句柄供 teardown 调用。
+      if (gen !== installGen) {
+        un();
+        return;
+      }
+      unlistenEvent = un;
+    })
+    .catch(() => {
+      // 事件链路缺失：30s 兜底复核仍在。
+    });
+  // 兜底复核：事件线程异常（panic 退避中/事件丢失）时最长 30s 自愈；隐藏
+  // 期间跳过，恢复可见立即拉一次（比旧轮询的 3s 陈旧更紧）。定时器与
+  // visibilitychange 的移除句柄由模块持有（见 teardownMediaSessions）。
+  const review = () => {
+    if (!document.hidden && listeners.size > 0) pull();
+  };
+  onVisibility = review;
+  reviewTimer = window.setInterval(review, 30_000);
+  document.addEventListener("visibilitychange", review);
 }
 
-function maybeStop() {
-  if (listeners.size > 0 || !started) return;
-  started = false;
-  window.clearInterval(timer);
-  timer = 0;
+/** 拆除模块单例的全部常驻监听（media:sessions 事件监听 + 30s 复核
+ *  interval + visibilitychange）。此前 listen 的 UnlistenFn 被丢弃、两个
+ *  DOM 层监听永不移除——测试 reset 后再订阅会叠加第二份 interval 与
+ *  visibilitychange。幂等；拆完 installed=false，下次订阅按需重装。
+ *  生产路径如需随窗口生命周期整体卸载也走本入口。 */
+export function teardownMediaSessions(): void {
+  installGen++;
+  if (reviewTimer) {
+    window.clearInterval(reviewTimer);
+    reviewTimer = 0;
+  }
+  if (onVisibility) {
+    document.removeEventListener("visibilitychange", onVisibility);
+    onVisibility = null;
+  }
+  if (unlistenEvent) {
+    unlistenEvent();
+    unlistenEvent = null;
+  }
+  installed = false;
 }
 
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
-  ensurePolling();
+  ensureInstalled();
   return () => {
     listeners.delete(cb);
-    maybeStop();
   };
 }
 
 function getSnapshot(): Snapshot {
   return current;
+}
+
+/** 测试专用：重置模块级单例（清状态 + 拆旧监听/定时器），保证用例隔离。
+ *  必须先拆旧监听再允许重订阅——此前只翻转 installed 标志，下一用例
+ *  的首个订阅者会再装一套 interval/visibilitychange/事件监听（逐用例叠加）。 */
+export function __resetMediaSessionsForTest(): void {
+  teardownMediaSessions();
+  current = EMPTY;
+  listeners.clear();
 }
 
 /**
@@ -107,5 +167,5 @@ export function useMediaSessions(active: boolean): Snapshot {
       unsub();
     };
   }, [active]);
-  return active ? snap : { sessions: [], selectedId: null };
+  return active ? snap : EMPTY;
 }

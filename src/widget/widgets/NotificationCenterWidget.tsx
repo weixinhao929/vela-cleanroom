@@ -20,7 +20,10 @@ export function NotificationCenterWidget() {
         <span className="ncw-title">{tr("通知中心")}</span>
         {unread > 0 && <span className="ncw-badge">{unread > 99 ? "99+" : unread}</span>}
       </div>
-      <NotificationCenterList />
+      {/* （画布卡常驻即已读）：active=false 关闭驻留 1.2s 自动 markAllRead——
+          画布常驻卡挂载即把全部通知翻已读，用户根本没看；改为不自动已读
+          （未读角标保留，阅读/清理在通知面板进行）。 */}
+      <NotificationCenterList active={false} />
     </div>
   );
 }

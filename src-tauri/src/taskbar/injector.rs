@@ -1,25 +1,25 @@
-//! 注入与恢复引擎（TB-INJECT）：把 TAP 的 DLL、STATE 的状态流、CORE 的
+//! 注入与恢复引擎：把 TAP 的 DLL、状态流、契约
 //! 契约连成闭环——探测 → 解包 → 注入 → 管道 → 下发外观 → 恢复保障。
 //!
-//! # 生效链路（§5.2 / F-1）
+//! # 生效链路（§5.2 / ）
 //! [`apply_config`]（mod.rs `apply_taskbar_config` 调用）：enabled=false →
 //! [`restore_all`]（停线程 + 管道 RestoreAll + Idle）；enabled=true →
 //! [`ensure_started`]（幂等：已在跑则只下发新外观表，不重复注入）→
 //! [`send_appearance`] 按当前求值结果下发 ApplyAppearance /
 //! SetBorderVisibility → 返回失败项列表。
 //!
-//! # 注入序列（对齐标杆 ExplorerTAP\api.cpp:18-93）
-//! 探测 XAML（否则 Degraded，D7）→ DLL 解包 `%TEMP%\vela\tap\<hash>\`（哈希
-//! 变了落新目录，绕开旧 explorer 占用，对齐标杆 loadabledll.cpp 动机）→
+//! # 注入序列
+//! 探测 XAML（否则 Degraded）→ DLL 解包 `%TEMP%\vela\tap\<hash>\`（哈希
+变了落新目录，绕开旧 explorer 占用）→
 //! **驻留检查**（explorer 已挂 velatap.dll：同版本只建管道"唤醒"既有副本——
 //! DLL 被钉住永不卸载、断连后无限重连，二次注入只会制造多副本；不同版本拒绝
 //! 注入并提示重启资源管理器）→ 本进程 LoadLibrary 取 hook 导出 → 建命名标记
 //! 事件 → 建管道实例（注入前，无竞态）→ `SetWindowsHookEx(WH_CALLWNDPROC,
 //! hook, dll, tid)` → `SendMessageTimeout` 触发加载（CALLWNDPROC 只走**发送**
 //! 消息，PostMessage 不会触发；带 2s 超时防 explorer 挂死）→ 等管道握手（整体
-//! 35s，对齐标杆 READY_TIMEOUT）→ 版本不匹配即 Failed（F-10；D6 不强杀 explorer）。
+//! 35s）→ 版本不匹配即 Failed（不强杀 explorer）。
 //!
-//! # 与 velatap.dll 的接缝约定（TB-TAP 合入时按此对齐；本会话 DLL 未合入）
+//! # 与 velatap.dll 的接缝约定（DLL 未交付时按下述约定预留）
 //! 1. DLL 须导出 hook 过程 `CallWndProc`（`extern "system" fn(i32, WPARAM,
 //!    LPARAM) -> LRESULT`，转发 CallNextHookEx 即可；备用名
 //!    `velatap_hook_proc`）；
@@ -30,21 +30,19 @@
 //!    回 `Ready` 握手、答 `Pong`、执行 ApplyAppearance /
 //!    SetBorderVisibility / RestoreAll（协议见 protocol.rs，冻结）。
 //!
-//! # 四条恢复线（F-9）
+//! # 四条恢复线
 //! - 线 1 正常退出：`RunEvent::Exit` → [`restore_all`]（RestoreAll + 卸钩）。
 //! - 线 2 崩溃/panic：logging panic hook 追加 [`restore_all`] best-effort；
 //!   强杀（kill -9）依赖 DLL 持主进程句柄自恢复（TAP 侧实现，本侧负责
 //!   探测与提示）。
 //! - 线 3 explorer 重启：win_watcher `TaskbarCreated` → [`on_taskbar_created`]
-//!   全量重建（清状态→重枚举→重注入→重求值），带重入保护（对齐标杆
-//!   m_ResettingState）；30s 内两次 → 自动停用模块 + 状态 Degraded + 文案
-//!   「检测到资源管理器频繁重启，已暂停任务栏自定义」（对齐标杆 :1443-1456
-//!   崩溃循环保护，不弹系统对话框）。
+//!   全量重建（清状态→重枚举→重注入→重求值），带重入保护；30s 内两次 → 自动停用模块 + 状态 Degraded + 文案
+//!   「检测到资源管理器频繁重启，已暂停任务栏自定义」（崩溃循环保护，不弹系统对话框）。
 //! - 线 4 升级残留：启动时读 `%TEMP%\vela\tap` 元数据，上次注入的 DLL 哈希
 //!   ≠ 当前且 explorer 仍挂着 velatap.dll → 状态条提示重启资源管理器
-//!   （F-10 文案；D6 不强杀）。
+//! （文案；不强杀）。
 //!
-//! # 失败纪律（R1）
+//! # 失败纪律
 //! 任何注入失败都是**终态 Failed**（带一句话原因），绝不自动重试风暴；
 //! 恢复入口只有三个：用户重新应用（apply / 重新应用按钮）、explorer 重启
 //! （TaskbarCreated 重建）、应用重启。管道断连是唯一例外：转 Degraded 后
@@ -61,9 +59,9 @@ use crate::taskbar::detect::{self, TaskbarType};
 use crate::taskbar::protocol::{self, TapMessage};
 use crate::taskbar::{self, StateResolution, TaskbarAccent, TaskbarAppearance, TaskbarSettings};
 
-/* ================== 可调参数（对齐标杆锚点） ================== */
+/* ================== 可调参数 ================== */
 
-/// 注入后等管道握手（连接 + Hello/Ready）的整体超时（标杆 api.cpp 35s）。
+/// 注入后等管道握手（连接 + Hello/Ready）的整体超时（35s）。
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(35);
 /// 心跳间隔（§5.2：5s Ping）。
 pub const PING_INTERVAL: Duration = Duration::from_secs(5);
@@ -71,7 +69,7 @@ pub const PING_INTERVAL: Duration = Duration::from_secs(5);
 pub const PONG_STALE_MS: u64 = 12_000;
 /// explorer 重启后等它把任务栏建完再重注入。
 pub const REBUILD_SETTLE: Duration = Duration::from_millis(800);
-/// 崩溃循环保护窗口（标杆 :1443-1456：30s）。
+/// 崩溃循环保护窗口（30s）。
 pub const CRASH_LOOP_WINDOW_MS: u64 = 30_000;
 /// 断连后重连尝试的间隔（连接尝试本身另有超时）。
 pub const RECONNECT_RETRY: Duration = Duration::from_secs(2);
@@ -79,8 +77,8 @@ pub const RECONNECT_RETRY: Duration = Duration::from_secs(2);
 pub const APPLY_WAIT_READY: Duration = Duration::from_secs(10);
 
 /// DLL 必须导出的 hook 过程名（按序探测；约定见模块文档）。
-/// `VelaTapHookProc` 是 taskbar_tap 实际导出名（TB-TAP）；`CallWndProc`
-/// 对齐标杆 ExplorerTAP 命名，联调 mock 与未来变体兜底。
+/// `VelaTapHookProc` 是 taskbar_tap 实际导出名；`CallWndProc`
+/// 为兼容备用名，联调 mock 与未来变体兜底。
 pub const HOOK_EXPORT_NAME: &str = "VelaTapHookProc";
 pub const HOOK_EXPORT_FALLBACK: &str = "CallWndProc";
 pub const HOOK_EXPORT_FALLBACK2: &str = "velatap_hook_proc";
@@ -90,7 +88,7 @@ pub fn marker_event_name(explorer_pid: u32) -> String {
     format!(r"Local\velatap-inject-{explorer_pid}")
 }
 
-/// 墙钟毫秒（崩溃循环窗口判定用；测试注入假值）。
+/// 墙钟毫秒（元数据/状态展示用；测试注入假值）。
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -98,9 +96,42 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 单调毫秒（自进程锚点）：心跳判死 / 崩溃窗口计时用。：
+/// 墙钟（SystemTime）在系统睡眠唤醒、NTP 校时、手动改钟下会跳变——睡眠
+/// 超过 12s 后唤醒，`now - last_pong` 必超阈值，完全健康的 DLL 会话被误判
+/// 死亡（断连 → DLL 按协议 RestoreAll → 外观闪回默认态 → 2~3s 重连重发，
+/// 用户每次合盖唤醒都能看到这一闪）。Instant 单调不受校时影响；睡眠期间
+/// 是否计时依平台而异，故判死前还有一拍补 Ping 复核（见 spawn_ping_thread）。
+fn mono_ms() -> u64 {
+    static ANCHOR: OnceLock<std::time::Instant> = OnceLock::new();
+    ANCHOR
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+}
+
+/// 宿主 OS 是否 原生（见 inject_once 的 1.5 步注释）。
+#[cfg(windows)]
+fn host_is_arm64() -> bool {
+    use windows::Win32::System::SystemInformation::{
+        GetNativeSystemInfo, PROCESSOR_ARCHITECTURE_ARM64, SYSTEM_INFO,
+    };
+    let mut info = SYSTEM_INFO::default();
+    // SAFETY: 只写本栈帧结构体，无共享状态；GetNativeSystemInfo 全量初始化。
+    unsafe { GetNativeSystemInfo(&mut info) };
+    // SAFETY: union 读前已由 GetNativeSystemInfo 完整写入。
+    let arch = unsafe { info.Anonymous.Anonymous.wProcessorArchitecture };
+    arch == PROCESSOR_ARCHITECTURE_ARM64
+}
+
+#[cfg(not(windows))]
+fn host_is_arm64() -> bool {
+    false
+}
+
 /* ================== 纯函数（单测锚点） ================== */
 
-/// FNV-1a 64：DLL 内容指纹（仅变化检测用，非安全哈希；避免为此引依赖）。
+/// 64：DLL 内容指纹（仅变化检测用，非安全哈希；避免为此引依赖）。
 pub fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
@@ -111,7 +142,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 /// DLL 内容指纹（完整性职责，M2）：SHA-256 前 8 字节。此前解包复用 / 驻留
-/// 版本比对用 FNV-1a——非加密哈希，同会话攻击者可在用户可写的
+/// 版本比对用 ——非加密哈希，同会话攻击者可在用户可写的
 /// `%TEMP%` 的 `vela/tap/<指纹>/` 下预置一个指纹相同的恶意 PE（PE padding
 /// 可自由调哈希），复用分支会把它直接 `LoadLibrary` 进 explorer。SHA-256
 /// 前缀使预制碰撞在计算上不可行。
@@ -119,13 +150,12 @@ pub fn dll_hash64(bytes: &[u8]) -> u64 {
     use sha2::{Digest, Sha256};
     let d = Sha256::digest(bytes);
     // SHA-256 摘要恒为 32 字节，切片不可能越界；仍走安全转换彻底消 panic 面
-    //（B-11），让 dll_hash64 对任意输入都是全函数。
+    //让 dll_hash64 对任意输入都是全函数。
     let eight: Option<[u8; 8]> = d.get(..8).and_then(|b| b.try_into().ok());
     u64::from_be_bytes(eight.unwrap_or([0u8; 8]))
 }
 
-/// 崩溃循环判定：30s 窗口内 ≥2 次 TaskbarCreated（对齐标杆 :1443-1456
-/// 的「两次 explorer 重启间隔 <30s」语义收严为事件计数）。
+/// 崩溃循环判定：30s 窗口内 ≥2 次 TaskbarCreated（「两次 explorer 重启间隔 <30s」收严为事件计数）。
 pub fn is_crash_loop(created_ts_ms: &[u64], now: u64) -> bool {
     created_ts_ms
         .iter()
@@ -134,7 +164,7 @@ pub fn is_crash_loop(created_ts_ms: &[u64], now: u64) -> bool {
         >= 2
 }
 
-/// 降级（D7，对齐标杆 UpgradeBlur）：blur 不可用时整体转 acrylic。
+/// 降级路径：blur 不可用时整体转 acrylic。
 /// 返回 (外观, 是否降级)。
 pub fn degrade_appearance(
     app: &TaskbarAppearance,
@@ -165,7 +195,7 @@ pub fn appearance_messages(monitor: u64, app: &TaskbarAppearance) -> Vec<TapMess
     ]
 }
 
-/// 由当前配置构造下发消息集（F-6 每屏）：每个目标 `(slot, monitor 线值)` 一组
+/// 由当前配置构造下发消息集（每屏）：每个目标 `(slot, monitor 线值)` 一组
 /// [`appearance_messages`]。外观来源按优先级：
 /// 1. 引擎已上报过该槽位 → 用其**当前状态键 + 命中规则**从（新）配置重取
 ///    外观（[`taskbar::appearance_for_slot_state`]：apply 时即时基线，不闪桌面态）；
@@ -207,10 +237,10 @@ pub fn build_appearance_messages(
     (msgs, notes)
 }
 
-/* ================== 每屏任务栏注册表（F-6 · TB-MONITOR） ================== */
+/* ================== 每屏任务栏注册表 ================== */
 
 /// 一台任务栏窗口的登记项。
-/// - `hmonitor`：所在显示器（标杆 GetTaskbarMonitor cpp:1120-1164——对每台
+/// - `hmonitor`：所在显示器（对每台
 ///   显示器四边 `ABM_GETAUTOHIDEBAREX` 探测，自动隐藏任务栏停靠屏外时
 ///   `MonitorFromWindow` 会错；探不到回退 `MonitorFromWindow`）。同时是线协议
 ///   `ApplyAppearance.monitor` 的值（DLL 侧对任务栏 XAML 岛 `MonitorFromWindow`
@@ -344,7 +374,7 @@ fn clear_resolutions() {
 /// 槽位未登记只缓存——就绪或注册表刷新后的重应用补发。
 fn on_state_resolved(slot: u32, res: &StateResolution) {
     remember_resolution(slot, res);
-    // F-8 预览挂起（TB-POLISH 接缝）：预览会话期间状态机的实时输出不下发，
+    // 预览挂起：预览会话期间状态机的实时输出不下发，
     // 否则预览期间切一次窗口就会把预览外观顶掉（预览与真实状态切换打架）。
     // 缓存照常更新——预览结束（Restore 按真实配置强制重发）后回到正确状态。
     if crate::taskbar::preview_hold_active() {
@@ -439,7 +469,7 @@ pub const REGISTRY_SETTLE: Duration = Duration::from_millis(400);
 /// 重同步进行中闸（settle 期间的重复请求合并为一轮）。
 static RESYNCING: AtomicBool = AtomicBool::new(false);
 
-/// 注册表重同步（F-6 热插拔：显示器拓扑变化 / 任务栏窗口建毁）：settle →
+/// 注册表重同步（热插拔：显示器拓扑变化 / 任务栏窗口建毁）：settle →
 /// 重枚举映射 → 清每屏去重 → 按缓存 / 桌面基线重应用 → 请引擎全量重求值
 /// （新屏按其生效配置——统一或覆盖——拿到精确状态）。后台线程执行，回调
 /// 线程不阻塞；模块未启用直接忽略。
@@ -469,7 +499,7 @@ fn schedule_resync(reason: &'static str, settle: Duration) {
     }
 }
 
-/// win_watcher `WM_DISPLAYCHANGE` 挂点（F-6 热插拔；消息窗线程调用，只排后台
+/// win_watcher `WM_DISPLAYCHANGE` 挂点（热插拔；消息窗线程调用，只排后台
 /// 重同步）。STATE 引擎同时收到同一事件做自己的显示器重建。
 pub fn on_display_change() {
     schedule_resync("显示器拓扑变化", REBUILD_SETTLE);
@@ -481,7 +511,7 @@ pub fn on_display_change() {
 static EXTRA_DLL_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// 定位随应用分发的 velatap.dll：exe 同目录（dev：target/debug；bundle 布局
-/// 由 TB-TAP/TB-DOCS 定）→ deps 上一级（cargo test 进程在 target/debug/deps）
+/// 随安装包布局定）→ deps 上一级（cargo test 进程在 target/debug/deps）
 /// → resource 目录。找不到返回 None（DLL 未交付时注入报 Failed）。
 pub fn locate_dll() -> Option<PathBuf> {
     let mut candidates = Vec::new();
@@ -504,11 +534,12 @@ pub fn tap_root() -> PathBuf {
     std::env::temp_dir().join("vela").join("tap")
 }
 
-/// DLL 解包：`%TEMP%\vela\tap\<fnv1a16>\velatap.dll`。同哈希复用（内容未变
-/// 不复制），但复用前**重算内容哈希**——目录在用户可写的 `%TEMP%`，文件可能
+/// DLL 解包：`%TEMP%\vela\tap\<sha256 前 8 字节 hex>\velatap.dll`（注释
+/// 修正：目录名一直是 SHA-256 前缀，早年注释误写 fnv1a16）。同哈希复用（内容
+/// 未变不复制），但复用前**重算内容哈希**——目录在用户可写的 `%TEMP%`，文件可能
 /// 被替换 / 损坏，不校验就会原样注入 explorer（§5.4 哈希校验）；不符则删除
-/// 重拷。哈希变了落新目录——旧 explorer 仍占用旧目录也不影响新版本（对齐标杆
-/// loadabledll.cpp 的 SHARING_VIOLATION 处理动机，§1.4）。
+/// 重拷。哈希变了落新目录——旧 explorer 仍占用旧目录也不影响新版本（规避
+/// SHARING_VIOLATION 占用冲突）。
 pub fn unpack_dll(src: &Path, hash: u64) -> Result<PathBuf, String> {
     let dir = tap_root().join(format!("{hash:016x}"));
     let dst = dir.join("velatap.dll");
@@ -536,7 +567,7 @@ pub fn unpack_dll(src: &Path, hash: u64) -> Result<PathBuf, String> {
     Ok(dst)
 }
 
-/* ================== 注入元数据（恢复线 4 / F-10） ================== */
+/* ================== 注入元数据（恢复线 4 / ） ================== */
 
 /// 上次成功注入的记录（`%TEMP%\vela\tap\metadata.json`）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -571,8 +602,8 @@ pub fn write_metadata(meta: &InjectMetadata) {
 }
 
 /// 升级残留提示（恢复线 4）：上次注入的 DLL 哈希 ≠ 当前、且 explorer 仍
-/// 挂着 velatap.dll → 提示重启资源管理器（D6：不主动杀）。当前 DLL 缺失
-/// （TB-TAP 未交付）时静默跳过。
+/// 挂着 velatap.dll → 提示重启资源管理器（不主动杀）。当前 DLL 缺失
+/// （DLL 未交付）时静默跳过。
 pub fn residual_hint(
     recorded: Option<InjectMetadata>,
     current_dll: Option<&Path>,
@@ -596,6 +627,10 @@ pub fn residual_hint(
 pub const STALE_RESIDENT_HINT: &str =
     "检测到旧版本的任务栏 DLL 仍在资源管理器中，建议重启资源管理器以完成升级";
 
+/// 崩溃循环保护触发时的统一文案（on_taskbar_created 与 set_phase 机器码推导
+/// 共用——该 reason 原先没有稳定 code，前端只能比对中文文案）。
+pub const CRASH_LOOP_HINT: &str = "检测到资源管理器频繁重启，已暂停任务栏自定义";
+
 /// 驻留副本是否与当前 DLL 同版本（纯函数，单测覆盖）：优先比内容哈希（文件仍
 /// 在且可读）；读不到（目录被清理）则退而比解包目录名——
 /// `%TEMP%\vela\tap\<fnv1a64 hex>\velatap.dll` 的目录名就是哈希。
@@ -612,7 +647,7 @@ pub fn resident_same_version(resident: &Path, hash: u64) -> bool {
 
 /* ================== 引擎状态（PHASE + ENGINE） ================== */
 
-/// 状态机（F-10）：Idle→Injecting→Ready/Failed(reason)/Degraded(reason)；
+/// 状态机：Idle→Injecting→Ready/Failed(reason)/Degraded(reason)；
 /// 迁移即 emit `taskbar:status`（经 mod.rs EVENTS 区）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhaseCell {
@@ -653,6 +688,7 @@ fn phase_cell() -> PhaseCell {
 fn set_phase(phase: TaskbarPhase, reason: Option<String>) {
     let code = match reason.as_deref() {
         Some(STALE_RESIDENT_HINT) => Some("stale_dll_resident".to_string()),
+        Some(CRASH_LOOP_HINT) => Some("explorer_crash_loop".to_string()),
         _ => None,
     };
     let mut guard = PHASE.lock().unwrap_or_else(|p| p.into_inner());
@@ -745,10 +781,47 @@ fn generation_alive(gen: u64) -> bool {
     with_engine(|e| e.enabled && e.active && e.generation == gen)
 }
 
-/// 全量重建重入保护（对齐标杆 m_ResettingState）。
+/// 全量重建重入保护。
 static REBUILDING: AtomicBool = AtomicBool::new(false);
 /// TaskbarCreated 时间戳（崩溃循环窗口判定）。
 static CREATED_TS: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+/// 计划内 explorer 重启的豁免计数。restart_explorer 是本
+/// 应用的正规路径（升级残留闭环 / 设置页按钮 / 升级自动重启），其后的
+/// TaskbarCreated 是「我们安排的重启」而非崩溃——原实现对所有事件无差别
+/// 计数，用户 30s 内点两次按钮就被崩溃循环保护误停用，与刚做的主动操作直接
+/// 矛盾。每次登记豁免随后的 2 个 TaskbarCreated（主屏 + 可能的副屏任务栏
+/// 都会广播该消息），仅跳过计数、正常走重建。
+///
+/// 豁免带登记时刻（`mono_ms`），过期作废——单屏环境一次计划重启
+/// 登记 2 个、实际只消耗 1 个，残留的那 1 个此前永不过期，会让下一次
+/// （哪怕数周后的）真实 explorer 崩溃被静默跳过一次计数，崩溃循环保护
+/// 从「30s 内两次」退化成「三次」。
+static PLANNED_RESTARTS: Mutex<(u32, u64)> = Mutex::new((0, 0));
+
+/// 豁免有效窗口。主副屏任务栏的 TaskbarCreated 都在 explorer 启动
+/// 后数秒内广播完，30s（对齐 CRASH_LOOP_WINDOW_MS 的量级）足够覆盖，
+/// 又不给「计划重启之后很久才发生的真实崩溃」留漏计数的口子。
+pub const PLANNED_RESTART_WINDOW_MS: u64 = 30_000;
+
+/// 登记计划内重启豁免（每次 2 个：主屏 + 可能的副屏）。
+fn grant_planned_restarts(now_mono: u64) {
+    *PLANNED_RESTARTS.lock().unwrap_or_else(|p| p.into_inner()) = (2, now_mono);
+}
+
+/// 消耗一个计划内豁免；过期残留整体作废。纯逻辑封装，单测覆盖。
+fn take_planned_exemption(now_mono: u64) -> bool {
+    let mut guard = PLANNED_RESTARTS.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.0 == 0 {
+        return false;
+    }
+    if now_mono.saturating_sub(guard.1) > PLANNED_RESTART_WINDOW_MS {
+        guard.0 = 0;
+        return false;
+    }
+    guard.0 -= 1;
+    true
+}
 /// 心跳线程代数：每起一个新心跳线程 +1，旧线程发现代数变化即自行退出。
 /// 用代数而非引用计数——计数在任一退出路径漏减就会永久拒绝新线程（曾导致
 /// 第一次关/开任务栏后心跳永久消失，DLL 挂死再也判不出来）。
@@ -793,10 +866,11 @@ mod imp {
     use crate::taskbar::TaskbarType;
 
     use super::{
-        cleanup_artifacts, generation_alive, is_crash_loop, now_ms, set_caps, set_phase,
-        with_engine, TapHookFn, CRASH_LOOP_WINDOW_MS, CREATED_TS, HANDSHAKE_TIMEOUT,
-        HOOK_EXPORT_FALLBACK, HOOK_EXPORT_NAME, PING_EPOCH, PING_INTERVAL, PONG_STALE_MS,
-        REBUILDING, REBUILD_SETTLE, RECONNECT_RETRY,
+        cleanup_artifacts, generation_alive, host_is_arm64, is_crash_loop, mono_ms, now_ms,
+        set_caps, set_phase, take_planned_exemption, with_engine, TapHookFn, CRASH_LOOP_HINT,
+        CRASH_LOOP_WINDOW_MS, CREATED_TS, HANDSHAKE_TIMEOUT, HOOK_EXPORT_FALLBACK,
+        HOOK_EXPORT_NAME, PING_EPOCH, PING_INTERVAL, PONG_STALE_MS, REBUILDING, REBUILD_SETTLE,
+        RECONNECT_RETRY,
     };
 
     /* ---------------- 幂等闸 + 注入 worker ---------------- */
@@ -841,7 +915,7 @@ mod imp {
                 let stale = !generation_alive(gen);
                 with_engine(|e| {
                     if e.generation == gen {
-                        e.active = false; // 终态：不自动重试（R1）。
+                        e.active = false; // 终态：不自动重试。
                                           // enabled 一并复位：否则 explorer 重启（TaskbarCreated）
                                           // 会按「模块启用」走 teardown + 重新 ensure_started，
                                           // 绕过「注入失败是终态、绝不自动重试」的承诺。
@@ -859,7 +933,7 @@ mod imp {
     /// 一次完整注入。失败时自清理（[`InjectGuard`] Drop），成功时句柄移交
     /// ENGINE。
     fn inject_once(gen: u64) -> Result<(), String> {
-        // 1. 探测：仅 XAML 继续（D7：其余类型不可用走 Failed 终态）。
+        // 1. 探测：仅 XAML 继续（其余类型不可用走 Failed 终态）。
         let caps = crate::taskbar::detect::probe_capabilities();
         let kind = crate::taskbar::detect::detect_taskbar_type();
         set_caps(caps, kind);
@@ -867,6 +941,16 @@ mod imp {
             return Err(format!(
                 "此系统的任务栏类型为 {kind:?}，任务栏自定义仅支持 Windows 11 XAML 任务栏（22621+）"
             ));
+        }
+        // 1.5 ：x64-only DLL 对 原生 explorer 的定向预检。
+        // 模拟 x64 进程内的 LoadLibrary 预检探不出目标架构不匹配（加载方自己
+        // 也是 x64），注入后只会 35s 握手超时给一串泛化文案。GetNativeSystemInfo
+        // 给的是宿主 OS 架构（即使本进程跑在模拟层），据此直接给出定向结论。
+        if host_is_arm64() {
+            return Err(
+                "此设备为 ARM64 Windows：任务栏外观自定义需要 ARM64 版组件，当前仅交付 x64"
+                    .to_string(),
+            );
         }
         if !generation_alive(gen) {
             return Ok(()); // 期间被拆除：静默退出。
@@ -886,7 +970,7 @@ mod imp {
         //     Diagnostics pin 住永不卸载，且主进程退出 / 崩溃后其管道线程仍在
         //     无限重连——同版本副本直接建管道"唤醒"即可；不同版本（升级 /
         //     重编）若再注入会出现两套 XAML 回调同时操作同一批 BackgroundFill
-        //     （已知崩溃结构），拒绝并提示重启资源管理器（D6：不强杀）。
+        // （已知崩溃结构），拒绝并提示重启资源管理器（不强杀）。
         if let Some(resident) = resident_velatap_path() {
             if super::resident_same_version(&resident, hash) {
                 log::info!(
@@ -904,7 +988,7 @@ mod imp {
 
         // 4. 本进程先加载 DLL 取 hook 导出——**必须先于标记事件**：本副本
         //    看不到事件而保持静默，只有 explorer 侧的拷贝会初始化。
-        //    D-6：解包时的哈希校验与 LoadLibrary 之间存在替换窗口（%TEMP%
+        // 解包时的哈希校验与 LoadLibrary 之间存在替换窗口（%TEMP%
         //    用户可写）——加载前重算复核，哈希承诺落空即中止本次注入。
         let on_disk = std::fs::read(&dll_path)
             .map_err(|e| format!("读取 velatap.dll 失败（{}）: {e}", dll_path.display()))?;
@@ -927,8 +1011,10 @@ mod imp {
             return Ok(());
         }
 
-        // 5. 管道实例先于注入建好（无竞态，protocol.rs）。
-        let listener = PipeListener::create(&crate::taskbar::protocol::pipe_name(pid))?;
+        // 5. 管道实例先于注入建好（无竞态，protocol.rs）。：把注入目标
+        //    explorer 的 pid 交给 Listener——wait_client 据此校验连接方身份，
+        //    拒绝同用户恶意进程抢连冒充 DLL（回个版本匹配的 Ready 骗取下发）。
+        let listener = PipeListener::create(&crate::taskbar::protocol::pipe_name(pid), pid)?;
 
         // 6. 命名标记事件（DLL DllMain 检测存在才初始化）。
         let marker_name = windows::core::HSTRING::from(super::marker_event_name(pid));
@@ -960,7 +1046,7 @@ mod imp {
             )
         };
 
-        // 9. 等管道连接 + 握手（整体 35s，对齐标杆 READY_TIMEOUT）。
+        // 9. 等管道连接 + 握手（整体 35s 超时）。
         let started = Instant::now();
         let remain = |start: Instant| {
             HANDSHAKE_TIMEOUT
@@ -1009,7 +1095,7 @@ mod imp {
         }
         let last_pong = attach_reader(gen, &pipe);
         set_phase(TaskbarPhase::Ready, None);
-        // F-6：注册表 → 状态检测桥 → 每屏基线 → 引擎精确重求值。
+        // 注册表 → 状态检测桥 → 每屏基线 → 引擎精确重求值。
         super::on_ready();
         spawn_ping_thread(gen, pipe, last_pong);
         log::info!("taskbar: 注入成功（explorer pid={pid}，dll 哈希 {hash:016x}）");
@@ -1021,7 +1107,8 @@ mod imp {
     /// 建标记事件，因此无任何拆除产物。握手超时 = 驻留副本的服务面已死
     /// （只可能是协议版本被拒后的自我停服），只能重启资源管理器。
     fn wake_resident(gen: u64, pid: u32, hash: u64) -> Result<(), String> {
-        let listener = PipeListener::create(&crate::taskbar::protocol::pipe_name(pid))?;
+        // 唤醒路径同样限定只接受目标 explorer 的连接（见 inject_once 步骤 5）。
+        let listener = PipeListener::create(&crate::taskbar::protocol::pipe_name(pid), pid)?;
         let started = Instant::now();
         let remain = |start: Instant| {
             HANDSHAKE_TIMEOUT
@@ -1072,13 +1159,14 @@ mod imp {
     }
 
     /// 已连接会话的读线程装配：Pong 记账（返回给心跳线程）+ 断连回调。
+    /// 记账用单调钟（见 mono_ms）。
     fn attach_reader(gen: u64, pipe: &Pipe) -> Arc<AtomicU64> {
-        let last_pong = Arc::new(AtomicU64::new(now_ms()));
+        let last_pong = Arc::new(AtomicU64::new(mono_ms()));
         let lp = Arc::clone(&last_pong);
         pipe.spawn_reader(
             Arc::new(move |msg: crate::taskbar::protocol::TapMessage| {
                 if matches!(msg, crate::taskbar::protocol::TapMessage::Pong) {
-                    lp.store(now_ms(), Ordering::SeqCst);
+                    lp.store(mono_ms(), Ordering::SeqCst);
                 }
             }),
             Arc::new(move || on_pipe_disconnected(gen)),
@@ -1089,6 +1177,10 @@ mod imp {
     /// 心跳线程：5s Ping；Pong 12s 不到判死（读线程 on_disconnect 接管
     /// Degraded + 重连）。同一时刻只有最新一代线程在跑：起新线程即让旧线程
     /// 在下一拍退出，所以重连/重建时可以放心重复调用。
+    /// 判死前补一拍 Ping 复核——单调钟在部分平台的睡眠
+    /// 期间仍会计时（唤醒后 last_pong 看起来超龄），而 DLL 与管道其实健康；
+    /// 直接判死就是每次唤醒闪一帧默认外观。复核窗口（2s）内拿到新 Pong 即
+    /// 继续正常节奏，仍无应答才真正断开。
     fn spawn_ping_thread(gen: u64, pipe: Pipe, last_pong: Arc<AtomicU64>) {
         let my_epoch = PING_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
         let _ = std::thread::Builder::new()
@@ -1098,8 +1190,24 @@ mod imp {
                 if PING_EPOCH.load(Ordering::SeqCst) != my_epoch || !generation_alive(gen) {
                     break;
                 }
-                if now_ms().saturating_sub(last_pong.load(Ordering::SeqCst)) > PONG_STALE_MS {
-                    log::warn!("taskbar: DLL 心跳超时（Pong >{PONG_STALE_MS}ms），断开");
+                if mono_ms().saturating_sub(last_pong.load(Ordering::SeqCst)) > PONG_STALE_MS {
+                    // 复核：先记账「复核起点」，发一拍 Ping，给 2s 应答窗口。
+                    let probe_at = mono_ms();
+                    if let Err(e) = pipe.send(&crate::taskbar::protocol::TapMessage::Ping) {
+                        log::info!("taskbar: Ping 发送失败（{e}），心跳线程退出");
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                    if PING_EPOCH.load(Ordering::SeqCst) != my_epoch || !generation_alive(gen) {
+                        break;
+                    }
+                    // 复核通过的唯一标准：复核起点之后拿到过新 Pong。
+                    if last_pong.load(Ordering::SeqCst) > probe_at {
+                        continue;
+                    }
+                    log::warn!(
+                        "taskbar: DLL 心跳超时（复核后仍无 Pong，>{PONG_STALE_MS}ms），断开"
+                    );
                     pipe.shutdown();
                     break;
                 }
@@ -1133,16 +1241,17 @@ mod imp {
                     return;
                 }
                 let pid = with_engine(|e| e.explorer_pid);
-                let listener = match PipeListener::create(&crate::taskbar::protocol::pipe_name(pid))
-                {
-                    Ok(l) => l,
-                    Err(e) => {
-                        // 抢注 / 旧实例未释放都走这里；不能静默，否则被占用时
-                        // 只看到"一直在重连"。
-                        log::warn!("taskbar: 重连建管道失败（{e}），下轮再试");
-                        continue;
-                    }
-                };
+                // 重连路径同样只接受记录的 explorer PID 连接。
+                let listener =
+                    match PipeListener::create(&crate::taskbar::protocol::pipe_name(pid), pid) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            // 抢注 / 旧实例未释放都走这里；不能静默，否则被占用时
+                            // 只看到"一直在重连"。
+                            log::warn!("taskbar: 重连建管道失败（{e}），下轮再试");
+                            continue;
+                        }
+                    };
                 match listener.wait_client(pipe::CONNECT_TIMEOUT) {
                     Err(_) => continue, // DLL 尚未回来；下轮再试。
                     Ok(session) => {
@@ -1188,24 +1297,28 @@ mod imp {
             log::info!("taskbar: explorer（重）启动但模块未启用，跳过重建");
             return;
         }
-        let now = now_ms();
-        let crashed = {
-            let mut ts = CREATED_TS.lock().unwrap_or_else(|p| p.into_inner());
-            ts.push(now);
-            ts.retain(|t| now.saturating_sub(*t) < CRASH_LOOP_WINDOW_MS * 2);
-            is_crash_loop(&ts, now)
-        };
-        if crashed {
-            // 崩溃循环保护（标杆 :1443-1456；不弹系统对话框，用状态事件）。
-            CREATED_TS.lock().unwrap_or_else(|p| p.into_inner()).clear();
-            log::error!("taskbar: 30s 内 explorer 两次重启——自动停用任务栏模块");
-            let artifacts = teardown();
-            cleanup_artifacts(artifacts);
-            set_phase(
-                TaskbarPhase::Degraded,
-                Some("检测到资源管理器频繁重启，已暂停任务栏自定义".to_string()),
-            );
-            return;
+        let now = mono_ms();
+        // 计划内重启豁免——见 PLANNED_RESTARTS 注释。仅跳过崩溃计数，
+        // 重建照常（注入的会话必须重新建立）。：豁免带 30s 时间戳，
+        // 残留（单屏只消耗 1 个）过期作废，不再拖累未来的真实崩溃计数。
+        if take_planned_exemption(now) {
+            log::info!("taskbar: 计划内 explorer 重启的 TaskbarCreated，跳过崩溃计数");
+        } else {
+            let crashed = {
+                let mut ts = CREATED_TS.lock().unwrap_or_else(|p| p.into_inner());
+                ts.push(now);
+                ts.retain(|t| now.saturating_sub(*t) < CRASH_LOOP_WINDOW_MS * 2);
+                is_crash_loop(&ts, now)
+            };
+            if crashed {
+                // 崩溃循环保护（不弹系统对话框，用状态事件）。
+                CREATED_TS.lock().unwrap_or_else(|p| p.into_inner()).clear();
+                log::error!("taskbar: 30s 内 explorer 两次重启——自动停用任务栏模块");
+                let artifacts = teardown();
+                cleanup_artifacts(artifacts);
+                set_phase(TaskbarPhase::Degraded, Some(CRASH_LOOP_HINT.to_string()));
+                return;
+            }
         }
         if REBUILDING.swap(true, Ordering::SeqCst) {
             log::info!("taskbar: 重建进行中，跳过重入（m_ResettingState 语义）");
@@ -1317,36 +1430,32 @@ mod imp {
     }
 
     /// 本进程内是否仍有 explorer.exe（shell 重启轮询用）。
+    /// 本会话 shell 是否就位。：原实现全进程扫描名字匹配，
+    /// 会命中**任意会话**的 explorer.exe——快速用户切换/多会话下另一会话的
+    /// explorer 让「重启确认」提前假成功，而本会话桌面仍无 shell。改为查本
+    /// 会话的 Shell_TrayWnd（每输入会话一个；taskkill /F 后立刻消失，新
+    /// explorer 建完任务栏后出现），与 restart_explorer 的等待语义精确对齐。
     fn explorer_running() -> bool {
-        use windows::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-            TH32CS_SNAPPROCESS,
-        };
-        // SAFETY: 只读快照。
+        // SAFETY: 只读窗口查找。
+        unsafe { FindWindowW(w!("Shell_TrayWnd"), None).is_ok() }
+    }
+
+    ///本会话 explorer（Shell_TrayWnd 属主）的 PID。taskkill 按它
+    /// 精确命中——此前 `/IM explorer.exe` 按映像名全局匹配，快速用户切换/
+    /// 多会话（且本进程提权）时会误杀其他会话的 shell。None = 找不到任务栏
+    /// 窗口（explorer 未运行，走拉起路径）。
+    fn tray_explorer_pid() -> Option<u32> {
+        // SAFETY: 只读窗口查找 + PID 查询。
         unsafe {
-            let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-                return false;
-            };
-            let mut pe = PROCESSENTRY32W {
-                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-                ..Default::default()
-            };
-            let mut found = false;
-            if Process32FirstW(snapshot, &mut pe).is_ok() {
-                while Process32NextW(snapshot, &mut pe).is_ok() {
-                    if utf16_z(&pe.szExeFile).eq_ignore_ascii_case("explorer.exe") {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            let _ = CloseHandle(snapshot);
-            found
+            let tray = FindWindowW(w!("Shell_TrayWnd"), None).ok()?;
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(tray, Some(&mut pid));
+            (pid != 0).then_some(pid)
         }
     }
 
     /// 重启资源管理器以完成 DLL 升级（升级残留的唯一闭环手段：已加载的
-    /// DLL 无法安全卸载——见 DLL 侧「永不卸载」契约）。约束（D6 的边界）：
+    /// DLL 无法安全卸载——见 DLL 侧「永不卸载」契约）。约束（的边界）：
     /// 只在用户显式点按钮或开启「升级后自动重启」时走到这里，应用绝不擅自
     /// 结束 shell。流程：taskkill /F（不留半死的 shell）→ 轮询 4s 等 Win11
     /// 自动重生 → 没有则 ShellExecuteW 拉起（实测可靠；DETACHED_PROCESS 起
@@ -1356,14 +1465,24 @@ mod imp {
         use std::time::Duration;
         // CREATE_NO_WINDOW：不让 taskkill 的控制台闪黑框。
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let status = std::process::Command::new("taskkill")
-            .args(["/F", "/IM", "explorer.exe"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .map_err(|e| format!("taskkill 启动失败: {e}"))?;
-        if !status.status.success() {
-            // explorer 本就没在跑（少见）：继续走拉起路径。
-            log::info!("taskbar: taskkill explorer 非零退出（可能本就未运行）");
+        // 登记计划内重启——随后的 TaskbarCreated 不计崩溃循环（每次
+        // 登记 2 个豁免：主屏 + 可能的副屏任务栏都广播该消息：带
+        // 时间戳，30s 后残留作废）。
+        super::grant_planned_restarts(mono_ms());
+        //按 PID 精确命中本会话 shell（见 tray_explorer_pid 注释）；
+        // 找不到任务栏窗口（explorer 未运行）跳过 taskkill 直接走拉起路径。
+        if let Some(pid) = tray_explorer_pid() {
+            let status = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .map_err(|e| format!("taskkill 启动失败: {e}"))?;
+            if !status.status.success() {
+                // 竞态：窗口还在、进程已退（少见）：继续走等待/拉起路径。
+                log::info!("taskbar: taskkill /PID {pid} 非零退出（可能已退出）");
+            }
+        } else {
+            log::info!("taskbar: Shell_TrayWnd 不在，跳过 taskkill 直接拉起 explorer");
         }
         for _ in 0..20 {
             std::thread::sleep(Duration::from_millis(200));
@@ -1477,7 +1596,7 @@ mod imp {
                 crate::taskbar::injector::on_taskbar_created();
             }
             fn on_display_change(&self) {
-                // F-6 热插拔：只排后台重同步（settle → 重枚举 → 重应用）。
+                // 热插拔：只排后台重同步（settle → 重枚举 → 重应用）。
                 crate::taskbar::injector::on_display_change();
             }
         }
@@ -1488,7 +1607,7 @@ mod imp {
 
     /// 枚举全部任务栏窗口 → `(hwnd, hmonitor)`：`Shell_TrayWnd` 主 +
     /// `EnumWindows` 找 `Shell_SecondaryTrayWnd` 副（副屏任务栏是独立顶层
-    /// 窗口，标杆 Common\constants.hpp:76-79）。
+    /// 窗口）。
     pub fn enumerate_taskbars() -> Vec<(isize, isize)> {
         let mut hwnds: Vec<isize> = Vec::new();
         // SAFETY: 只读窗口枚举；回调只向本地 Vec push。
@@ -1558,7 +1677,7 @@ mod imp {
         out
     }
 
-    /// 任务栏所在显示器（标杆 GetTaskbarMonitor cpp:1120-1164）：对每台显示器
+    /// 任务栏所在显示器：对每台显示器
     /// 四边 `SHAppBarMessage(ABM_GETAUTOHIDEBAREX)`，返回的自动隐藏栏就是本
     /// 任务栏 → 该显示器（自动隐藏任务栏停靠屏外时 `MonitorFromWindow` 不可
     /// 靠）；都探不到（非自动隐藏 / 探测失败）→ 回退 `MonitorFromWindow`
@@ -1588,7 +1707,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    //! 非 Windows：注入管线不可用，模块恒 Degraded（D7 隐藏而非崩溃）。
+    //! 非 Windows：注入管线不可用，模块恒 Degraded（隐藏而非崩溃）。
 
     use super::*;
 
@@ -1626,7 +1745,7 @@ pub fn ensure_started() {
     imp::ensure_started();
 }
 
-/// 重启资源管理器（DLL 升级残留的闭环动作；D6 边界见 imp 内注释）。
+/// 重启资源管理器（DLL 升级残留的闭环动作；边界见 imp 内注释）。
 pub fn restart_explorer() -> Result<(), String> {
     imp::restart_explorer()
 }
@@ -1723,7 +1842,7 @@ pub fn start_enabled(app: &tauri::AppHandle) {
             let kind = detect::detect_taskbar_type();
             set_caps(caps, kind);
             // 升级残留：Idle 附带 reason 提示（不改变 phase 语义，状态条
-            // 展示文案；F-10）。code 供前端挂一键/自动重启动作。
+            // 展示文案；）。code 供前端挂一键/自动重启动作。
             if let Some(hint) = residual_hint(read_metadata(), locate_dll().as_deref()) {
                 let mut guard = PHASE.lock().unwrap_or_else(|p| p.into_inner());
                 let cell = guard.get_or_insert_with(PhaseCell::initial);
@@ -1751,7 +1870,7 @@ pub fn start_enabled(app: &tauri::AppHandle) {
 }
 
 /// 设置镜像读取（模式 C）：`app:settings:v1` → `general.taskbar` 整份配置，
-/// 任何失败回 None（默认关，D1）。A-4：读取收敛到 settings_mirror 助手。
+/// 任何失败回 None（默认关）。：读取收敛到 settings_mirror 助手。
 fn read_taskbar_from_mirror(app: &tauri::AppHandle) -> Option<TaskbarSettings> {
     crate::settings_mirror::read_json(app).map(|v| taskbar::parse_taskbar_value(&v))
 }
@@ -1799,7 +1918,7 @@ pub fn apply_config(config: &TaskbarSettings) -> Result<Vec<String>, String> {
 }
 
 /// 重置动态状态（托盘/快捷键/预览结束）：重枚举任务栏 + 重求值 + 重下发（绕过
-/// 幂等缓存）。故障 / 降级 / 空闲且存底配置为开 → 先重新拉起注入（T-05 的
+/// 幂等缓存）。故障 / 降级 / 空闲且存底配置为开 → 先重新拉起注入（的
 /// 恢复路径：注入失败是终态，用户显式重置即显式重试）。
 pub fn reset_state() -> Result<(), String> {
     if phase_cell().phase != TaskbarPhase::Ready {
@@ -1850,10 +1969,10 @@ pub fn status() -> TaskbarStatus {
     status_snapshot_locked(&phase_cell())
 }
 
-/// 当前能力（F-12 回读，get_taskbar_capabilities）：模块已探测过则返回缓存
+/// 当前能力（回读，get_taskbar_capabilities）：模块已探测过则返回缓存
 /// （与 `taskbar:capabilities` 事件同值）；尚未探测（模块未启用 / 应用刚启动
 /// 未 start）则现场探测一次并登记 + emit——设置窗晚于启动事件打开时不再
-/// 拿不到能力（TB-UI 遗留 2 的收口）。
+/// 拿不到能力（旧设置页遗留的收口）。
 pub fn current_caps() -> TaskbarCapabilities {
     if let Some(caps) = phase_cell().caps {
         return caps;
@@ -1908,7 +2027,7 @@ pub(crate) fn send_appearance(config: &TaskbarSettings) -> Result<Vec<String>, S
         return Err("任务栏能力尚未探测完成，请稍后重试".to_string());
     };
     let targets = send_targets(&registry_snapshot());
-    let (msgs, mut notes) = build_appearance_messages(config, &caps, &targets, &last_resolutions());
+    let (msgs, notes) = build_appearance_messages(config, &caps, &targets, &last_resolutions());
     let Some(pipe) = with_engine(|e| e.pipe.clone()) else {
         return Ok(notes); // phase=Ready 保证连接存在；瞬时缺失由重连路径补发。
     };
@@ -1926,10 +2045,13 @@ pub(crate) fn send_appearance(config: &TaskbarSettings) -> Result<Vec<String>, S
             end += 1;
         }
         if let Err(e) = send_to_monitor(&pipe, monitor, msgs[idx..end].to_vec()) {
+            // send 失败改走 Err——apply_config 的存底前提是
+            // 「已生效」（不变量），折成 notes 仍返回 Ok 会让失败配置被
+            // 存底、对账恒等、故障态永不重试。send 失败即会话拆除：读线程
+            // on_disconnect 负责 Degraded + 重连，重连成功后 on_ready 重发存底
+            // 配置；设置窗对账（LS≠get）与托盘的下一次操作是显式重试入口。
             log::warn!("taskbar: 下发 monitor={monitor:#x} 失败: {e}");
-            notes.push(e);
-            // send 失败即会话拆除；读线程 on_disconnect 负责 Degraded + 重连。
-            return Ok(notes);
+            return Err(e);
         }
         idx = end;
     }
@@ -1978,6 +2100,27 @@ mod tests {
         assert!(!is_crash_loop(&[], now), "无记录不触发");
     }
 
+    /// 豁免带时间戳，残留（单屏只消耗 1 个）30s 后作废——此前的
+    /// 永久豁免会让下一次真实崩溃跳过一次崩溃计数。
+    #[test]
+    fn planned_restart_exemptions_expire_after_window() {
+        grant_planned_restarts(1_000);
+        assert!(take_planned_exemption(1_500), "窗口内第 1 个豁免生效");
+        // 单屏场景：第二个豁免无人消耗。30s 窗口过后它必须作废，真实崩溃
+        // （哪怕数周后）不再被它跳过。
+        assert!(
+            !take_planned_exemption(1_000 + PLANNED_RESTART_WINDOW_MS + 1),
+            "残留豁免过期后必须作废"
+        );
+        // 作废是终态：之后即使时间戳回退（测试注入）也无豁免可用。
+        assert!(!take_planned_exemption(1_600), "作废后不再放行");
+        // 双屏场景：窗口内两个豁免（主屏 + 副屏）都可用，第 3 个没有。
+        grant_planned_restarts(10_000);
+        assert!(take_planned_exemption(10_100));
+        assert!(take_planned_exemption(10_200));
+        assert!(!take_planned_exemption(10_300), "超额无豁免");
+    }
+
     #[test]
     fn blur_degrades_to_acrylic_only_when_unsupported() {
         let app = TaskbarAppearance {
@@ -1995,7 +2138,7 @@ mod tests {
 
     #[test]
     fn build_messages_uses_desktop_resolution_and_monitor_zero() {
-        // 注册表空 → 单条广播目标 (None, 0)：基础配置桌面态（D2 默认 clear +
+        // 注册表空 → 单条广播目标 (None, 0)：基础配置桌面态（默认 clear +
         // 全透明 + 无顶线）。
         let (msgs, notes) =
             build_appearance_messages(&TaskbarSettings::default(), &caps(true), &[(None, 0)], &[]);
@@ -2043,7 +2186,7 @@ mod tests {
         assert_eq!(notes2.len(), 1);
     }
 
-    /* ---------------- F-6 每屏注册表 / 目标 / 基线 ---------------- */
+    /* ---------------- 每屏注册表 / 目标 / 基线 ---------------- */
 
     #[test]
     fn build_registry_maps_taskbars_to_slots_and_dedups() {
@@ -2186,32 +2329,29 @@ mod tests {
         // 统一模式（per_monitor=false）：两屏同为基础桌面蓝。
         cfg.per_monitor = false;
         let (msgs3, _) = build_appearance_messages(&cfg, &caps(true), &targets, &[]);
-        assert_eq!(msgs3[0], msgs3[2].clone().with_monitor(0x10));
+        assert_eq!(msgs3[0], with_monitor(msgs3[2].clone(), 0x10));
     }
 
-    impl TapMessage {
-        /// 测试助手：同一消息换 monitor 目标比较。
-        fn with_monitor(self, m: u64) -> TapMessage {
-            match self {
-                TapMessage::ApplyAppearance {
-                    accent,
-                    color_abgr,
-                    blur_radius,
-                    ..
-                } => TapMessage::ApplyAppearance {
-                    monitor: m,
-                    accent,
-                    color_abgr,
-                    blur_radius,
-                },
-                TapMessage::SetBorderVisibility { visible, .. } => {
-                    TapMessage::SetBorderVisibility {
-                        monitor: m,
-                        visible,
-                    }
-                }
-                other => other,
-            }
+    /// 测试助手：同一消息换 monitor 目标比较。（TapMessage 移入共享
+    /// crate 后测试不能再写固有 impl，改为自由函数。）
+    fn with_monitor(msg: TapMessage, m: u64) -> TapMessage {
+        match msg {
+            TapMessage::ApplyAppearance {
+                accent,
+                color_abgr,
+                blur_radius,
+                ..
+            } => TapMessage::ApplyAppearance {
+                monitor: m,
+                accent,
+                color_abgr,
+                blur_radius,
+            },
+            TapMessage::SetBorderVisibility { visible, .. } => TapMessage::SetBorderVisibility {
+                monitor: m,
+                visible,
+            },
+            other => other,
         }
     }
 
@@ -2363,7 +2503,7 @@ mod tests {
         // 第二次同哈希：复用（同一路径，不报错）。
         let p2 = unpack_dll(&src, h).unwrap();
         assert_eq!(p1, p2);
-        // 复用前重校验：文件被替换 / 损坏 → 删除重拷（T-09）。
+        // 复用前重校验：文件被替换 / 损坏 → 删除重拷。
         std::fs::write(&p1, b"tampered").unwrap();
         let p3 = unpack_dll(&src, h).unwrap();
         assert_eq!(p1, p3);
@@ -2479,7 +2619,7 @@ mod tests {
         /// 负路径：DLL 缺 CallWndProc 导出（空壳/不配套版本）→ 终态
         /// Failed + 明确文案，explorer 不受影响、不重试。
         /// 前置：target/debug/deps/velatap.dll 为**无** CallWndProc 导出的
-        /// 版本（如 TB-TAP 空壳）。
+        /// 版本（如无导出的空壳 DLL）。
         #[test]
         #[ignore = "真实注入 explorer：需无 CallWndProc 导出的空壳 velatap.dll"]
         fn manual_negative_missing_export() {
@@ -2558,7 +2698,7 @@ mod tests {
             println!("[manual] 开关往返 + 幂等 + 断连重连 全部通过");
         }
 
-        /// 版本不匹配路径（F-10/D6）：预放 mockver=99 → DLL 回 Ready{99} →
+        /// 版本不匹配路径：预放 mockver=99 → DLL 回 Ready{99} →
         /// Failed + 「重启资源管理器」文案。前置：explorer 内无旧 velatap
         /// 拷贝（旧拷贝会抢先应答——那本身是升级残留场景，另行观察）。
         #[test]
@@ -2585,10 +2725,10 @@ mod tests {
             println!("[manual] 版本不匹配路径通过：{reason}");
         }
 
-        /// 真 TB-TAP DLL 全链路（M1-1 出口判据驱动）：注入握手 + 幂等 +
+        /// 真 velatap DLL 全链路（出口判据驱动）：注入握手 + 幂等 +
         /// 开关往返。视觉变色由外部截图留证（mock 日志断言不适用）。
         #[test]
-        #[ignore = "真实 TB-TAP DLL 注入 explorer：视觉验证用"]
+        #[ignore = "真实 velatap DLL 注入 explorer：视觉验证用"]
         fn manual_real_tap_cycle() {
             reset_engine();
             let cfg = red_config();
@@ -2634,7 +2774,7 @@ mod tests {
             }
         }
 
-        /// F-6 真机注册表枚举（不注入、不改任务栏）：Shell_TrayWnd 主 +
+        /// 真机注册表枚举（不注入、不改任务栏）：Shell_TrayWnd 主 +
         /// EnumWindows 副屏任务栏 → HMONITOR（边探测 / 回退）→ 槽位；与
         /// EnumDisplayMonitors 的显示器数对账。双屏机上应见 2 台任务栏各归
         /// 一屏、槽位不同；开启「自动隐藏任务栏」后再跑一次验证边探测路径。

@@ -1,5 +1,5 @@
 /**
- * WakeSlider（细竖条波形滑条）。
+ * WakeSlider（.dev/micro/wake-slider，官方源码集成，MIT）。
  * 细竖条滑条：拖动速度掀起 cos² 波形尾迹（skew 控制前后不对称），
  * motion 弹簧驱动手柄追踪与速度平滑；原生 pointer capture 交互 +
  * role=slider 键盘支持。CSS 见 wake-slider.css。
@@ -9,7 +9,7 @@ import { frame, useMotionValue, useMotionValueEvent, useReducedMotion, useSpring
 /* spring: ok 标志性滑条的物理速度弹簧（velocity → stiffness/damping）——手感
    由指针速度实时驱动，不存在可 token 化的固定时长；「设置→动效」速度三档
    对本控件无效属有意豁免（reduce-motion 双信号已对齐）。motion 经 vite
-   manualChunks 隔离在异步 chunk（P3 口径修正：消费面含亮度小组件的
+   manualChunks 隔离在异步 chunk（口径修正：消费面含亮度小组件的
    M3Slider——常驻桌面层放亮度组件时会在本窗口按需加载该 chunk，仍非首屏
    负担）。 */
 

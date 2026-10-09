@@ -4,6 +4,6 @@ import type { TaskbarMatchType } from "./TaskbarMatchType";
 
 /**
  * 一条窗口规则（§4 TaskbarRule）。`inactive_appearance` 仅在命中窗口
- * 非前台时使用（对齐标杆 ActiveInactiveTaskbarAppearance）。
+ * 非前台时使用。
  */
 export type TaskbarRule = { id: string, matchType: TaskbarMatchType, pattern: string, appearance: TaskbarAppearance, inactiveAppearance?: TaskbarAppearance, };

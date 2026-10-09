@@ -29,7 +29,7 @@ export type TimetableSession = {
   weeksLabel: string;
   location: string;
   teacher: string;
-  /** W-020 手动指定颜色（hex，如 #5b8def）；空 = 按名称哈希取色。 */
+  /** 手动指定颜色（hex，如 #5b8def）；空 = 按名称哈希取色。 */
   colorOverride?: string;
 };
 
@@ -123,14 +123,20 @@ export function parseDayToken(raw: string): number | null {
 
 /**
  * 周次文本 → 绝对周集合。
- * 「4-8周」「1-16单」「1-16双」「1-3,5-16」「16周」「第3周」→ Set 形式的有序数组。
+ * 「4-8周」「1-16单」「1-16双」「1-3,5-16」「16周」「第3周」「1-16周(单)」
+ * 「1-16（双）」→ Set 形式的有序数组。
  * maxWeek 用于钳制；非法输入返回空数组。
- * P2（审计修复）：默认上限从 40 提到 60，与 sanitizeTimetableData 允许的
+ * 默认上限从 40 提到 60，与 sanitizeTimetableData 允许的
  * totalWeeks ≤ 60 对齐——此前导入 41-60 周的长学期课表时后半学期课程被
  * 静默截掉。
  */
 export function parseWeeksLabel(raw: string, maxWeek = 60): number[] {
-  const s = nfkc(raw).replace(/\s+/g, "").replace(/第/g, "");
+  // 括号仅作包裹符（「1-16周(单)」），剥掉后再按段解析；不剥的话整段
+  // 不匹配 part 正则被静默丢弃，课程退化为「每周都上」。
+  const s = nfkc(raw)
+    .replace(/\s+/g, "")
+    .replace(/第/g, "")
+    .replace(/[()[\]【】{}]/g, "");
   if (!s) return [];
   const weekSet = new Set<number>();
   for (const part of s.split(/[,，、;；]/)) {
@@ -189,9 +195,11 @@ export function cleanCourseName(raw: string): string {
 
 /** 课时段正则：[周次 +] 星期 + 节次区间，如「4-8周,星期2,第1节-第2节」。周次可缺省。
  *  周次组前有边界断言：前一个字符不能是字母/数字/CJK/连字符，否则教室编号
- *  「教1-101」里的数字会被当成周次吞掉；唯一例外是「第」（第16周 形态）。 */
+ *  「教1-101」里的数字会被当成周次吞掉；唯一例外是「第」（第16周 形态）。
+ *  周次后缀三选一：「N周」「N周(单)」「N(单)」「N单」——带 单/双 标记是
+ *  强信号、允许缺省「周」字（「1-16双,星期2,…」）；纯数字必须带「周」。 */
 const SEGMENT_RE =
-  /(?:(?:(?<![0-9A-Za-z\u4e00-\u9fa5-])|(?<=第))(\d+(?:\s*[-–—~至]\s*\d+)?(?:\s*[,，、]\s*\d+(?:\s*[-–—~至]\s*\d+)?)*\s*周)\s*[,，;；]?\s*)?(?:星期|周|礼拜)\s*([1-7一二三四五六日天])\s*[,，;；]?\s*第\s*(\d+)\s*(?:节)?\s*(?:[-–—~至]\s*第\s*(\d+)\s*节)?/g;
+  /(?:(?:(?<![0-9A-Za-z\u4e00-\u9fa5-])|(?<=第))(\d+(?:\s*[-–—~至]\s*\d+)?(?:\s*[,，、]\s*\d+(?:\s*[-–—~至]\s*\d+)*)*\s*(?:周(?:\s*[（(]\s*[单双]\s*[)）])?|[（(]\s*[单双]\s*[)）]\s*周?|[单双]周?))\s*[,，;；]?\s*)?(?:星期|周|礼拜)\s*([1-7一二三四五六日天])\s*[,，;；]?\s*第\s*(\d+)\s*(?:节)?\s*(?:[-–—~至]\s*第\s*(\d+)\s*节)?/g;
 
 /** 从纯文本里抓周次 token（「高等数学 1-16周」→ 名字 + 周次）。 */
 const WEEKS_TOKEN_RE = /\d+(?:\s*[-–—~至]\s*\d+)?(?:\s*[,，、]\s*\d+(?:\s*[-–—~至]\s*\d+)?)*\s*周/g;
@@ -351,7 +359,9 @@ function parseGrid(rows: string[][]): TimetableSession[] {
     if (!row.length) continue;
     const labelCell = (row[0] || "") + " " + (row[1] || "");
     if (!GRID_BAND_RE.test(labelCell)) continue;
-    const band = parseSectionBand(row[0] || row[1] || "");
+    // 区间解析用合并标签：分列表头（首列「第1节」、次列「第2节」）与
+    // 首列仅写「上午/下午」的形态下，单格解析会丢区间或整行跳过。
+    const band = parseSectionBand(labelCell);
     if (!band) continue;
     for (const [c, day] of dayOfCol) {
       const cell = (row[c] || "").trim();
@@ -526,12 +536,22 @@ export function mondayOf(d: Date): Date {
   return r;
 }
 
+/** 原始周号（1 起，**不钳制**）：开学前返回 0/负数，学期结束后返回超界值；
+ *  semesterStart 非法返回 null。周视图的「今天高亮 / 回到本周」等语义需要
+ *  区分「真的在第 N 周」与「钳制到第 N 周」（寒暑假期间后者会伪装成本周）。 */
+export function rawWeekNumber(date: Date, semesterStart: string): number | null {
+  const start = parseISODate(semesterStart);
+  if (!start) return null;
+  // 两个本地午夜之差在 DST 时区是 N*86400000±3600000：round 吸收 ±1h 偏差。
+  const days = Math.round((mondayOf(date).getTime() - mondayOf(start).getTime()) / 86400000);
+  return Math.floor(days / 7) + 1;
+}
+
 /** 距学期开始的周号（1 起）；越界钳制到 [1, totalWeeks]。 */
 export function weekNumberFor(date: Date, semesterStart: string, totalWeeks: number): number {
-  const start = parseISODate(semesterStart);
-  if (!start || totalWeeks < 1) return 1;
-  const days = Math.floor((mondayOf(date).getTime() - mondayOf(start).getTime()) / 86400000);
-  return Math.min(totalWeeks, Math.max(1, Math.floor(days / 7) + 1));
+  const raw = rawWeekNumber(date, semesterStart);
+  if (raw === null || totalWeeks < 1) return 1;
+  return Math.min(totalWeeks, Math.max(1, raw));
 }
 
 /** 预估总周数 = 数据中最大周号（导入时给设置页一个合理默认值）。 */
@@ -543,7 +563,14 @@ export function inferTotalWeeks(sessions: TimetableSession[]): number {
 
 /** 某周生效的课程（week ∈ weeks；无周次数据的课程恒显示）。 */
 export function sessionsInWeek(sessions: TimetableSession[], week: number): TimetableSession[] {
-  return sessions.filter((s) => !s.weeks.length || s.weeks.includes(week));
+  return sessions.filter((s) => weekMatches(s.weeks, week));
+}
+
+/** 周次命中判定：**空周次 = 每周都上**（手动加课留空、导入无周次列）。
+ *  全仓唯一口径——此前 extras/xlsx 侧用 includes 直判，空周次课在今日
+ *  课程/日历同步/冲突检测中全部静默失效。 */
+export function weekMatches(weeks: number[], week: number): boolean {
+  return weeks.length === 0 || weeks.includes(week);
 }
 
 /** 数据校验/补全：剔除非法行，供加载与导入共用。 */
@@ -609,7 +636,7 @@ export function courseColor(name: string): [string, string] {
   return TT_PALETTE[h % TT_PALETTE.length];
 }
 
-/** W-020 课程取色：优先 colorOverride；覆盖色做轻微明暗推导出渐变第二色。 */
+/** 课程取色：优先 colorOverride；覆盖色做轻微明暗推导出渐变第二色。 */
 export function sessionColors(s: Pick<TimetableSession, "name" | "colorOverride">): [string, string] {
   if (s.colorOverride && /^#[0-9a-fA-F]{6}$/.test(s.colorOverride)) {
     return [s.colorOverride, shade(s.colorOverride, -0.18)];
@@ -629,7 +656,7 @@ export function shade(hex: string, k: number): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* W-019 多课表方案（profiles）                                         */
+/* 多课表方案（profiles） */
 /* ------------------------------------------------------------------ */
 
 export type TimetableProfile = {

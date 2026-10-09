@@ -1,10 +1,10 @@
 //! Win2D 式图形效果描述对象——`IGraphicsEffect` + `IGraphicsEffectD2D1Interop`
-//! 的最小实现（对齐标杆 ExplorerTAP\effects\*.cpp）。
+//! 的最小实现。
 //!
 //! XAML 的 `Compositor::CreateEffectFactory(effect)` 会对 effect 做 D2D1
 //! interop 询问（效果 CLSID、属性索引/值、源图），据此在 DComp 里搭出真实
 //! 效果图。属性值以 `IPropertyValue` 返回：Flood 的颜色是 **SingleArray×4**、
-//! GaussianBlur 的 σ 是 Single、优化/边框是 UInt32——逐字节对齐标杆。
+//! GaussianBlur 的 σ 是 Single、优化/边框是 UInt32——属性类型须逐字节精确。
 //!
 //! `#[implement]` 必须**显式**列出 `IGraphicsEffectSource`：宏生成的
 //! QueryInterface 只应答列出的接口（各 vtable 的 `matches` 只比对自身 IID，
@@ -43,7 +43,7 @@ const GB_OPTIMIZATION_BALANCED: u32 = D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED.0 
 const BORDER_MODE_SOFT: u32 = D2D1_BORDER_MODE_SOFT.0 as u32;
 const COMPOSITE_MODE_SOURCE_OVER: u32 = D2D1_COMPOSITE_MODE_SOURCE_OVER.0 as u32;
 
-/// IID `{2FC57384-A068-44D7-A331-30982FCF7177}`——SDK
+/// IID `{2FC57384--44D7--30982FCF7177}`——SDK
 /// `winrt\windows.graphics.effects.interop.h` 的互操作接口（基于 IUnknown）。
 #[interface("2FC57384-A068-44D7-A331-30982FCF7177")]
 pub unsafe trait IGraphicsEffectD2D1Interop: windows_core::IUnknown {
@@ -88,32 +88,60 @@ fn name_arg(name: PCWSTR) -> String {
     }
 }
 
+/// HRESULT 形态 COM 入口的 guarded 包装。util.rs 铁律「每个 COM/FFI
+/// 入口包 guarded」——本文件的效果对象由 XAML 效果工厂在 DComp 内部回调，
+/// 任何 panic 穿过 extern "system" 边界即 abort 整个 explorer。
+/// （`Result<T>` 形态入口直接用 `crate::util::guarded`——它本就返回摊平的
+/// `Result<T>`。）
+fn guarded_hresult<F>(what: &'static str, f: F) -> HRESULT
+where
+    F: FnOnce() -> Result<()> + std::panic::UnwindSafe,
+{
+    match crate::util::guarded(what, f) {
+        Ok(()) => HRESULT(0),
+        Err(e) => e.code(),
+    }
+}
+
+const E_POINTER_CODE: HRESULT = HRESULT(0x8000_4003_u32 as i32);
+
 /// 高斯模糊：CLSID_D2D1GaussianBlur，属性 = [σ, Optimization, BorderMode]。
 #[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
 pub(crate) struct GaussianBlurEffect {
     /// 效果输入源（`CompositionEffectSourceParameter(L"backdrop")` 的引用）。
     pub source: IGraphicsEffectSource,
-    /// 标准差 σ（协议换算 σ = blur_radius / 3，D5）。
+    /// 标准差 σ（协议换算 σ = blur_radius / 3）。
     pub standard_deviation: f32,
 }
 
 impl IGraphicsEffectSource_Impl for GaussianBlurEffect_Impl {}
 impl IGraphicsEffect_Impl for GaussianBlurEffect_Impl {
     fn Name(&self) -> Result<windows_core::HSTRING> {
-        Ok(hstr("GaussianBlurEffect"))
+        crate::util::guarded(
+            "blur effect Name",
+            std::panic::AssertUnwindSafe(|| Ok(hstr("GaussianBlurEffect"))),
+        )
     }
     fn SetName(&self, _name: &windows_core::HSTRING) -> Result<()> {
-        Ok(())
+        crate::util::guarded(
+            "blur effect SetName",
+            std::panic::AssertUnwindSafe(|| Ok(())),
+        )
     }
 }
 
 impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffect_Impl {
     unsafe fn GetEffectId(&self, id: *mut GUID) -> HRESULT {
-        if id.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *id = CLSID_D2D1GaussianBlur };
-        HRESULT(0)
+        guarded_hresult(
+            "blur effect GetEffectId",
+            std::panic::AssertUnwindSafe(|| {
+                if id.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *id = CLSID_D2D1GaussianBlur };
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetNamedPropertyMapping(
         &self,
@@ -121,72 +149,101 @@ impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffect_Impl {
         index: *mut u32,
         mapping: *mut u32,
     ) -> HRESULT {
-        match name_arg(name).as_str() {
-            "BlurAmount" | "StandardDeviation" => unsafe {
-                *index = GB_PROP_STANDARD_DEVIATION;
-                *mapping = PROPERTY_MAPPING_DIRECT;
-                HRESULT(0)
-            },
-            "Optimization" => unsafe {
-                *index = GB_PROP_OPTIMIZATION;
-                *mapping = PROPERTY_MAPPING_DIRECT;
-                HRESULT(0)
-            },
-            "BorderMode" => unsafe {
-                *index = GB_PROP_BORDER_MODE;
-                *mapping = PROPERTY_MAPPING_DIRECT;
-                HRESULT(0)
-            },
-            _ => HRESULT(0x8007_0057_u32 as i32), // E_INVALIDARG
-        }
+        guarded_hresult(
+            "blur effect GetNamedPropertyMapping",
+            std::panic::AssertUnwindSafe(|| {
+                match name_arg(name).as_str() {
+                    "BlurAmount" | "StandardDeviation" => unsafe {
+                        *index = GB_PROP_STANDARD_DEVIATION;
+                        *mapping = PROPERTY_MAPPING_DIRECT;
+                        Ok(())
+                    },
+                    "Optimization" => unsafe {
+                        *index = GB_PROP_OPTIMIZATION;
+                        *mapping = PROPERTY_MAPPING_DIRECT;
+                        Ok(())
+                    },
+                    "BorderMode" => unsafe {
+                        *index = GB_PROP_BORDER_MODE;
+                        *mapping = PROPERTY_MAPPING_DIRECT;
+                        Ok(())
+                    },
+                    _ => Err(windows_core::Error::from_hresult(HRESULT(
+                        0x8007_0057_u32 as i32, // E_INVALIDARG
+                    ))),
+                }
+            }),
+        )
     }
     unsafe fn GetPropertyCount(&self, count: *mut u32) -> HRESULT {
-        if count.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *count = 3 };
-        HRESULT(0)
+        guarded_hresult(
+            "blur effect GetPropertyCount",
+            std::panic::AssertUnwindSafe(|| {
+                if count.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *count = 3 };
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetProperty(&self, index: u32, value: *mut *mut core::ffi::c_void) -> HRESULT {
-        if value.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        let pv = match index {
-            GB_PROP_STANDARD_DEVIATION => property_value_single(self.standard_deviation),
-            GB_PROP_OPTIMIZATION => property_value_u32(GB_OPTIMIZATION_BALANCED),
-            GB_PROP_BORDER_MODE => property_value_u32(BORDER_MODE_SOFT),
-            _ => return HRESULT(0x8000_400B_u32 as i32), // E_BOUNDS
-        };
-        match pv {
-            Ok(v) => {
+        guarded_hresult(
+            "blur effect GetProperty",
+            std::panic::AssertUnwindSafe(|| {
+                if value.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                let pv = match index {
+                    GB_PROP_STANDARD_DEVIATION => property_value_single(self.standard_deviation),
+                    GB_PROP_OPTIMIZATION => property_value_u32(GB_OPTIMIZATION_BALANCED),
+                    GB_PROP_BORDER_MODE => property_value_u32(BORDER_MODE_SOFT),
+                    _ => {
+                        return Err(windows_core::Error::from_hresult(HRESULT(
+                            0x8000_400B_u32 as i32, // E_BOUNDS
+                        )));
+                    }
+                };
+                let v = pv?;
                 let unk: windows_core::IUnknown = v.into();
                 unsafe { *value = windows_core::Interface::as_raw(&unk) };
                 // 出参所有权移交：forget 掉 unk 的 Drop。
                 core::mem::forget(unk);
-                HRESULT(0)
-            }
-            Err(e) => e.code(),
-        }
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetSource(&self, index: u32, source: *mut *mut core::ffi::c_void) -> HRESULT {
-        if source.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        if index == 0 {
-            let unk: windows_core::IUnknown = self.source.clone().into();
-            unsafe { *source = windows_core::Interface::as_raw(&unk) };
-            core::mem::forget(unk);
-            HRESULT(0)
-        } else {
-            HRESULT(0x8000_400B_u32 as i32)
-        }
+        guarded_hresult(
+            "blur effect GetSource",
+            std::panic::AssertUnwindSafe(|| {
+                if source.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                if index == 0 {
+                    let unk: windows_core::IUnknown = self.source.clone().into();
+                    unsafe { *source = windows_core::Interface::as_raw(&unk) };
+                    core::mem::forget(unk);
+                    Ok(())
+                } else {
+                    Err(windows_core::Error::from_hresult(HRESULT(
+                        0x8000_400B_u32 as i32, // E_BOUNDS
+                    )))
+                }
+            }),
+        )
     }
     unsafe fn GetSourceCount(&self, count: *mut u32) -> HRESULT {
-        if count.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *count = 1 };
-        HRESULT(0)
+        guarded_hresult(
+            "blur effect GetSourceCount",
+            std::panic::AssertUnwindSafe(|| {
+                if count.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *count = 1 };
+                Ok(())
+            }),
+        )
     }
 }
 
@@ -200,20 +257,31 @@ pub(crate) struct FloodEffect {
 impl IGraphicsEffectSource_Impl for FloodEffect_Impl {}
 impl IGraphicsEffect_Impl for FloodEffect_Impl {
     fn Name(&self) -> Result<windows_core::HSTRING> {
-        Ok(hstr("FloodEffect"))
+        crate::util::guarded(
+            "flood effect Name",
+            std::panic::AssertUnwindSafe(|| Ok(hstr("FloodEffect"))),
+        )
     }
     fn SetName(&self, _name: &windows_core::HSTRING) -> Result<()> {
-        Ok(())
+        crate::util::guarded(
+            "flood effect SetName",
+            std::panic::AssertUnwindSafe(|| Ok(())),
+        )
     }
 }
 
 impl IGraphicsEffectD2D1Interop_Impl for FloodEffect_Impl {
     unsafe fn GetEffectId(&self, id: *mut GUID) -> HRESULT {
-        if id.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *id = CLSID_D2D1Flood };
-        HRESULT(0)
+        guarded_hresult(
+            "flood effect GetEffectId",
+            std::panic::AssertUnwindSafe(|| {
+                if id.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *id = CLSID_D2D1Flood };
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetNamedPropertyMapping(
         &self,
@@ -221,56 +289,84 @@ impl IGraphicsEffectD2D1Interop_Impl for FloodEffect_Impl {
         index: *mut u32,
         mapping: *mut u32,
     ) -> HRESULT {
-        if name_arg(name) == "Color" {
-            unsafe {
-                *index = FLOOD_PROP_COLOR;
-                *mapping = PROPERTY_MAPPING_DIRECT;
-                HRESULT(0)
-            }
-        } else {
-            HRESULT(0x8007_0057_u32 as i32)
-        }
+        guarded_hresult(
+            "flood effect GetNamedPropertyMapping",
+            std::panic::AssertUnwindSafe(|| {
+                if name_arg(name) == "Color" {
+                    unsafe {
+                        *index = FLOOD_PROP_COLOR;
+                        *mapping = PROPERTY_MAPPING_DIRECT;
+                    }
+                    Ok(())
+                } else {
+                    Err(windows_core::Error::from_hresult(HRESULT(
+                        0x8007_0057_u32 as i32, // E_INVALIDARG
+                    )))
+                }
+            }),
+        )
     }
     unsafe fn GetPropertyCount(&self, count: *mut u32) -> HRESULT {
-        if count.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *count = 1 };
-        HRESULT(0)
+        guarded_hresult(
+            "flood effect GetPropertyCount",
+            std::panic::AssertUnwindSafe(|| {
+                if count.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *count = 1 };
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetProperty(&self, index: u32, value: *mut *mut core::ffi::c_void) -> HRESULT {
-        if value.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        if index == FLOOD_PROP_COLOR {
-            match property_value_float4(self.color) {
-                Ok(v) => {
-                    let unk: windows_core::IUnknown = v.into();
-                    unsafe { *value = windows_core::Interface::as_raw(&unk) };
-                    core::mem::forget(unk);
-                    HRESULT(0)
+        guarded_hresult(
+            "flood effect GetProperty",
+            std::panic::AssertUnwindSafe(|| {
+                if value.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
                 }
-                Err(e) => e.code(),
-            }
-        } else {
-            HRESULT(0x8000_400B_u32 as i32)
-        }
+                if index != FLOOD_PROP_COLOR {
+                    return Err(windows_core::Error::from_hresult(HRESULT(
+                        0x8000_400B_u32 as i32, // E_BOUNDS
+                    )));
+                }
+                let v = property_value_float4(self.color)?;
+                let unk: windows_core::IUnknown = v.into();
+                unsafe { *value = windows_core::Interface::as_raw(&unk) };
+                core::mem::forget(unk);
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetSource(&self, _index: u32, source: *mut *mut core::ffi::c_void) -> HRESULT {
-        let _ = source;
-        HRESULT(0x8000_400B_u32 as i32)
+        guarded_hresult(
+            "flood effect GetSource",
+            std::panic::AssertUnwindSafe(|| {
+                if !source.is_null() {
+                    unsafe { *source = core::ptr::null_mut() };
+                }
+                Err(windows_core::Error::from_hresult(HRESULT(
+                    0x8000_400B_u32 as i32, // E_BOUNDS（Flood 无源）
+                )))
+            }),
+        )
     }
     unsafe fn GetSourceCount(&self, count: *mut u32) -> HRESULT {
-        if count.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *count = 0 };
-        HRESULT(0)
+        guarded_hresult(
+            "flood effect GetSourceCount",
+            std::panic::AssertUnwindSafe(|| {
+                if count.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *count = 0 };
+                Ok(())
+            }),
+        )
     }
 }
 
 /// 合成：CLSID_D2D1Composite，属性 = [Mode]，源 = [under, over]
-/// （源序 = SourceOver 的下/上景，见标杆 CompositeEffect::Sources 顺序）。
+/// （源序 = SourceOver 的下/上景）。
 #[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
 pub(crate) struct CompositeEffect {
     pub sources: Vec<IGraphicsEffectSource>,
@@ -279,20 +375,31 @@ pub(crate) struct CompositeEffect {
 impl IGraphicsEffectSource_Impl for CompositeEffect_Impl {}
 impl IGraphicsEffect_Impl for CompositeEffect_Impl {
     fn Name(&self) -> Result<windows_core::HSTRING> {
-        Ok(hstr("CompositeEffect"))
+        crate::util::guarded(
+            "composite effect Name",
+            std::panic::AssertUnwindSafe(|| Ok(hstr("CompositeEffect"))),
+        )
     }
     fn SetName(&self, _name: &windows_core::HSTRING) -> Result<()> {
-        Ok(())
+        crate::util::guarded(
+            "composite effect SetName",
+            std::panic::AssertUnwindSafe(|| Ok(())),
+        )
     }
 }
 
 impl IGraphicsEffectD2D1Interop_Impl for CompositeEffect_Impl {
     unsafe fn GetEffectId(&self, id: *mut GUID) -> HRESULT {
-        if id.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *id = CLSID_D2D1Composite };
-        HRESULT(0)
+        guarded_hresult(
+            "composite effect GetEffectId",
+            std::panic::AssertUnwindSafe(|| {
+                if id.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *id = CLSID_D2D1Composite };
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetNamedPropertyMapping(
         &self,
@@ -300,60 +407,86 @@ impl IGraphicsEffectD2D1Interop_Impl for CompositeEffect_Impl {
         index: *mut u32,
         mapping: *mut u32,
     ) -> HRESULT {
-        if name_arg(name) == "Mode" {
-            unsafe {
-                *index = COMPOSITE_PROP_MODE;
-                *mapping = PROPERTY_MAPPING_DIRECT;
-                HRESULT(0)
-            }
-        } else {
-            HRESULT(0x8007_0057_u32 as i32)
-        }
+        guarded_hresult(
+            "composite effect GetNamedPropertyMapping",
+            std::panic::AssertUnwindSafe(|| {
+                if name_arg(name) == "Mode" {
+                    unsafe {
+                        *index = COMPOSITE_PROP_MODE;
+                        *mapping = PROPERTY_MAPPING_DIRECT;
+                    }
+                    Ok(())
+                } else {
+                    Err(windows_core::Error::from_hresult(HRESULT(
+                        0x8007_0057_u32 as i32, // E_INVALIDARG
+                    )))
+                }
+            }),
+        )
     }
     unsafe fn GetPropertyCount(&self, count: *mut u32) -> HRESULT {
-        if count.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *count = 1 };
-        HRESULT(0)
+        guarded_hresult(
+            "composite effect GetPropertyCount",
+            std::panic::AssertUnwindSafe(|| {
+                if count.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *count = 1 };
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetProperty(&self, index: u32, value: *mut *mut core::ffi::c_void) -> HRESULT {
-        if value.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        if index == COMPOSITE_PROP_MODE {
-            match property_value_u32(COMPOSITE_MODE_SOURCE_OVER) {
-                Ok(v) => {
-                    let unk: windows_core::IUnknown = v.into();
-                    unsafe { *value = windows_core::Interface::as_raw(&unk) };
-                    core::mem::forget(unk);
-                    HRESULT(0)
+        guarded_hresult(
+            "composite effect GetProperty",
+            std::panic::AssertUnwindSafe(|| {
+                if value.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
                 }
-                Err(e) => e.code(),
-            }
-        } else {
-            HRESULT(0x8000_400B_u32 as i32)
-        }
+                if index != COMPOSITE_PROP_MODE {
+                    return Err(windows_core::Error::from_hresult(HRESULT(
+                        0x8000_400B_u32 as i32, // E_BOUNDS
+                    )));
+                }
+                let v = property_value_u32(COMPOSITE_MODE_SOURCE_OVER)?;
+                let unk: windows_core::IUnknown = v.into();
+                unsafe { *value = windows_core::Interface::as_raw(&unk) };
+                core::mem::forget(unk);
+                Ok(())
+            }),
+        )
     }
     unsafe fn GetSource(&self, index: u32, source: *mut *mut core::ffi::c_void) -> HRESULT {
-        if source.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        match self.sources.get(index as usize) {
-            Some(s) => {
-                let unk: windows_core::IUnknown = s.clone().into();
-                unsafe { *source = windows_core::Interface::as_raw(&unk) };
-                core::mem::forget(unk);
-                HRESULT(0)
-            }
-            None => HRESULT(0x8000_400B_u32 as i32),
-        }
+        guarded_hresult(
+            "composite effect GetSource",
+            std::panic::AssertUnwindSafe(|| {
+                if source.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                match self.sources.get(index as usize) {
+                    Some(s) => {
+                        let unk: windows_core::IUnknown = s.clone().into();
+                        unsafe { *source = windows_core::Interface::as_raw(&unk) };
+                        core::mem::forget(unk);
+                        Ok(())
+                    }
+                    None => Err(windows_core::Error::from_hresult(HRESULT(
+                        0x8000_400B_u32 as i32, // E_BOUNDS
+                    ))),
+                }
+            }),
+        )
     }
     unsafe fn GetSourceCount(&self, count: *mut u32) -> HRESULT {
-        if count.is_null() {
-            return HRESULT(0x8000_4003_u32 as i32);
-        }
-        unsafe { *count = self.sources.len() as u32 };
-        HRESULT(0)
+        guarded_hresult(
+            "composite effect GetSourceCount",
+            std::panic::AssertUnwindSafe(|| {
+                if count.is_null() {
+                    return Err(windows_core::Error::from_hresult(E_POINTER_CODE));
+                }
+                unsafe { *count = self.sources.len() as u32 };
+                Ok(())
+            }),
+        )
     }
 }

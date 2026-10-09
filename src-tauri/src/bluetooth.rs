@@ -30,7 +30,7 @@ const DEVPKEY_DEVICE_FRIENDLY_NAME: DEVPROPKEY = DEVPROPKEY {
     pid: 14,
 };
 
-/// 蓝牙电量属性（BYTE，0–100）。主键 `{104EA319-6EE2-4701-BD47-8DDBF425BBE5}, 2`
+/// 蓝牙电量属性（BYTE，0–100）。主键 `{104EA319-6EE2-4701--8DDBF425BBE5}, 2`
 /// 在本机 Win11 实测有效（BLE 设备的 `BTHLE\DEV_…` 节点直接带此属性：929=26、
 /// EWEADN=83，与系统设置一致）；社区常见的 `{104EA319-…-8DBF425BBE5A}, 1` 在
 /// 本机全部为空，作为次键保留兼容其他 Windows 版本。
@@ -75,7 +75,7 @@ fn is_connected_propkey() -> DEVPROPKEY {
 
 /// Fallback type inference from the friendly name (device nodes don't always
 /// expose a class-of-device code through SetupAPI).
-/// W-139 扩充：手柄 / 打印机 / 手机 / 触控笔不再落进「其他」。
+/// 扩充：手柄 / 打印机 / 手机 / 触控笔不再落进「其他」。
 fn device_type_from_name(name: &str) -> &'static str {
     let n = name.to_ascii_lowercase();
     if n.contains("mouse") || n.contains("鼠标") {
@@ -125,11 +125,15 @@ fn device_type_from_name(name: &str) -> &'static str {
     "其他"
 }
 
-/// W-138 打开系统「蓝牙和其他设备」设置页（ms-settings:bluetooth）。
+/// 打开系统「蓝牙和其他设备」设置页（ms-settings:bluetooth）。
 #[tauri::command]
-pub fn open_bluetooth_settings() -> Result<(), String> {
+pub fn open_bluetooth_settings(window: tauri::Window) -> Result<(), String> {
     #[cfg(windows)]
     {
+        // 窗口闸门：拉起系统设置页是真实系统副作用，与连断/枚举同标准。
+        if !crate::trusted_window(window.label()) {
+            return Err("untrusted window".into());
+        }
         std::process::Command::new("explorer")
             .arg("ms-settings:bluetooth")
             .spawn()
@@ -138,11 +142,12 @@ pub fn open_bluetooth_settings() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        let _ = window;
         Err("仅支持 Windows".to_string())
     }
 }
 
-/// W-141 快速连接/断开：classic 蓝牙走 `BluetoothSetServiceState` 启停服务，
+/// 快速连接/断开：classic 蓝牙走 `BluetoothSetServiceState` 启停服务，
 /// 触发系统真正建立/断开链路。LE 设备（AirPods 等）的配对 API 复杂且不
 /// 稳定，本命令按 classic 实现；前端在命令失败时回落到打开系统设置页。
 ///
@@ -431,7 +436,7 @@ fn mac_bytes_from_instance(instance: &str) -> Option<[u8; 6]> {
 /// 经典蓝牙 radio 枚举快照（`BluetoothFindFirstDevice` 一轮同时供两处消费）：
 ///  - `connected`：当前连接的设备 MAC 集（连接状态的兜底信号，经典设备专属）；
 ///  - `by_name`：小写设备名 → (任一记录连接, Class of Device)——名字推断不出
-///    类型时用 CoD 主类兜底（如「iKF-T1 Pro」→ 音频）。
+/// 类型时用 CoD 主类兜底（如「iKF-Pro」→ 音频）。
 struct ClassicSnapshot {
     connected: HashSet<[u8; 6]>,
     by_name: HashMap<String, (bool, u32)>,
@@ -543,7 +548,7 @@ fn get_bluetooth_devices_blocking() -> Vec<BluetoothDevice> {
     // disconnected device, so paired devices simply vanished from the list.
     // Enumerating all nodes (including phantom ones) keeps them visible as
     // paired-but-disconnected.
-    //
+
     // 全类枚举（实测必要）：iKF 等经典音频设备的 AVRCP 电量写在 HFP
     // `111E` HCIBYPASS 子节点上，而该节点属于 **System** 类；1101 串行子节点属
     // Ports 类——服务子节点横跨多个设备类，按类过滤必然漏。全类枚举一次覆盖

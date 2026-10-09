@@ -1,5 +1,5 @@
 /**
- * 布局时间线（BentoDesk 借鉴 #1）测试：纯函数 + 订阅捕获/撤销/重做闭环。
+ * 布局时间线测试：纯函数 + 订阅捕获/撤销/重做闭环。
  * jsdom 下驱动真实 widget-store（localStorage 权威，不 mock）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -88,6 +88,31 @@ describe("isSignificant（显著性阈值）", () => {
   it("空 → 空不落第一份（初始化噪音）；空 → 非空落", () => {
     expect(isSignificant(null, [], [])).toBe(false);
     expect(isSignificant(null, [inst("a")], [])).toBe(true);
+  });
+
+  it("编组成员表变化也显著（撤销盲区修复）：并入/摘出/重排落快照，成员不变不落", () => {
+    const prev = snap("s0", ["a", "b", "c"], [grp("g1", ["a", "b"])]);
+    const same = [inst("a", { groupId: "g1" }), inst("b", { groupId: "g1" }), inst("c")];
+    // 同成员、仅移动/改组几何 → 不显著。
+    expect(isSignificant(prev, same, [{ ...grp("g1", ["a", "b"]), x: 999 }])).toBe(false);
+    // 并入成员 c → 显著。
+    expect(isSignificant(prev, same, [grp("g1", ["a", "b", "c"])])).toBe(true);
+    // 摘出成员 b → 显著。
+    expect(isSignificant(prev, same, [grp("g1", ["a"])])).toBe(true);
+    // 重排标签顺序 → 显著（顺序敏感）。
+    expect(isSignificant(prev, same, [grp("g1", ["b", "a"])])).toBe(true);
+  });
+
+  it("deltaOf 汇报 membersMoved（既有组成员表变化数）；新增/解散的组不计入", () => {
+    const prev = snap("s0", ["a", "b", "c"], [grp("g1", ["a", "b"]), grp("g2", ["c"])]);
+    const next = snap("s1", ["a", "b", "c"], [grp("g1", ["a", "b", "c"]), grp("g3", ["c"])]);
+    const d = deltaOf(prev, next);
+    expect(d.membersMoved).toBe(1); // g1 成员表变化
+    expect(d.groupsAdded).toBe(1); // g3
+    expect(d.groupsRemoved).toBe(1); // g2
+    // 无成员变化的对照。
+    const same = deltaOf(prev, snap("s2", ["a", "b", "c"], [grp("g1", ["a", "b"]), grp("g2", ["c"])]));
+    expect(same.membersMoved).toBe(0);
   });
 });
 
@@ -197,6 +222,44 @@ describe("订阅捕获 + 撤销/重做闭环", () => {
     initLayoutTimeline();
     expect(undoLayout()).toBe(false);
     expect(redoLayout()).toBe(false);
+  });
+
+  it("跨视图背靠背标脏——切视图后新视图的首笔结构变更不再丢历史", () => {
+    vi.useFakeTimers();
+    initLayoutTimeline();
+    useWidgetStore.setState({
+      views: [
+        { id: "home", name: "Home" },
+        { id: "work", name: "Work" }
+      ],
+      activeView: "home",
+      instances: [inst("a"), inst("b")]
+    });
+    vi.advanceTimersByTime(600);
+    // home 结构变更（删 b），500ms 窗口内 pending 未冲刷。
+    useWidgetStore.setState({ instances: [inst("a")] });
+    // 生产路径里这笔删除由 saveInstances 防抖落盘；flushPendingTimeline 对非
+    // 活动视图走 loadInstances（读 LS），手动同步 LS 模拟已落盘。
+    localStorage.setItem("focus-desk.screen.0.widgets.home.v1", JSON.stringify([inst("a")]));
+    // 立即切到 work（touch 捕获到视图变化）并做 work 的首笔结构变更。
+    useWidgetStore.setState({ activeView: "work", instances: [inst("c")] });
+    vi.advanceTimersByTime(600);
+    useWidgetStore.setState({ instances: [inst("c"), inst("d")] });
+    vi.advanceTimersByTime(600);
+    // work：两笔历史齐全，undo 回到 [c]——修复前 dirtyView 卡在 home，work
+    // 的首笔结构变更从未被捕获（随 home 的非显著位移一起被丢弃）。
+    expect(undoLayout()).toBe(true);
+    expect(useWidgetStore.getState().instances.map((i) => i.id)).toEqual(["c"]);
+    // home：切视图时已就地冲刷、各自完成历史——切回后 undo 回到 a+b。
+    useWidgetStore.setState({ activeView: "home", instances: [inst("a")] });
+    vi.advanceTimersByTime(600);
+    expect(undoLayout()).toBe(true);
+    expect(
+      useWidgetStore
+        .getState()
+        .instances.map((i) => i.id)
+        .sort()
+    ).toEqual(["a", "b"]);
   });
 
   it("v2 面板 API：列表新→旧 / pin 持久化 / 任意点恢复 / 清空", () => {

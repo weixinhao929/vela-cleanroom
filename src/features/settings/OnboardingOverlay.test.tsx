@@ -6,8 +6,8 @@
  *    extra.onboarded=true 并卸载；
  *  - 「跳过」同样置位（引导永不再次自动弹出）。
  */
-import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { OnboardingOverlay } from "./OnboardingOverlay";
@@ -35,6 +35,30 @@ describe("OnboardingOverlay", () => {
     setOnboarded(true);
     render(<OnboardingOverlay />);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("已完成引导后按 Esc 不触发持久化、事件不被拦截", async () => {
+    // 回归：onboarded=true 后组件仍挂载（return null 但 effect 已跑过），
+    // 旧实现的 window 捕获监听常驻——既吞掉设置窗全部 Esc，又每次按键都
+    // finish() 触发 setExtra 全量落盘 + 跨窗同步。
+    setOnboarded(true);
+    const setExtraSpy = vi.spyOn(useSettingsStore.getState(), "setExtra");
+    render(<OnboardingOverlay />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // 探针挂在 document（冒泡阶段）：旧实现 stopPropagation 在 window 捕获层
+    // 吃掉事件，探针不会响；修复后应正常收到。
+    let reachedDocument = false;
+    const probe = () => {
+      reachedDocument = true;
+    };
+    document.addEventListener("keydown", probe);
+    fireEvent.keyDown(document.body, { key: "Escape", bubbles: true });
+    document.removeEventListener("keydown", probe);
+    expect(reachedDocument).toBe(true);
+    // 等过退场动画延时窗口（fxMs+20 ≈ 220ms），确认没有潜伏的 finish() 定时器。
+    await new Promise((r) => setTimeout(r, 320));
+    expect(setExtraSpy).not.toHaveBeenCalled();
+    setExtraSpy.mockRestore();
   });
 
   it("下一步推进到末步，开始使用后置位并卸载", async () => {

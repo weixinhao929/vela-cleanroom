@@ -3,9 +3,10 @@
  * 预览弹层展示解析出的课程/冲突/未识别行；编辑弹层增改单条课程的
  * 名称/教师/地点/周次/节次。
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { CircleAlert, Trash2 } from "lucide-react";
-import { parseWeeksLabel, TT_PALETTE, type TimetableSession } from "../timetable";
+import { formatWeeks, parseWeeksLabel, TT_PALETTE, type TimetableSession } from "../timetable";
+import { findConflicts } from "../timetable-extras";
 import { useT } from "../../i18n-lite";
 import { DAY_NAMES, dialogKeyDown, type Preview } from "./timetable-shared";
 import { DatePicker } from "../../components/DatePicker";
@@ -30,6 +31,9 @@ export function TimetableImportPreview({
 }) {
   const tr = useT();
   const shown = preview.sessions.slice(0, 60);
+  /* 导入前先看到冲突规模：重复选课/叠课在预览阶段就能被发现，不必等
+     写入后回周视图找红框。 */
+  const conflictCount = useMemo(() => findConflicts(preview.sessions).length, [preview.sessions]);
   return (
     <div
       className={`tt-preview-overlay${closing ? " closing" : ""}`}
@@ -43,6 +47,11 @@ export function TimetableImportPreview({
           <span className="tt-preview-count">
             {preview.sessions.length} {tr("条上课记录")}
           </span>
+          {conflictCount > 0 && (
+            <span className="tt-preview-conflict">
+              <CircleAlert size={11} /> {tr("存在 {n} 处时间冲突").replace("{n}", String(conflictCount))}
+            </span>
+          )}
         </div>
         <div className="tt-preview-form">
           <label className="tt-field">
@@ -77,6 +86,7 @@ export function TimetableImportPreview({
             <span>{tr("节次")}</span>
             <span>{tr("周次")}</span>
             <span>{tr("地点")}</span>
+            <span>{tr("教师")}</span>
           </div>
           <div className="tt-preview-scroll">
             {shown.map((s) => (
@@ -86,11 +96,12 @@ export function TimetableImportPreview({
                 <span>{s.startSection === s.endSection ? s.startSection : `${s.startSection}-${s.endSection}`}</span>
                 <span>{s.weeksLabel || tr("全程")}</span>
                 <span>{s.location || "—"}</span>
+                <span>{s.teacher || "—"}</span>
               </div>
             ))}
             {preview.sessions.length > shown.length && (
               <div className="tt-preview-more">
-                还有 {preview.sessions.length - shown.length} {tr("条未展示")}
+                {tr("还有 {n} 条未展示").replace("{n}", String(preview.sessions.length - shown.length))}
               </div>
             )}
           </div>
@@ -135,9 +146,12 @@ export function TimetableSessionEditor({
   const [weeksText, setWeeksText] = useState(session?.weeksLabel ?? "");
   const [location, setLocation] = useState(session?.location ?? "");
   const [teacher, setTeacher] = useState(session?.teacher ?? "");
-  /* W-020 颜色自定义：空 = 按课程名自动配色。 */
+  /* 颜色自定义：空 = 按课程名自动配色。 */
   const [color, setColor] = useState(session?.colorOverride ?? "");
   const [error, setError] = useState("");
+  /* 周次输入实时回显：parseWeeksLabel 对非法片段静默丢弃，不回显的话
+     「1-16周(单)」这类写错形态会悄悄退化成每周都上。 */
+  const parsedWeeks = useMemo(() => parseWeeksLabel(weeksText), [weeksText]);
 
   const save = () => {
     const n = name.trim();
@@ -227,6 +241,11 @@ export function TimetableSessionEditor({
               onChange={(e) => setWeeksText(e.target.value)}
               data-interactive
             />
+            {weeksText.trim() && parsedWeeks.length === 0 ? (
+              <em className="tt-field-hint warn">{tr("周次无法识别，将按每周显示")}</em>
+            ) : parsedWeeks.length ? (
+              <em className="tt-field-hint">{tr("将生效于 {w}").replace("{w}", formatWeeks(parsedWeeks))}</em>
+            ) : null}
           </label>
           <label className="tt-field" style={{ flex: "1 1 100%" }}>
             <span>{tr("地点")}</span>

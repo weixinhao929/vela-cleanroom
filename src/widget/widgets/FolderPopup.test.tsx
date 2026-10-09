@@ -6,10 +6,11 @@
  *  - 关闭路径：Esc 与外点都在 160ms 关闭动画后回调 onClose（世代守卫语义）；
  *  - 加载失败：显示错误态与「重试」按钮，重试重拉目录。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { FolderPopup, breadcrumbSegments, placeFolderPopup } from "./FolderPopup";
+import { __resetAppIconCacheForTest } from "../../lib/app-icon-cache";
 
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn<(cmd: string, args?: Record<string, unknown>) => Promise<unknown>>()
@@ -32,6 +33,11 @@ beforeEach(() => {
     if (cmd === "get_app_icon") return null;
     return null;
   });
+});
+
+afterEach(() => {
+  // 图标共享缓存是模块单例：用例间清空，防跨用例串扰。
+  __resetAppIconCacheForTest();
 });
 
 const anchor = { x: 100, y: 100, w: 60, h: 80 };
@@ -65,7 +71,7 @@ describe("placeFolderPopup 纯函数", () => {
 
 describe("breadcrumbSegments 面包屑纯函数", () => {
   it("浅路径（≤keep 段）：全保留，末段标记 current", () => {
-    const { items, truncated } = breadcrumbSegments("C:/docs/子文件夹");
+    const { items, truncated } = breadcrumbSegments("C:/docs/子文件夹", 3);
     expect(truncated).toBe(false);
     expect(items).toEqual([
       { name: "C:", path: "C:", current: false },
@@ -74,18 +80,24 @@ describe("breadcrumbSegments 面包屑纯函数", () => {
     ]);
   });
 
-  it("深路径：只保留最后 3 段并标记 truncated", () => {
+  it("深路径：默认只保留最后 2 段并标记 truncated（W-080 与卡片态一致）", () => {
     const { items, truncated } = breadcrumbSegments("C:/a/b/c/docs");
     expect(truncated).toBe(true);
+    expect(items.map((i) => i.name)).toEqual(["c", "docs"]);
+    expect(items[0].path).toBe("C:/a/b/c");
+    expect(items[1].current).toBe(true);
+  });
+
+  it("显式放宽 keep=3：保留最后 3 段", () => {
+    const { items } = breadcrumbSegments("C:/a/b/c/docs", 3);
     expect(items.map((i) => i.name)).toEqual(["b", "c", "docs"]);
     expect(items[0].path).toBe("C:/a/b");
-    expect(items[2].current).toBe(true);
   });
 
   it("反斜杠路径同样切段", () => {
     const { items } = breadcrumbSegments("D:\\work\\子目录");
-    expect(items.map((i) => i.name)).toEqual(["D:", "work", "子目录"]);
-    expect(items[1].path).toBe("D:/work");
+    expect(items.map((i) => i.name)).toEqual(["work", "子目录"]);
+    expect(items[0].path).toBe("D:/work");
   });
 });
 

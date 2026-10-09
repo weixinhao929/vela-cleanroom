@@ -1,9 +1,8 @@
 //! DLL 引导：标记事件检测 → init 线程 → InitializeXamlDiagnosticsEx 重试。
 //!
-//! 注入约定（与 TB-INJECT / inject_demo 共享）：注入器在注入前创建命名事件
+//! 注入约定（与注入器 / inject_demo 共享）：注入器在注入前创建命名事件
 //! `Local\velatap-inject-<explorer_pid>`（存在即可、状态无关），DllMain 检测
-//! 到才继续——对齐标杆 DetourCopyPayloadToProcess 的标记语义
-//! （api.cpp:31-44 + dllmain.cpp:18-27）。手动 LoadLibrary 加载本 DLL 的
+//! 到才继续（标记事件语义：仅注入路径加载才初始化）。手动 LoadLibrary 加载本 DLL 的
 //! 场景探测不到事件 → 完全休眠。
 //!
 //! DllMain 铁律：不做 LoadLibrary / COM / 阻塞调用（loader lock），只
@@ -132,7 +131,7 @@ fn init_thread() -> windows_core::Result<()> {
     let _mta_cookie = unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() };
 
     // 拒二次服务自检：同一 explorer 已驻留另一路径的 velatap.dll（升级 / 重编
-    // 后的第二副本）→ 本副本完全不初始化（R1：失败 = 静默退出注入）。注入器侧
+    // 后的第二副本）→ 本副本完全不初始化（失败 = 静默退出注入）。注入器侧
     // 同样先查驻留，这里是纵深防御，防老版本注入器 / 手工注入。
     let another = another_copy_resident();
     crate::vlog!("init_thread: another_copy_resident={another}");
@@ -143,7 +142,7 @@ fn init_thread() -> windows_core::Result<()> {
         )));
     }
 
-    // 顺序（对齐标杆 TAP_READY_EVENT 时序）：**先** InitializeXamlDiagnosticsEx
+    // 顺序（TAP_READY_EVENT 时序约定）：**先** InitializeXamlDiagnosticsEx
     // 成功把本 DLL pin 进 explorer，**再**起管道客户端。IXDE 失败（60×500ms
     // 重试后）则完全不起服务——注入器的 35s 等待超时走失败路径。重试窗口内模块
     // 由 process_attach 持有的引用兜住（宿主提前摘钩子不会把正在重试的线程连
@@ -153,7 +152,23 @@ fn init_thread() -> windows_core::Result<()> {
 
     std::thread::Builder::new()
         .stack_size(128 * 1024)
-        .spawn(crate::pipe_client::run)
+        .spawn(move || {
+            // 管道客户端是本 DLL 的服务主线程，漏网 panic
+            // 原先只会静默死线程——外观永久失效直到 explorer 重启（DLL 侧重连
+            // 循环就活在这条线程里）。围栏 + 有界重启（5 次预算、2s 间隔）：
+            // 单次 panic 自愈，panic 风暴退避为静默死亡交给宿主恢复线兜底。
+            let mut restarts = 0u32;
+            loop {
+                crate::util::run_guarded("pipe-client", crate::pipe_client::run);
+                restarts += 1;
+                if restarts > 5 {
+                    crate::vlog!("pipe-client: exceeded restart budget, giving up");
+                    return;
+                }
+                crate::vlog!("pipe-client: died, restarting ({restarts}/5)");
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        })
         .map_err(|e| {
             crate::vlog!("pipe thread spawn failed: {e}");
             windows_core::Error::from_hresult(windows_core::HRESULT(0x8000_FFFF_u32 as i32))

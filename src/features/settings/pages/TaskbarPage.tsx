@@ -1,66 +1,39 @@
+/* eslint-disable react-refresh/only-export-components -- TaskbarConfigSync 与预览
+   常量从本文件 re-export 供 App.tsx 懒加载与单测取用（拆分后保留兼容路径）。 */
 /**
- * 设置页 · 任务栏（TB-UI）：任务栏外观能力的控制面（需求 F-1～F-5 /
- * F-7 / F-10 / F-12～F-15 的 UI 侧）。数据只读写 settings-store 的 general.taskbar
- * 切片（CORE 契约，字段名即线协议）；生效链路由本文件导出的 TaskbarConfigSync
+ * 设置页 · 任务栏（TB-UI）：任务栏外观能力的控制面（需求 ～/
+ * ～的 UI 侧）。数据只读写 settings-store 的 general.taskbar
+ * 切片（CORE 契约，字段名即线协议）；生效链路由 TaskbarConfigSync.tsx 承担
  * （仅设置窗挂载，App.tsx 懒加载）对账 get_taskbar_config → 不同才 apply_taskbar_config。
  *
  * 降级（INJECT / STATE 未合入期间）：命令返回 Err、无任何 taskbar:* 事件——状态条
  * 显示「模块未就绪」、徽标显示「—」、能力未知时按目标机（XAML）默认渲染；不做
- * 等待逻辑，事件到达自然点亮（D7：能力不可用 → 隐藏而非报错）。
+ * 等待逻辑，事件到达自然点亮（能力不可用 → 隐藏而非报错）。
  *
  * 区段：HEADER（总开关 / 状态条 / 能力摘要 / 操作按钮）· STATES（七态卡 + 外观
  * 编辑器）· RULES（visible / maximized 规则列表）· IGNORED（忽略窗口三组标签）·
  * DIAG（诊断快照 + 共存说明）。PREVIEW 在 STATES 区段加预览按钮、MONITOR 在
- * HEADER 区段加显示器选择器。
+ * HEADER 区段加显示器选择器。（深拆）后 STATES/RULES 的组件实现与预览通道
+ * 分居 TaskbarStateCard / TaskbarRuleList / TaskbarAppearanceEditor /
+ * TaskbarPreview，本文件保留页面编排、IGNORED（TagList）与 HEADER/DIAG。
  */
-import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
-import {
-  AppWindow,
-  ArrowDown,
-  ArrowUp,
-  Ban,
-  BatteryLow,
-  ClipboardCopy,
-  Droplets,
-  Eye,
-  EyeOff,
-  Layers,
-  LayoutGrid,
-  Maximize2,
-  Minus,
-  Monitor,
-  Palette,
-  PanelBottom,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Ruler,
-  Search,
-  SlidersHorizontal,
-  Tag,
-  Trash2
-} from "lucide-react";
-import { invoke, isTauri, previewTaskbarState } from "../../../lib/tauri";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AppWindow, Ban, ClipboardCopy, Monitor, PanelBottom, RefreshCw, RotateCcw, Tag } from "lucide-react";
+import { invoke, isTauri } from "../../../lib/tauri";
 import { useTauriEvent } from "../../../lib/use-tauri-event";
 import { showToast } from "../../../components/ToastHost";
 import { t, useT } from "../../../i18n-lite";
 import { FxText } from "../../../lib/fx";
 import {
-  DEFAULT_TASKBAR_APPEARANCE,
   TASKBAR_MAX_IGNORED_PER_KIND,
-  TASKBAR_MAX_RULES_PER_STATE,
   TASKBAR_STATE_KEYS,
   defaultTaskbarSettings,
-  normalizeTaskbar,
-  normalizeTaskbarColor,
   taskbarOverriddenKeys,
   taskbarSlotKey,
   taskbarViewForSlot,
   useSettingsStore,
-  type TaskbarAccent,
   type TaskbarAppearance,
   type TaskbarIgnoredWindows,
-  type TaskbarMatchType,
   type TaskbarOverrideKey,
   type TaskbarOverridePatch,
   type TaskbarRule,
@@ -73,36 +46,16 @@ import type { TaskbarCapabilities } from "../../../types/bindings/TaskbarCapabil
 import type { TaskbarStateChanged } from "../../../types/bindings/TaskbarStateChanged";
 import type { TaskbarStatus } from "../../../types/bindings/TaskbarStatus";
 import type { MonitorInfo } from "./DisplayPage";
-import { ColorRow, Dropdown, Segmented, SettingRow, SettingToggleRow, Toggle } from "../shared";
-import { M3Slider as Slider } from "../../../components/ui/M3Slider";
+import { Dropdown, SettingRow, SettingToggleRow } from "../shared";
+import { Ctl } from "./TaskbarAppearanceEditor";
+import { RuleList } from "./TaskbarRuleList";
+import { StateCard } from "./TaskbarStateCard";
+import { useTaskbarPreview } from "./TaskbarPreview";
 
-/* ══════════════════════════════ 共用：文案表与颜色归一 ══════════════════════════════ */
-
-/** 七态元信息（顺序 = TASKBAR_STATE_KEYS：桌面在上、省电在下；越靠下优先级越高，F-3）。 */
-const STATE_META: Record<TaskbarStateKey, { name: string; desc: string; icon: typeof Monitor }> = {
-  desktop: { name: "桌面", desc: "桌面可见、没有用户窗口时的基础外观（始终启用）", icon: Monitor },
-  visibleWindow: { name: "可见窗口", desc: "存在非最大化的用户窗口时（可按前台窗口配置规则）", icon: AppWindow },
-  maximizedWindow: { name: "最大化窗口", desc: "存在最大化窗口时（按最顶层最大化窗口匹配规则）", icon: Maximize2 },
-  startOpened: { name: "开始菜单打开", desc: "开始菜单打开时（只影响所在显示器）", icon: LayoutGrid },
-  searchOpened: { name: "搜索打开", desc: "搜索面板打开时（只影响所在显示器）", icon: Search },
-  taskViewOpened: { name: "任务视图打开", desc: "任务视图打开时（影响全部显示器）", icon: Layers },
-  batterySaver: { name: "省电模式", desc: "系统进入省电模式时（影响全部显示器）", icon: BatteryLow }
-};
-
-/** accent 五值文案（§1.1 表；normal = 恢复系统默认外观）。 */
-const ACCENT_OPTIONS: { id: TaskbarAccent; label: string }[] = [
-  { id: "normal", label: "默认" },
-  { id: "opaque", label: "不透明" },
-  { id: "clear", label: "透明" },
-  { id: "blur", label: "模糊" },
-  { id: "acrylic", label: "亚克力" }
-];
-
-const MATCH_OPTIONS: { id: TaskbarMatchType; label: string }[] = [
-  { id: "class", label: "窗口类" },
-  { id: "title", label: "窗口标题" },
-  { id: "process", label: "进程名" }
-];
+/* ══════════════════════════════ 共用：页面级文案表 ══════════════════════════════ */
+/* （深拆）：STATE_META → TaskbarStateCard，ACCENT_OPTIONS / splitColor /
+   joinColor / Ctl → TaskbarAppearanceEditor，MATCH_OPTIONS / newRuleId →
+   TaskbarRuleList；此处只剩本页直用项。 */
 
 const TASKBAR_TYPE_LABEL: Record<TaskbarStatus["taskbarType"], string> = {
   xaml: "XAML",
@@ -112,488 +65,6 @@ const TASKBAR_TYPE_LABEL: Record<TaskbarStatus["taskbarType"], string> = {
 };
 
 const RULE_STATES: readonly (keyof TaskbarRules)[] = ["visibleWindow", "maximizedWindow"];
-
-/** 切片存 `#rrggbbaa`；原生取色器只认 `#rrggbb`，透明度单独走 0–100% 滑条。 */
-function splitColor(color: string): { rgb: string; alphaPct: number } {
-  const full = normalizeTaskbarColor(color) ?? DEFAULT_TASKBAR_APPEARANCE.color;
-  return { rgb: full.slice(0, 7), alphaPct: Math.round((parseInt(full.slice(7, 9), 16) / 255) * 100) };
-}
-
-/** 取色器 / 手输的 3、4、6、8 位 hex + 透明度百分比 → 统一 8 位小写存储（F-2）。 */
-function joinColor(rgb: string, alphaPct: number): string {
-  const base = normalizeTaskbarColor(rgb) ?? DEFAULT_TASKBAR_APPEARANCE.color;
-  const alpha = Math.round((Math.max(0, Math.min(100, alphaPct)) / 100) * 255);
-  return `${base.slice(0, 7)}${alpha.toString(16).padStart(2, "0")}`;
-}
-
-function newRuleId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  return `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/** 分段 / 下拉自身无 aria-label，用行标题命名（与 DockPage.Ctl 同法）。 */
-function Ctl({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="tm-dock-ctl" role="group" aria-label={label}>
-      {children}
-    </div>
-  );
-}
-
-/* ══════════════════════════════ STATES：外观编辑器 ══════════════════════════════ */
-
-/**
- * 单套外观（F-2 / F-7）：accent 五选一 → 颜色 + 透明度 → 模糊半径（仅 blur）→ 顶线 /
- * Peek 开关。能力未知（尚无 taskbar:capabilities）时按目标机 XAML 渲染：顶线可用、
- * Peek 隐藏、blur 可选；能力已知则按 D7 隐藏不可用项。
- *
- * F-8 即时预览：每次改动除写切片（350ms 防抖后整包 apply 落盘）外，还经 `onPreview`
- * 走预览通道立即下发——滑条拖动中 React 的 onChange 即原生 input 事件、逐帧触发，
- * Rust 侧按 ≤80ms 步进合并；状态卡与规则行（含非前台外观，T-15）都接线，
- * 独立复用本编辑器且未传 `onPreview` 的调用点则只写切片。
- */
-function AppearanceEditor({
-  value,
-  onChange,
-  onPreview,
-  caps,
-  defaultColor = DEFAULT_TASKBAR_APPEARANCE.color
-}: {
-  value: TaskbarAppearance;
-  onChange: (next: TaskbarAppearance) => void;
-  onPreview?: (next: TaskbarAppearance) => void;
-  caps: TaskbarCapabilities | null;
-  defaultColor?: string;
-}) {
-  const tr = useT();
-  const { rgb, alphaPct } = splitColor(value.color);
-  const patch = (p: Partial<TaskbarAppearance>) => {
-    const next = { ...value, ...p };
-    onPreview?.(next);
-    onChange(next);
-  };
-  const accentOptions = ACCENT_OPTIONS.filter(
-    (o) => o.id !== "blur" || !caps || caps.supportsBlur || value.accent === "blur"
-  );
-  const showLine = !caps || caps.supportsLine;
-  const showPeek = Boolean(caps?.supportsPeek);
-  return (
-    <>
-      <SettingRow icon={Palette} title="效果" desc="默认 / 不透明 / 透明 / 模糊 / 亚克力">
-        <Ctl label={tr("效果")}>
-          <Segmented value={value.accent} options={accentOptions} onChange={(accent) => patch({ accent })} />
-        </Ctl>
-      </SettingRow>
-      <SettingRow icon={Droplets} title="颜色" desc="任务栏着色">
-        <ColorRow
-          color={rgb}
-          onChange={(c) => patch({ color: joinColor(c, alphaPct) })}
-          onReset={() => patch({ color: defaultColor })}
-        />
-      </SettingRow>
-      <SettingRow icon={SlidersHorizontal} title="透明度" desc="0% 透明 · 100% 不透明">
-        <Slider
-          label="透明度"
-          value={alphaPct}
-          min={0}
-          max={100}
-          step={1}
-          suffix="%"
-          onChange={(v) => patch({ color: joinColor(rgb, v) })}
-        />
-      </SettingRow>
-      {value.accent === "blur" && (
-        <SettingRow icon={Ruler} title="模糊半径" desc="越大越朦胧">
-          <Slider
-            label="模糊半径"
-            value={value.blurRadius}
-            min={0}
-            max={750}
-            step={1}
-            suffix="px"
-            onChange={(v) => patch({ blurRadius: Math.round(v) })}
-          />
-        </SettingRow>
-      )}
-      {showLine && (
-        <SettingRow icon={Minus} title="顶部分隔线" desc="顶部 1px 分隔线">
-          <Toggle on={value.showLine} onChange={(v) => patch({ showLine: v })} ariaLabel={tr("顶部分隔线")} />
-        </SettingRow>
-      )}
-      {showPeek && (
-        <SettingRow icon={Eye} title="显示桌面按钮" desc="任务栏右端的「显示桌面」Peek 按钮">
-          <Toggle on={value.showPeek} onChange={(v) => patch({ showPeek: v })} ariaLabel={tr("显示桌面按钮")} />
-        </SettingRow>
-      )}
-    </>
-  );
-}
-
-/* ══════════════════════════════ RULES：窗口规则列表 ══════════════════════════════ */
-
-/**
- * 可见 / 最大化两态的逐窗口规则（F-4）：匹配类型 + 匹配值 + 完整外观 + 可选的
- * 非前台外观；增删改排序。匹配语义（class 精确 / process 大小写不敏感精确 /
- * title 子串）在 Rust 状态机实现，此处只编辑数据。
- */
-function RuleList({
-  rules,
-  onChange,
-  caps,
-  owningState,
-  preview
-}: {
-  rules: TaskbarRule[];
-  onChange: (next: TaskbarRule[]) => void;
-  caps: TaskbarCapabilities | null;
-  /** 规则所属状态键（visible / maximized，同为 TaskbarStateKey 成员）。 */
-  owningState: keyof TaskbarRules;
-  /** F-8 预览控制面：规则内外观与非前台外观的编辑同样即时预览（T-15）。 */
-  preview?: TaskbarPreviewHandle;
-}) {
-  const tr = useT();
-  const update = (idx: number, next: TaskbarRule) => onChange(rules.map((r, i) => (i === idx ? next : r)));
-  const move = (idx: number, dir: -1 | 1) => {
-    const to = idx + dir;
-    if (to < 0 || to >= rules.length) return;
-    const next = [...rules];
-    [next[idx], next[to]] = [next[to], next[idx]];
-    onChange(next);
-  };
-  const add = () => {
-    if (rules.length >= TASKBAR_MAX_RULES_PER_STATE) return;
-    onChange([
-      ...rules,
-      { id: newRuleId(), matchType: "process", pattern: "", appearance: { ...DEFAULT_TASKBAR_APPEARANCE } }
-    ]);
-  };
-  return (
-    <div className="tm-tb-sub">
-      <div className="tm-tb-sub-title">{tr("窗口规则")}</div>
-      {rules.length === 0 && (
-        <div className="tm-tb-empty">{tr("暂无规则：命中规则的窗口使用其专属外观，其余使用上方默认外观")}</div>
-      )}
-      <div className="tm-tb-rules">
-        {rules.map((rule, idx) => (
-          <div className="tm-tb-rule" key={rule.id} role="group" aria-label={`${tr("规则")} ${idx + 1}`}>
-            <div className="tm-tb-rule-head">
-              <Ctl label={tr("匹配类型")}>
-                <Dropdown
-                  value={rule.matchType}
-                  options={MATCH_OPTIONS}
-                  onChange={(matchType) => update(idx, { ...rule, matchType })}
-                />
-              </Ctl>
-              <input
-                className="tm-text-input"
-                value={rule.pattern}
-                placeholder={tr("匹配值（类名精确 / 进程名如 notepad.exe / 标题子串）")}
-                aria-label={tr("匹配值")}
-                spellCheck={false}
-                onChange={(e) => update(idx, { ...rule, pattern: e.target.value })}
-              />
-              <div className="tm-tb-rule-actions">
-                <button
-                  type="button"
-                  className="tm-tb-icon-btn"
-                  onClick={() => move(idx, -1)}
-                  disabled={idx === 0}
-                  aria-label={tr("上移")}
-                  title={tr("上移")}
-                >
-                  <ArrowUp size={14} />
-                </button>
-                <button
-                  type="button"
-                  className="tm-tb-icon-btn"
-                  onClick={() => move(idx, 1)}
-                  disabled={idx === rules.length - 1}
-                  aria-label={tr("下移")}
-                  title={tr("下移")}
-                >
-                  <ArrowDown size={14} />
-                </button>
-                <button
-                  type="button"
-                  className="tm-tb-icon-btn danger"
-                  onClick={() => onChange(rules.filter((_, i) => i !== idx))}
-                  aria-label={tr("删除规则")}
-                  title={tr("删除规则")}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-            <AppearanceEditor
-              value={rule.appearance}
-              onChange={(appearance) => update(idx, { ...rule, appearance })}
-              onPreview={preview ? (appearance) => preview.onEdit(owningState, appearance) : undefined}
-              caps={caps}
-            />
-            <SettingRow icon={AppWindow} title="非前台时使用不同外观" desc="命中窗口失去焦点时切换到下方外观">
-              <Toggle
-                on={rule.inactiveAppearance !== undefined}
-                ariaLabel={tr("非前台时使用不同外观")}
-                onChange={(on) => {
-                  const next: TaskbarRule = { ...rule };
-                  if (on) next.inactiveAppearance = { ...rule.appearance };
-                  else delete next.inactiveAppearance;
-                  update(idx, next);
-                }}
-              />
-            </SettingRow>
-            {rule.inactiveAppearance && (
-              <div className="tm-tb-sub" role="group" aria-label={tr("非前台外观")}>
-                <div className="tm-tb-sub-title">{tr("非前台外观")}</div>
-                <AppearanceEditor
-                  value={rule.inactiveAppearance}
-                  onChange={(inactiveAppearance) => update(idx, { ...rule, inactiveAppearance })}
-                  onPreview={
-                    preview ? (inactiveAppearance) => preview.onEdit(owningState, inactiveAppearance) : undefined
-                  }
-                  caps={caps}
-                />
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      <button
-        type="button"
-        className="tm-btn-secondary tm-tb-add"
-        onClick={add}
-        disabled={rules.length >= TASKBAR_MAX_RULES_PER_STATE}
-      >
-        <Plus size={14} />
-        {tr("添加规则")}
-      </button>
-    </div>
-  );
-}
-
-/* ══════════════════════════════ STATES：实时预览通道（F-8，TB-PREVIEW） ══════════════════════════════ */
-
-/** 「预览此状态」钉住时长：与 Rust `PREVIEW_HOLD`（60s）同值，到点两侧各自收尾（重复取消是 no-op）。 */
-export const TASKBAR_PREVIEW_HOLD_MS = 60_000;
-/** 拖动落定后再留的余量：让 350ms 防抖的真实 apply 先落地，随后才「切回钉住的状态卡 /
- *  取消拖动预览」——否则先到的切回会被紧随的真实 apply 结束，钉住效果闪一下就没了。 */
-export const TASKBAR_PREVIEW_SETTLE_GRACE_MS = 120;
-
-/** 状态卡的预览控制面（StateCard 消费）。 */
-type TaskbarPreviewHandle = {
-  /** 当前被钉住预览的状态键（null = 无）。 */
-  pinned: TaskbarStateKey | null;
-  /** 总开关关闭时按钮禁用、拖动不发 IPC（Rust 侧未就绪，预览必失败）。 */
-  disabled: boolean;
-  /** 钉住 / 解除（再按同卡 = 解除，按他卡 = 直接切换，不经过取消以免闪回真实外观）。 */
-  toggle: (key: TaskbarStateKey) => void;
-  /** 外观编辑器的一次改动：立即预览；静默落定后回到钉住的卡或取消拖动预览。 */
-  onEdit: (key: TaskbarStateKey, next: TaskbarAppearance) => void;
-};
-
-/** 切片单态 → 纯外观（去掉 `enabled`，预览载荷只认五个外观字段）。 */
-function appearanceOf(state: TaskbarStateAppearance): TaskbarAppearance {
-  const { accent, color, showPeek, showLine, blurRadius } = state;
-  return { accent, color, showPeek, showLine, blurRadius };
-}
-
-function clearTimer(ref: MutableRefObject<number | null>) {
-  if (ref.current !== null) {
-    window.clearTimeout(ref.current);
-    ref.current = null;
-  }
-}
-
-/**
- * F-8 预览通道（两条即时链路共用一个 Rust 命令，见 lib/tauri.ts previewTaskbarState）：
- * - 拖动：编辑器每次改动立即 `preview(state, 整套外观)`；最后一次改动后静默
- *   350ms + 余量视为松手——有钉住的卡就切回它，否则 `preview(null)` 取消。真实
- *   落定由 TaskbarConfigSync 的 350ms 对账 apply 负责（Rust 端 apply 即结束预览）。
- * - 钉住：按钮 `preview(state, 该状态外观)` 强制生效；再按 / 60s / 离开页面 / 总开关
- *   关闭 → 解除。Rust 侧同样 60s 自动取消，两侧独立计时、重复取消无副作用。
- * 预览 IPC 是 best-effort：拖动中的失败静默；按钮触发的失败 toast 并回退钉住态。
- * 全程不写切片、不 invoke set_setting / apply_taskbar_config。
- */
-function useTaskbarPreview(
-  states: Record<TaskbarStateKey, TaskbarStateAppearance>,
-  moduleEnabled: boolean
-): TaskbarPreviewHandle {
-  const tr = useT();
-  const [pinned, setPinnedState] = useState<TaskbarStateKey | null>(null);
-  const pinnedRef = useRef<TaskbarStateKey | null>(null);
-  const statesRef = useRef(states);
-  statesRef.current = states;
-  const settleTimer = useRef<number | null>(null);
-  const holdTimer = useRef<number | null>(null);
-  /** Rust 侧可能仍有预览在生效（决定卸载 / 解除时是否要发取消）。 */
-  const liveRef = useRef(false);
-
-  const setPinned = (key: TaskbarStateKey | null) => {
-    pinnedRef.current = key;
-    setPinnedState(key);
-  };
-  const send = (key: TaskbarStateKey | null, overrides?: Partial<TaskbarAppearance>) => {
-    liveRef.current = key !== null;
-    return previewTaskbarState(key, overrides);
-  };
-  const unpin = (notifyRust: boolean) => {
-    clearTimer(holdTimer);
-    setPinned(null);
-    if (notifyRust && liveRef.current) void send(null).catch(() => {});
-  };
-
-  const toggle = (key: TaskbarStateKey) => {
-    if (!isTauri()) {
-      showToast(tr("该操作仅在桌面端可用"), "info");
-      return;
-    }
-    if (pinnedRef.current === key) {
-      unpin(true);
-      return;
-    }
-    // 拖动落定的回滚不再执行（目标已换）；60s 计时从本次钉住重新起算。
-    clearTimer(settleTimer);
-    clearTimer(holdTimer);
-    setPinned(key);
-    holdTimer.current = window.setTimeout(() => {
-      holdTimer.current = null;
-      unpin(true);
-    }, TASKBAR_PREVIEW_HOLD_MS);
-    send(key, appearanceOf(statesRef.current[key])).catch((err: unknown) => {
-      showToast(`${tr("预览失败")}：${String(err)}`, "error");
-      if (pinnedRef.current === key) unpin(false);
-    });
-  };
-
-  const onEdit = (key: TaskbarStateKey, next: TaskbarAppearance) => {
-    if (!isTauri() || !moduleEnabled) return;
-    // 编辑器的 value 运行时是切片单态（可选态带 enabled），载荷只留五个外观字段。
-    void send(key, appearanceOf(next)).catch(() => {});
-    clearTimer(settleTimer);
-    settleTimer.current = window.setTimeout(() => {
-      settleTimer.current = null;
-      const p = pinnedRef.current;
-      if (p !== null) void send(p, appearanceOf(statesRef.current[p])).catch(() => {});
-      else void send(null).catch(() => {});
-    }, TASKBAR_APPLY_DEBOUNCE_MS + TASKBAR_PREVIEW_SETTLE_GRACE_MS);
-  };
-
-  // 总开关关闭：Rust 侧 apply(enabled=false) 已结束预览并恢复系统默认，本地只收钉住态。
-  useEffect(() => {
-    if (moduleEnabled || pinnedRef.current === null) return;
-    clearTimer(holdTimer);
-    pinnedRef.current = null;
-    setPinnedState(null);
-  }, [moduleEnabled]);
-
-  // 离开页面：取消一切预览（F-8「离开页面自动取消」）并清定时器。
-  useEffect(
-    () => () => {
-      clearTimer(settleTimer);
-      clearTimer(holdTimer);
-      if (liveRef.current && isTauri()) void previewTaskbarState(null).catch(() => {});
-    },
-    []
-  );
-
-  return { pinned, disabled: !moduleEnabled, toggle, onEdit };
-}
-
-/* ══════════════════════════════ STATES：状态卡 ══════════════════════════════ */
-
-function StateCard({
-  stateKey,
-  state,
-  onChange,
-  caps,
-  active,
-  hasStateEvents,
-  preview,
-  children
-}: {
-  stateKey: TaskbarStateKey;
-  state: TaskbarStateAppearance;
-  onChange: (next: TaskbarStateAppearance) => void;
-  caps: TaskbarCapabilities | null;
-  /** 命中本态的显示器事件（可多屏）。 */
-  active: TaskbarStateChanged[];
-  /** 是否收过任何 state-changed 事件（无 → 徽标显「—」，F-14）。 */
-  hasStateEvents: boolean;
-  /** F-8 预览控制面（缺省 = 无预览按钮、编辑不预览）。 */
-  preview?: TaskbarPreviewHandle;
-  children?: ReactNode;
-}) {
-  const tr = useT();
-  const meta = STATE_META[stateKey];
-  const Icon = meta.icon;
-  const isDesktop = stateKey === "desktop";
-  const enabled = isDesktop || state.enabled === true;
-  const isActive = active.length > 0;
-  const activeTitle = active
-    .map((p) => `${tr("显示器")} ${p.monitor}${p.matchedRule ? ` · ${tr("规则")} ${p.matchedRule}` : ""}`)
-    .join("\n");
-  const previewing = preview?.pinned === stateKey;
-  const previewLabel = previewing ? tr("停止预览") : tr("预览此状态");
-  return (
-    <div className={`tm-tb-card${isActive ? " is-active" : ""}`} role="group" aria-label={tr(meta.name)}>
-      <div className="tm-tb-card-head">
-        <span className="tm-setting-leading" aria-hidden="true">
-          <Icon size={18} />
-        </span>
-        <div className="tm-tb-card-text">
-          <span className="tm-tb-card-title">{tr(meta.name)}</span>
-          <span className="tm-tb-card-desc">{tr(meta.desc)}</span>
-        </div>
-        {previewing && <span className="tm-tb-badge is-on">{tr("预览中")}</span>}
-        {isActive ? (
-          <span className="tm-tb-badge is-on" title={activeTitle}>
-            {tr("当前生效")}
-            {active.length > 1 ? ` ×${active.length}` : ""}
-          </span>
-        ) : (
-          !hasStateEvents && (
-            <span className="tm-tb-badge" title={tr("尚未收到状态事件")} aria-label={tr("当前生效状态未知")}>
-              —
-            </span>
-          )
-        )}
-        {preview && (
-          <button
-            type="button"
-            className="tm-tb-icon-btn"
-            onClick={() => preview.toggle(stateKey)}
-            disabled={preview.disabled}
-            aria-pressed={previewing}
-            aria-label={previewLabel}
-            title={preview.disabled ? tr("请先开启「自定义任务栏外观」") : previewLabel}
-          >
-            {previewing ? <EyeOff size={14} /> : <Eye size={14} />}
-          </button>
-        )}
-        {isDesktop ? (
-          <span className="tm-tb-badge">{tr("始终启用")}</span>
-        ) : (
-          <Toggle
-            on={enabled}
-            onChange={(v) => onChange({ ...state, enabled: v })}
-            ariaLabel={`${tr("启用")} ${tr(meta.name)}`}
-          />
-        )}
-      </div>
-      {enabled && (
-        <div className="tm-tb-card-body">
-          <AppearanceEditor
-            value={state}
-            onChange={(next) => onChange({ ...state, ...next })}
-            onPreview={preview ? (next) => preview.onEdit(stateKey, next) : undefined}
-            caps={caps}
-          />
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* ══════════════════════════════ IGNORED：标签式输入 ══════════════════════════════ */
 
@@ -653,7 +124,7 @@ function TagList({
                 type="button"
                 className="tm-city-chip-x"
                 onClick={() => onChange(items.filter((x) => x !== v))}
-                aria-label={`${tr("删除")}${v}`}
+                aria-label={tr("删除{name}", { name: v })}
                 title={tr("删除")}
               >
                 ×
@@ -671,7 +142,7 @@ function TagList({
 type StatusTone = "na" | "off" | "busy" | "ok" | "warn" | "err";
 
 /**
- * 状态条文案（F-10）：无状态 = 模块未就绪；idle 且总开关已开 = 模块尚未响应
+ * 状态条文案：无状态 = 模块未就绪；idle 且总开关已开 = 模块尚未响应
  * （空壳期 / 注入尚未开始）同样按「模块未就绪」提示；其余按注入状态机 phase。
  */
 function describeStatus(
@@ -708,43 +179,49 @@ const OVERRIDE_KEY_LABEL: Record<TaskbarOverrideKey, string> = {
 
 /* ══════════════════════════════ 页面 ══════════════════════════════ */
 
-export function TaskbarPage() {
+export function TaskbarPage({ monitors: monitorsProp }: { monitors?: MonitorInfo[] }) {
   const tr = useT();
   const stored = useSettingsStore((s) => s.general.taskbar);
   const setStored = useSettingsStore((s) => s.setTaskbar);
   const setStoredOverride = useSettingsStore((s) => s.setTaskbarOverride);
 
-  /* ══ HEADER · MONITOR（F-6）══ 显示器选择器：list_monitors 动态枚举（SettingsView
-     同法，热插拔随 monitors-changed 刷新；id = 稳定槽位）。`editSlot === null` =
+  /* ══ HEADER · MONITOR══ 显示器选择器：list_monitors 动态枚举。列表
+     优先复用 SettingsView 经 props 下发的唯一数据源（含热插拔刷新，此前本页
+     自建一套拉取 + 订阅——挂载与每次热插拔都是双份 IPC）；未提供（单测 /
+     独立挂载）时退回自取 + 自订阅，行为与旧版一致。`editSlot === null` =
      「所有显示器统一」编辑基础配置；选中某屏后，下方 STATES / RULES / IGNORED 编辑的
      是该屏的浅合并视图，写入只落 monitorOverrides[slot]（enabled / perMonitor 等顶层
      开关仍写统一配置）。`taskbar` / `setTaskbar` 在此按编辑目标改道，下方区段无感。 */
-  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [ownMonitors, setOwnMonitors] = useState<MonitorInfo[]>([]);
+  const monitors = monitorsProp ?? ownMonitors;
   useEffect(() => {
-    if (!isTauri()) return;
+    if (monitorsProp || !isTauri()) return;
     let disposed = false;
     invoke<MonitorInfo[]>("list_monitors")
       .then((list) => {
-        if (!disposed) setMonitors(Array.isArray(list) ? list : []);
+        if (!disposed) setOwnMonitors(Array.isArray(list) ? list : []);
       })
       .catch(() => {
-        if (!disposed) setMonitors([]);
+        if (!disposed) setOwnMonitors([]);
       });
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [monitorsProp]);
   useTauriEvent("monitors-changed", () => {
-    if (!isTauri()) return;
+    if (monitorsProp || !isTauri()) return;
     invoke<MonitorInfo[]>("list_monitors")
-      .then((list) => setMonitors(Array.isArray(list) ? list : []))
-      .catch(() => setMonitors([]));
+      .then((list) => setOwnMonitors(Array.isArray(list) ? list : []))
+      .catch(() => setOwnMonitors([]));
   });
   const [editSlot, setEditSlot] = useState<string | null>(null);
   const overrideSlots = useMemo(() => Object.keys(stored.monitorOverrides), [stored.monitorOverrides]);
-  /* 选中的屏既不在线也没有覆盖（拔掉且从未覆盖 / 覆盖刚被删）→ 回统一，避免编辑幽灵屏。 */
+  /* 选中的屏既不在线也没有覆盖（拔掉且从未覆盖 / 覆盖刚被删）→ 回统一，避免编辑幽灵屏。
+     monitors 瞬时空（枚举失败/热插拔刷新窗口）时 some() 恒 false，
+     会把「选中且尚无覆盖」的屏误弹回统一，后续编辑静默写进统一配置——与
+     activeList 的空列表保护（monitors.length === 0 保留现状）同款守卫。 */
   useEffect(() => {
-    if (editSlot === null) return;
+    if (editSlot === null || monitors.length === 0) return;
     const online = monitors.some((m) => taskbarSlotKey(m.id) === editSlot);
     if (!online && !overrideSlots.includes(editSlot)) setEditSlot(null);
   }, [editSlot, monitors, overrideSlots]);
@@ -768,12 +245,16 @@ export function TaskbarPage() {
   const targetOptions = useMemo(() => {
     const opts: { id: string; label: string }[] = [{ id: UNIFIED_TARGET, label: tr("所有显示器统一") }];
     for (const m of monitors) {
-      opts.push({ id: taskbarSlotKey(m.id), label: `${m.name} · #${m.id}${m.is_primary ? tr("（主显示器）") : ""}` });
+      opts.push({
+        id: taskbarSlotKey(m.id),
+        label: m.is_primary
+          ? tr("{name} · #{n}（主显示器）", { name: m.name, n: m.id })
+          : tr("{name} · #{n}", { name: m.name, n: m.id })
+      });
     }
     /* 有覆盖但当前未连接的屏也列出（可查看 / 删除其覆盖，热插拔回来自动接上）。 */
     for (const slot of overrideSlots) {
-      if (!opts.some((o) => o.id === slot))
-        opts.push({ id: slot, label: `${tr("显示器")} #${slot}${tr("（未连接）")}` });
+      if (!opts.some((o) => o.id === slot)) opts.push({ id: slot, label: tr("显示器 #{n}（未连接）", { n: slot }) });
     }
     return opts;
   }, [monitors, overrideSlots, tr]);
@@ -819,7 +300,7 @@ export function TaskbarPage() {
     setHasStateEvents(true);
     setActiveByMonitor((prev) => ({ ...prev, [p.monitor]: p }));
   });
-  /* T-13：activeByMonitor 只会被事件填充、不会自我收敛——总开关关闭后引擎
+  /* activeByMonitor 只会被事件填充、不会自我收敛——总开关关闭后引擎
      静默（不再有 state-changed），拔掉的显示器也不再上报，「当前生效」徽标
      就此残留。开关关闭即清空；在线显示器列表变化时把离线槽位的旧事件滤掉
      （monitors 为空 = 枚举不可用，保留现状不做误删）。 */
@@ -836,7 +317,10 @@ export function TaskbarPage() {
   const [autoRestartUpgrade, setAutoRestartUpgrade] = useState(
     () => localStorage.getItem("focus-desk.taskbar.autoRestartExplorer") !== "0"
   );
-  const autoRestartDone = useRef(false);
+  /* 自动重启守卫持久化到 localStorage——原 ref 在设置窗销毁重建
+     后复位，「每次应用会话至多一次」的承诺被打破（同一会话可自动重启 explorer
+     两次，机器级行为的防风暴线不该随窗口生命周期重置）。 */
+  const autoRestartDone = useRef(localStorage.getItem("focus-desk.taskbar.autoRestartDone") === "1");
   const restartExplorer = async () => {
     if (!isTauri() || restartingExplorer) return;
     setRestartingExplorer(true);
@@ -844,7 +328,7 @@ export function TaskbarPage() {
       await invoke("restart_explorer");
       showToast(tr("资源管理器已重启，任务栏升级完成"), "ok");
     } catch (err) {
-      showToast(`${tr("重启资源管理器失败")}：${String(err)}`, "error");
+      showToast(tr("重启资源管理器失败：{err}", { err: String(err) }), "error");
     } finally {
       setRestartingExplorer(false);
     }
@@ -853,9 +337,10 @@ export function TaskbarPage() {
     if (!isTauri() || status?.code !== "stale_dll_resident") return;
     if (!autoRestartUpgrade || autoRestartDone.current || restartingExplorer) return;
     autoRestartDone.current = true;
+    localStorage.setItem("focus-desk.taskbar.autoRestartDone", "1");
     invoke("restart_explorer")
       .then(() => showToast(tr("资源管理器已重启，任务栏升级完成"), "ok"))
-      .catch((err: unknown) => showToast(`${tr("重启资源管理器失败")}：${String(err)}`, "error"));
+      .catch((err: unknown) => showToast(tr("重启资源管理器失败：{err}", { err: String(err) }), "error"));
   }, [status, autoRestartUpgrade, restartingExplorer, tr]);
   const activeList = useMemo(
     () =>
@@ -872,17 +357,17 @@ export function TaskbarPage() {
     }
     setReapplying(true);
     try {
-      // T-05：走 apply 全链路（重新注入 + 等就绪 + 下发）。reset_taskbar_state
+      // 走 apply 全链路（重新注入 + 等就绪 + 下发）。reset_taskbar_state
       // 在故障态是空操作（非 Ready 直接返回），DLL 缺失 / 杀软拦截 / 握手超时后
       // 用户会被「请点击重新应用」的提示引向死胡同。
       const failed = await invoke<string[]>("apply_taskbar_config", { config: stored });
       if (failed.length > 0) {
-        showToast(`${tr("任务栏配置部分未生效")}：${failed.join("、")}`, "error");
+        showToast(tr("任务栏配置部分未生效：{parts}", { parts: failed.join("、") }), "error");
       } else {
         showToast(tr("已重新应用任务栏外观"), "ok");
       }
     } catch (err) {
-      showToast(`${tr("重新应用失败")}：${String(err)}`, "error");
+      showToast(tr("重新应用失败：{err}", { err: String(err) }), "error");
     } finally {
       setReapplying(false);
     }
@@ -894,8 +379,8 @@ export function TaskbarPage() {
     showToast(tr("已恢复任务栏默认配置"), "ok");
   };
 
-  /* ══ DIAG ══ 诊断快照（F-13）：能力 + 状态机 + 当前生效 + **统一**配置（覆盖表只列槽位）
-     + 当前编辑目标（F-6）。 */
+  /* ══ DIAG ══ 诊断快照：能力 + 状态机 + 当前生效 + **统一**配置（覆盖表只列槽位）
+     + 当前编辑目标。 */
   const copyDiagnostics = async () => {
     const snapshot = {
       generatedAt: new Date().toISOString(),
@@ -940,20 +425,48 @@ export function TaskbarPage() {
     }
   };
 
-  const setState = (key: TaskbarStateKey, next: TaskbarStateAppearance) =>
-    setTaskbar({ states: { ...taskbar.states, [key]: next } });
-  /* ══ STATES · PREVIEW（F-8）══ 预览取当前编辑目标所见的外观；总开关看统一配置。 */
+  /* 滑杆草稿的提交竞态：commit 闭包可能落后于拖动期间跨窗同步写入的
+     变更，渲染快照 merge 会把它们整对象覆盖回去——现取 getState 最新切片
+     （覆盖模式下先取编辑视图）再合并本次 patch 的字段。 */
+  const editingTaskbar = () => {
+    const cur = useSettingsStore.getState().general.taskbar;
+    return editSlot === null ? cur : taskbarViewForSlot(cur, editSlot);
+  };
+  const setState = (key: TaskbarStateKey, patch: Partial<TaskbarStateAppearance>) => {
+    const base = editingTaskbar();
+    setTaskbar({ states: { ...base.states, [key]: { ...base.states[key], ...patch } } });
+  };
+  /* ══ STATES · PREVIEW══ 预览取当前编辑目标所见的外观；总开关看统一配置。 */
   const preview = useTaskbarPreview(taskbar.states, stored.enabled);
-  const setRules = (key: keyof TaskbarRules, next: TaskbarRule[]) =>
-    setTaskbar({ rules: { ...taskbar.rules, [key]: next } });
+  const setRules = (key: keyof TaskbarRules, next: TaskbarRule[]) => {
+    setTaskbar({ rules: { ...editingTaskbar().rules, [key]: next } });
+  };
+  /* 规则内外观 / 非前台外观的字段级提交（滑杆松手路径）：与 setRules 的整表
+     替换不同，规则条目与外观都现取现 merge。 */
+  const patchRuleAppearance = (
+    key: keyof TaskbarRules,
+    idx: number,
+    field: "appearance" | "inactiveAppearance",
+    p: Partial<TaskbarAppearance>
+  ) => {
+    const base = editingTaskbar();
+    const next = base.rules[key].map((r, i) => {
+      if (i !== idx) return r;
+      const merged = { ...(field === "appearance" ? r.appearance : (r.inactiveAppearance ?? r.appearance)), ...p };
+      return field === "appearance" ? { ...r, appearance: merged } : { ...r, inactiveAppearance: merged };
+    });
+    setTaskbar({ rules: { ...base.rules, [key]: next } });
+  };
   const setIgnored = (key: keyof TaskbarIgnoredWindows, next: string[]) =>
-    setTaskbar({ ignoredWindows: { ...taskbar.ignoredWindows, [key]: next } });
+    /* 与 setState/setRules/patchAppearance 同款提交纪律——渲染
+       快照 taskbar 可能落后于拖动期间的跨窗同步写入，现取 getState 最新切片。 */
+    setTaskbar({ ignoredWindows: { ...editingTaskbar().ignoredWindows, [key]: next } });
 
   const pathLabel = caps
     ? caps.path === "xaml"
       ? "XAML (TAP)"
       : caps.path === "swca"
-        ? /* 路径 A 未实现（P3）：Mixed 机型后端无任何应用分支，标注「未启用」
+        ? /* 路径 A 未实现：Mixed 机型后端无任何应用分支，标注「未启用」
            避免用户按支持假象配置后无效果（能力芯片描述的是规划可用集）。 */
           tr("SWCA（未启用）")
         : tr("此系统版本暂不支持")
@@ -1019,11 +532,7 @@ export function TaskbarPage() {
               {tr("实现路径")}：{pathLabel}
             </span>
             {caps && caps.osBuild > 0 && <span>Build {caps.osBuild}</span>}
-            {status && (
-              <span>
-                {tr("协议")} v{status.protocolVersion}
-              </span>
-            )}
+            {status && <span>{tr("协议 v{n}", { n: status.protocolVersion })}</span>}
           </span>
         </div>
         {capChips && (
@@ -1050,7 +559,7 @@ export function TaskbarPage() {
           </button>
         </div>
 
-        {/* ══ HEADER · MONITOR（F-6）══ 显示器选择器：统一 / 逐屏覆盖入口 */}
+        {/* ══ HEADER · MONITOR══ 显示器选择器：统一 / 逐屏覆盖入口 */}
         <SettingToggleRow
           icon={Monitor}
           title="逐显示器独立配置"
@@ -1086,6 +595,13 @@ export function TaskbarPage() {
                   <RotateCcw size={14} />
                   {tr("恢复为统一配置")}
                 </button>
+                {/* 覆盖粒度是「整组快照」——在此屏改一个字段会把
+                    当时整套状态/规则写入覆盖，统一配置的后续调整对该屏不再生效。
+                    刻意的设计（Rust effective_for_slot 同语义），但原先无任何提示，
+                    用户会以为未改的字段仍跟随统一配置。 */}
+                <span className="tm-tb-status-hint">
+                  {tr("覆盖按创建时的整组快照保存：未单独修改的状态也冻结在当时的值，统一配置的后续调整不影响此屏")}
+                </span>
               </>
             ) : (
               <span className="tm-tb-badge">{tr("尚未覆盖：修改下方任一项即为此显示器创建覆盖")}</span>
@@ -1113,7 +629,7 @@ export function TaskbarPage() {
               key={key}
               stateKey={key}
               state={taskbar.states[key]}
-              onChange={(next) => setState(key, next)}
+              onChange={(patch) => setState(key, patch)}
               caps={caps}
               active={activeList.filter((p) => p.activeState === key)}
               hasStateEvents={hasStateEvents}
@@ -1124,6 +640,7 @@ export function TaskbarPage() {
                 <RuleList
                   rules={taskbar.rules[ruled]}
                   onChange={(next) => setRules(ruled, next)}
+                  patchAppearance={(idx, field, p) => patchRuleAppearance(ruled, idx, field, p)}
                   caps={caps}
                   owningState={ruled}
                   preview={preview}
@@ -1166,7 +683,7 @@ export function TaskbarPage() {
         />
       </section>
 
-      {/* ══ DIAG ══ 共存说明（F-15） */}
+      {/* ══ DIAG ══ 共存说明 */}
       <div className="tm-tb-note">
         {tr(
           "与桌面小组件共存：任务栏区域始终位于桌面层之上。任务栏透明后，放在任务栏区域内的小组件会被任务栏叠压，属预期行为；灵动岛的避让不受影响。"
@@ -1176,41 +693,9 @@ export function TaskbarPage() {
   );
 }
 
-/* ══════════════════════════════ 生效链路：TaskbarConfigSync ══════════════════════════════ */
+/* ══════════════════════════════ 生效链路与预览通道：re-export 兼容路径 ══════════════════════════════ */
 
-/** 对账防抖：拖动透明度 / 半径期间切片连续变化，静默此时长后只对账 + apply 一次
- *  （与 settings-store scheduleSave 同窗口；F-13「防抖内连续拖动只触发一次」）。 */
-export const TASKBAR_APPLY_DEBOUNCE_MS = 350;
-
-/** 两侧均经 normalizeTaskbar 归一后比较：抹平键序 / `inactiveAppearance: null` 等序列化差异。 */
-function taskbarConfigEquals(a: unknown, b: unknown): boolean {
-  return JSON.stringify(normalizeTaskbar(a)) === JSON.stringify(normalizeTaskbar(b));
-}
-
-/**
- * F-1 生效链路（模式 B，照 App.tsx ShortcutConfigSync）：仅设置窗挂载；订阅
- * general.taskbar → get_taskbar_config 对账 → 不同才 apply_taskbar_config 整包下发。
- * apply 返回的非致命失败项与 Err 均 toast 提示，UI 不因空壳期恒 Err 而中断。
- * 定义在本文件（而非 App.tsx）以便随设置页 chunk 懒加载并可独立单测。
- */
-export function TaskbarConfigSync() {
-  const taskbar = useSettingsStore((s) => s.general.taskbar);
-  useEffect(() => {
-    if (!isTauri() || window.location.hash !== "#/settings") return;
-    const timer = window.setTimeout(() => {
-      void invoke<TaskbarSettings>("get_taskbar_config")
-        .then((rust) => {
-          if (rust && taskbarConfigEquals(rust, taskbar)) return null;
-          return invoke<string[]>("apply_taskbar_config", { config: taskbar });
-        })
-        .then((failed) => {
-          if (failed && failed.length > 0) showToast(`${t("任务栏配置部分未生效")}：${failed.join("、")}`, "error");
-        })
-        .catch((err: unknown) => {
-          showToast(`${t("任务栏配置应用失败")}：${String(err)}`, "error");
-        });
-    }, TASKBAR_APPLY_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [taskbar]);
-  return null;
-}
+/* （深拆）：生效链路在 TaskbarConfigSync.tsx、预览通道在 TaskbarPreview.ts，
+   此处 re-export 保持既有导入路径（App.tsx 懒加载与单测均从本文件取）。 */
+export { TASKBAR_APPLY_DEBOUNCE_MS, TaskbarConfigSync, taskbarConfigEquals } from "./TaskbarConfigSync";
+export { TASKBAR_PREVIEW_HOLD_MS, TASKBAR_PREVIEW_SETTLE_GRACE_MS } from "./TaskbarPreview";

@@ -8,25 +8,23 @@
  *   （SHGetFileInfoW，.lnk 解析到目标本体）提取，任何时刻都是系统图标。
  * - 排布：每条目在 config.positions 里有 {x,y} 格位（列 x / 行 y），pointer
  *   拖动 > 4px 视为移动（否则是点击打开），松手吸附到最近格；没有格位的
- *   条目按 columns 自动落到第一个空格。滚动带（marquee）模式维持原样。
+ *   条目按 columns 自动落到第一个空格。
  * - 快捷方式文件夹（类手机桌面）：config.shortcutFolders 聚合若干自定义
  *   条目成一枚可展开磁贴（2×2 迷你图标 + 成员数角标），单击弹条目网格；
  *   把条目拖到文件夹磁贴上、或右键「移入文件夹」即可收进（格位保留，移出
- *   优先回原格）。弹层（BentoDesk 借鉴）：WAAPI FLIP 从磁贴矩形连续变形、
+ *   优先回原格）。弹层：WAAPI FLIP 从磁贴矩形连续变形、
  *   展开锁防双击误关、内联搜索过滤、条目可拖拽重排 / 拖出到画布或其它
  *   文件夹；打开方式可选 悬停 / 单击 / 钉住（config.sfolderOpenMode）。
- *   滚动带模式保持扁平：全部自定义条目照常参与，文件夹不进滚动带。
- * - 条目健康（BentoDesk file_missing）：失效引用只标缺失不删除，60s 复检
+ * - 条目健康：失效引用只标缺失不删除，60s 复检
  *   自动治愈；Rust watch（shortcuts-watch:change）实时感知目标改名（classify
  *   重挂）/ 删除（标缺失）/ 内容变更（图标缓存失效重提取）。
  * - 文件夹操作入命令级撤销栈，
  *   Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y 全局生效，即时操作附「撤销」toast。
- * - 条目右键菜单 Portal 到 body：卡片壳层带 backdrop-filter，是 fixed 定位
- *   后代的包含块——菜单留在卡片内会按卡片坐标系换算 clientX/Y 而整体跑偏
- *   被裁剪（右键"无菜单"），Portal 到 body 才是真正的视口坐标。
+ * - 条目右键菜单走统一 openContextMenu（ContextMenuHost）：视口钳制 +
+ *   键盘导航 + 统一退场；卡片壳层带 backdrop-filter 会成为 fixed 后代的
+ *   包含块，留在卡片内会按卡片坐标系换算 clientX/Y 整体跑偏被裁剪。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   FileText,
   FolderClosed,
@@ -38,8 +36,7 @@ import {
   Trash2
 } from "lucide-react";
 import { invoke, isTauri } from "../../lib/tauri";
-import { useDelayedUnmount } from "../../lib/anim";
-import { animDurations } from "../../lib/durations";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useT } from "../../i18n-lite";
 import { useWidgetConfig } from "../widget-config";
 import {
@@ -48,11 +45,13 @@ import {
   loadShortcutPositions,
   nextFreeCell,
   applyResolvedTargets,
+  mergeWatchRows,
   folderMemberIds,
   isLinkFileEntry,
   markEntriesMissing,
   normShortcutPath,
   pruneFolderChildren,
+  sortFolderItems,
   uniqueFolderLabel,
   type CustomShortcut,
   type ShortcutCell,
@@ -65,6 +64,9 @@ import { ensureShortcutsUndoKeys, pushOp, undoOp } from "../shortcuts-undo";
 import { pickFilePath } from "../../lib/file-dialog";
 import { useOsFileDrop } from "../use-os-file-drop";
 import { promptDialog, alertDialog, confirmDialog } from "../../components/PromptDialog";
+import { openContextMenu } from "../../components/ContextMenu";
+import { copyText } from "../../lib/clipboard";
+import { cachedAppIcon, storeAppIcon, dropAppIcons } from "../../lib/app-icon-cache";
 import { loadWidgetConfig } from "../widget-config";
 import { FolderPopup } from "./FolderPopup";
 import { ShortcutFolderPopup } from "./ShortcutFolderPopup";
@@ -74,11 +76,20 @@ import { sourceNotify } from "../../lib/notifications";
 import type { PopoverAnchor } from "../WidgetConfigPopover";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
+/** 条目 gBCR（视觉坐标）→ 弹层锚点（布局单位）：文件夹弹层两侧消费端
+ *  （FolderPopup.place 与 ShortcutFolderPopup 的 place/FLIP）都用 offsetWidth /
+ *  innerWidth 等布局值参与运算，锚点必须先除回 uiZoom，缩放 ≠100% 时
+ *  弹层定位与 FLIP 变换才不漂移。 */
+function sfAnchorFromRect(rect: DOMRect): PopoverAnchor {
+  const z = uiZoom();
+  return { x: rect.x / z, y: rect.y / z, w: rect.width / z, h: rect.height / z };
+}
+
 type ShortcutDef = {
   id: string;
   label: string;
   icon: "recycle" | "pc" | "folder";
-  /** shell: 位置（W-082 回收站角标只对 recycle 生效）。 */
+  /** shell: 位置（回收站角标只对 recycle 生效）。 */
   badge?: "recycle";
 };
 
@@ -106,7 +117,7 @@ function foldersWithShapes(
   return folders.map((f) => (byId.has(f.id) ? { ...f, childIds: byId.get(f.id)! } : f));
 }
 
-/** W-081 内置位置全集：与 Rust SYSTEM_LOCATIONS 的 8 个 shell: 位置一一对应。 */
+/** 内置位置全集：与 Rust SYSTEM_LOCATIONS 的 8 个 shell: 位置一一对应。 */
 const ALL_BUILTIN: ShortcutDef[] = [
   { id: "recycle", label: "回收站", icon: "recycle", badge: "recycle" },
   { id: "computer", label: "此电脑", icon: "pc" },
@@ -127,13 +138,6 @@ type ShortcutEntry =
   | { kind: "custom"; id: string; item: CustomShortcut; label: string }
   | { kind: "sfolder"; id: string; folder: ShortcutFolder; label: string };
 
-/** 就地右键菜单的三种形态：条目菜单 / 移入文件夹选择器 / 文件夹磁贴菜单。 */
-type MenuState =
-  | { kind: "item"; x: number; y: number; item: CustomShortcut }
-  | { kind: "move"; x: number; y: number; item: CustomShortcut }
-  | { kind: "folder"; x: number; y: number; folder: ShortcutFolder; anchor: PopoverAnchor }
-  | null;
-
 function builtinIcon(icon: ShortcutDef["icon"]) {
   if (icon === "recycle") return <Trash2 size={26} />;
   if (icon === "pc") return <Monitor size={26} />;
@@ -149,8 +153,12 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
   /** 图标下方的名称标签（隐藏后仅显示图标，悬停 title 仍可见全名）。 */
   const showLabels = config.showLabels !== false;
   const columns = Math.max(1, Math.min(6, (config.columns as number) || 2));
-  const marquee = config.marquee === true;
-  const custom = loadCustomShortcuts(config);
+  /* （重渲纪律，同 GroupCard）：loadCustomShortcuts/loadShortcutPositions
+     每次调用都返回新引用（filter/重建对象），不 memo 会让 customById →
+     folders → memberIds → entries → layoutCells 整条派生链在每次渲染
+     （拖拽期每个 pointermove）全量重算。config 引用在两次写入间稳定，
+     以它为 memo 键即可。 */
+  const custom = useMemo(() => loadCustomShortcuts(config), [config]);
   // 内置位置默认不带（要的是拖入的真实快捷方式，不是预置的通用图标）。
   // useMemo 稳定引用：entries 的 useMemo 依赖它，避免每渲染重算。
   const builtin = useMemo(
@@ -160,7 +168,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
         : [],
     [config.builtinShortcuts]
   );
-  const positions = loadShortcutPositions(config);
+  const positions = useMemo(() => loadShortcutPositions(config), [config]);
   const foldersRaw = useMemo(() => loadShortcutFolders(config), [config]);
   const customById = useMemo(() => new Map(custom.map((s) => [s.id, s])), [custom]);
   /** 悬挂引用防御：设置页删除条目不感知文件夹，渲染期把 childIds 过滤到现存条目。 */
@@ -171,24 +179,49 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
   const memberIds = useMemo(() => folderMemberIds(folders), [folders]);
 
   /** path → data:image/png;base64 的真实图标缓存（本次挂载内）。iconVersion
-      供 watch 的内容变更事件触发重提取（Rust 侧已删磁盘缓存）。 */
+      供 watch 的内容变更事件触发重提取。图标共三层：本实例 state（最快）、
+      模块级共享缓存（lib/app-icon-cache，同窗口组件复用，免重复 IPC）、
+      Rust 磁盘缓存（files.rs icon_cached，版本化键 + LRU，watch 联动失效，
+      跨窗口共享提取结果）。 */
   const [icons, setIcons] = useState<Record<string, string>>({});
   const [iconVersion, setIconVersion] = useState(0);
   useEffect(() => {
     if (!isTauri()) return;
     let cancelled = false;
-    const pending = custom.filter((s) => s.kind !== "url" && !icons[s.path]);
+    /* 模块级共享缓存（app-icon-cache）先行：FolderPopup 等其它组件已提取过
+       的路径直接复用，不再发 IPC。 */
+    const seeded: Record<string, string> = {};
+    for (const s of custom) {
+      if (s.kind === "url" || icons[s.path]) continue;
+      const hit = cachedAppIcon(s.path);
+      if (hit) seeded[s.path] = hit;
+    }
+    if (Object.keys(seeded).length > 0) setIcons((prev) => ({ ...prev, ...seeded }));
+    const pending = custom.filter((s) => s.kind !== "url" && !icons[s.path] && !seeded[s.path]);
     if (pending.length === 0) return;
-    void Promise.all(
-      pending.map((s) =>
-        invoke<string | null>("get_app_icon", { path: s.path })
-          .then((b64) => (b64 ? ([s.path, `data:image/png;base64,${b64}`] as const) : null))
-          .catch(() => null)
-      )
-    ).then((results) => {
+    // （图标并发无上限）：此前一次性 Promise.all 打满 blocking 池（弹层开
+    // 大目录时其它 spawn_blocking 命令全被图标提取挤住）。分批限并发 4，
+    // 与 FileBrowser 预览加载同款。
+    const CONC = 4;
+    const next: Record<string, string> = {};
+    let idx = 0;
+    const worker = async (): Promise<void> => {
+      while (idx < pending.length && !cancelled) {
+        const s = pending[idx++];
+        try {
+          const b64 = await invoke<string | null>("get_app_icon", { path: s.path });
+          if (b64) {
+            const url = `data:image/png;base64,${b64}`;
+            next[s.path] = url;
+            storeAppIcon(s.path, url);
+          }
+        } catch {
+          // 单个失败不影响其余
+        }
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(CONC, pending.length) }, worker)).then(() => {
       if (cancelled) return;
-      const next: Record<string, string> = {};
-      for (const r of results) if (r) next[r[0]] = r[1];
       if (Object.keys(next).length > 0) setIcons((prev) => ({ ...prev, ...next }));
     });
     return () => {
@@ -236,10 +269,13 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customIdSig]);
 
-  /** W-082 系统回收站真实角标：低频轮询 $Recycle.Bin 条目数。 */
+  /** 系统回收站真实角标：低频轮询 $Recycle.Bin 条目数。只在回收站
+      磁贴实际展示时轮询——没勾选内置位置时是纯无效 IPC（Rust 侧虽有 30s
+      TTL 缓存兜底，不必白养定时器）。 */
   const [binCount, setBinCount] = useState<number | null>(null);
+  const binActive = builtin.includes("recycle");
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri() || !binActive) return;
     let cancelled = false;
     const poll = () =>
       invoke<number>("recycle_bin_count")
@@ -253,7 +289,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [binActive]);
 
   const openCustom = (s: CustomShortcut) => {
     if (!isTauri()) return;
@@ -261,13 +297,17 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       pushAppToast(tr("目标缺失"), s.label, "error");
       return;
     }
-    void invoke("open_path", { path: s.path }).catch(() => {});
+    // 打开失败（无关联程序 / 目标在复检间隙被删等）不再静默：missing 态有
+    // toast，这里失败同样给出反馈，用户不用猜「点了没反应」的原因。
+    void invoke("open_path", { path: s.path }).catch(() => {
+      pushAppToast(tr("打开失败"), s.label, "error");
+    });
   };
 
-  /* ---- DeskOrder 借鉴 #1：目录监视自动整理。配置变化 → Rust 按实例整替
+  /* ---- 目录监视自动整理。配置变化 → Rust 按实例整替
           watcher（哈希未变不拆建）；新文件命中规则 → auto-organize:add 事件
           → 与手动拖入同一条 classify 入列路径，按 path 去重。
-          C10：notify 开启时命中额外发
+          notify 开启时命中额外发
           系统通知（走 sourceNotify，受通知中心来源门控与留档约束）。 ---- */
   const autoOrg = config.autoOrganize as
     | {
@@ -299,6 +339,31 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     void invoke("apply_auto_organize", { configs: [{ instanceId, ...cfg }] }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId, autoOrgSig]);
+  /* 卸载归还（与 apply_shortcut_watch 同款）：Rust 侧按实例 upsert，watchPath
+     空串 = 移除该实例的监视。此前没有归还——删除/切换视图后开了自动整理的
+     组件在 Rust 侧继续监视目录直到进程退出（watcher + 接收线程白养）。 */
+  useEffect(
+    () => () => {
+      if (!isTauri()) return;
+      void invoke("apply_auto_organize", {
+        configs: [
+          {
+            instanceId,
+            watchPath: "",
+            extensions: [],
+            nameTokens: [],
+            extEnabled: true,
+            nameEnabled: false,
+            notify: false,
+            olderThanDays: 0,
+            olderBy: "modified",
+            minSizeMb: 0
+          }
+        ]
+      }).catch(() => {});
+    },
+    [instanceId]
+  );
 
   const addPathsFromOrganizer = (paths: string[]) => {
     void Promise.all(
@@ -327,7 +392,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     "auto-organize:add",
     (p) => {
       if (!p || p.instanceId !== instanceId) return;
-      // C10 通知动作：走通知中心来源门控（sourceNotify 内部处理留档）。
+      // 通知动作：走通知中心来源门控（sourceNotify 内部处理留档）。
       if (p.notify) {
         const name = p.path.split(/[\\/]/).pop() ?? p.path;
         sourceNotify("app", tr("新文件已自动整理"), `${name}${p.watchPath ? ` · ${p.watchPath}` : ""}`);
@@ -336,7 +401,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     }
   );
 
-  /* ---- BentoDesk file_missing 语义：失效引用只标缺失不删除——移动盘未接、
+  /* ---- 同类桌面整理工具 file_missing 语义：失效引用只标缺失不删除——移动盘未接、
           临时移除这类失效可恢复，条目保留（渲染缺失态、禁打开）。挂载即查
           + 60s 周期复检，目标恢复自动解除标记；新检出缺失弹一次提示。 ---- */
   useEffect(() => {
@@ -370,7 +435,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId]);
 
-  /* ---- BentoDesk 借鉴 #4 引用侧：目标文件改名 / 删除 / 内容变更实时感知。
+  /* ---- 引用侧：目标文件改名 / 删除 / 内容变更实时感知。
           Rust watch 各实例条目父目录（哈希未变不拆建），变更全局广播，
           前端按自身条目路径消费：改名→classify 重挂、删除→核实后标缺失、
           内容变更→弃前端图标缓存重提取（Rust 已删磁盘缓存）。 ---- */
@@ -384,64 +449,97 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       configs: [{ instanceId, paths: watchSig ? watchSig.split("|") : [] }]
     }).catch(() => {});
   }, [instanceId, watchSig]);
+  /* （先拆后建抖动）：Rust 侧 apply_shortcut_watch 按实例整表 upsert——
+     新表直接替换旧表，sig 变化时无需先发空表。旧实现的 cleanup 挂在 sig
+     effect 里，每次路径变化都「拆掉全部 watcher → 重建」，双倍拆建且两次
+     IPC 之间存在无监视空窗（漏事件）。归还监听只在真正卸载时发。 */
+  useEffect(
+    () => () => {
+      if (!isTauri()) return;
+      void invoke("apply_shortcut_watch", { configs: [{ instanceId, paths: [] }] }).catch(() => {});
+    },
+    [instanceId]
+  );
 
+  /* （customShortcuts 读改写互踩）：watch 处理含多个 await（classify/存在
+   * 性核实），读-改-写窗口内并发的拖入/迁移/undo 会被基于旧基线的整表覆写
+   * 丢掉。按实例串行化 watch 处理（promise 链互斥）。 */
+  const watchChainRef = useRef<Promise<void>>(Promise.resolve());
   const handleWatchChanges = async (changes: WatchChange[]) => {
-    const cur = loadCustomShortcuts(loadWidgetConfig(instanceId));
-    if (cur.length === 0) return;
-    const byPath = new Map(cur.map((s) => [normShortcutPath(s.path), s]));
-    let next = cur;
+    const run = async () => {
+      const cur = loadCustomShortcuts(loadWidgetConfig(instanceId));
+      if (cur.length === 0) return;
+      const byPath = new Map(cur.map((s) => [normShortcutPath(s.path), s]));
+      let next = cur;
 
-    // 改名：classify 重挂（label/kind 归位），missing 一并解除（重建对象）。
-    const renames = changes.filter((c) => c.type === "renamed" && c.from && c.to);
-    if (renames.length > 0) {
-      const fixes = await Promise.all(
-        renames.map(async (c) => {
-          const entry = byPath.get(normShortcutPath(c.from!));
-          if (!entry) return null;
-          try {
-            const r = await invoke<{ label: string; kind: string; path?: string | null }>("classify_path", {
-              path: c.to
-            });
-            return {
-              id: entry.id,
-              path: r.path ?? c.to!,
-              kind: normalizeKind(r.kind, entry.kind),
-              label: r.label || entry.label
-            };
-          } catch {
-            return { id: entry.id, path: c.to!, kind: entry.kind, label: entry.label };
-          }
-        })
-      );
-      for (const f of fixes.filter((x): x is NonNullable<typeof x> => !!x)) {
-        next = next.map((s) => (s.id === f.id ? { id: s.id, label: f.label, path: f.path, kind: f.kind } : s));
-      }
-    }
-
-    // 删除：核实后标缺失（事件与磁盘状态可能短暂不一致）。
-    const removedPaths = changes.filter((c) => c.type === "removed" && c.path).map((c) => c.path!);
-    if (removedPaths.length > 0) {
-      try {
-        const ok = await invoke<boolean[]>("check_paths_exist", { paths: removedPaths });
-        next = markEntriesMissing(
-          next,
-          removedPaths.filter((_, i) => !ok[i])
+      // 改名：classify 重挂（label/kind 归位），missing 一并解除（重建对象）。
+      const renames = changes.filter((c) => c.type === "renamed" && c.from && c.to);
+      if (renames.length > 0) {
+        const fixes = await Promise.all(
+          renames.map(async (c) => {
+            const entry = byPath.get(normShortcutPath(c.from!));
+            if (!entry) return null;
+            try {
+              const r = await invoke<{ label: string; kind: string; path?: string | null }>("classify_path", {
+                path: c.to
+              });
+              return {
+                id: entry.id,
+                path: r.path ?? c.to!,
+                kind: normalizeKind(r.kind, entry.kind),
+                label: r.label || entry.label
+              };
+            } catch {
+              return { id: entry.id, path: c.to!, kind: entry.kind, label: entry.label };
+            }
+          })
         );
-      } catch {
-        /* 60s 复检兜底 */
+        for (const f of fixes.filter((x): x is NonNullable<typeof x> => !!x)) {
+          next = next.map((s) => (s.id === f.id ? { id: s.id, label: f.label, path: f.path, kind: f.kind } : s));
+        }
       }
-    }
 
-    if (next !== cur) update({ customShortcuts: next });
+      // 删除：核实后标缺失（事件与磁盘状态可能短暂不一致）。
+      const removedPaths = changes.filter((c) => c.type === "removed" && c.path).map((c) => c.path!);
+      if (removedPaths.length > 0) {
+        try {
+          const ok = await invoke<boolean[]>("check_paths_exist", { paths: removedPaths });
+          next = markEntriesMissing(
+            next,
+            removedPaths.filter((_, i) => !ok[i])
+          );
+        } catch {
+          /* 60s 复检兜底 */
+        }
+      }
 
-    // 内容变更：图标已过期——弃缓存并触发重提取。
-    const modified = new Set(
-      changes.filter((c) => c.type === "modified" && c.path).map((c) => normShortcutPath(c.path!))
-    );
-    if (modified.size > 0) {
-      setIcons((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => !modified.has(normShortcutPath(k)))));
-      setIconVersion((v) => v + 1);
-    }
+      // 提交前重读权威副本做行级合并：等待期间其他路径（拖入/undo）新增的
+      // 行不丢；本批没有实际改动时也不发起空写。
+      const latest = loadCustomShortcuts(loadWidgetConfig(instanceId));
+      if (latest !== cur) {
+        // mergeWatchRows（引用级行比较）：此前这里用 join("|") 比较，对象串成
+        // "[object Object]"，并发写窗口内的改名/标缺失会被静默丢弃——恰好是
+        // 这个合并块要保护的竞态场景。
+        const merged = mergeWatchRows(latest, next);
+        if (merged) update({ customShortcuts: merged });
+      } else if (next !== cur) {
+        update({ customShortcuts: next });
+      }
+
+      // 内容变更：图标已过期——弃缓存并触发重提取。
+      const modified = new Set(
+        changes.filter((c) => c.type === "modified" && c.path).map((c) => normShortcutPath(c.path!))
+      );
+      if (modified.size > 0) {
+        setIcons((prev) =>
+          Object.fromEntries(Object.entries(prev).filter(([k]) => !modified.has(normShortcutPath(k))))
+        );
+        // 模块级共享缓存同步失效：否则重提取会被旧值命中，图标永远不换新。
+        dropAppIcons(modified);
+        setIconVersion((v) => v + 1);
+      }
+    };
+    watchChainRef.current = watchChainRef.current.then(run, run);
   };
   useTauriEvent<{ changes: WatchChange[] }>("shortcuts-watch:change", (p) => {
     if (!p?.changes?.length) return;
@@ -457,14 +555,14 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     void invoke("open_system_location", { kind: id }).catch(() => {});
   };
 
-  /* ---- 文件夹预览小窗（DeskOrder 借鉴 #13）：真实文件夹条目单击弹就地图标
+  /* ---- 文件夹预览小窗：真实文件夹条目单击弹就地图标
           网格，再点同一条 = 关闭（toggle）；folderPreview 关闭时维持原行为
           直接开资源管理器。右键菜单「打开」不受影响，始终直达资源管理器。 ---- */
   const folderPreview = config.folderPreview !== false;
   const [folderPopup, setFolderPopup] = useState<{ path: string; anchor: PopoverAnchor } | null>(null);
   const activateEntry = (s: CustomShortcut, rect: DOMRect) => {
     if (folderPreview && s.kind === "folder" && isTauri()) {
-      const anchor = { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+      const anchor = sfAnchorFromRect(rect);
       setFolderPopup((cur) => (cur && cur.path === s.path ? null : { path: s.path, anchor }));
       return;
     }
@@ -490,22 +588,6 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER)
     );
   }, [builtin, custom, folders, memberIds, config.order, tr]);
-
-  /** 滚动带保持扁平：全部自定义条目（含文件夹成员）照常参与，文件夹不进带。 */
-  const flatEntries = useMemo<ShortcutEntry[]>(() => {
-    const list: ShortcutEntry[] = [
-      ...builtin.map((id) => {
-        const def = ALL_BUILTIN.find((b) => b.id === id)!;
-        return { kind: "builtin" as const, id, def, label: tr(def.label) };
-      }),
-      ...custom.map((item) => ({ kind: "custom" as const, id: item.id, item, label: item.label }))
-    ];
-    const order = Array.isArray(config.order) ? (config.order as string[]) : [];
-    const rank = new Map(order.map((id, i) => [id, i]));
-    return [...list].sort(
-      (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER)
-    );
-  }, [builtin, custom, config.order, tr]);
 
   const entryById = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
 
@@ -807,7 +889,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     });
   };
 
-  /* ---- 文件夹磁贴 → 条目网格弹层。打开方式（BentoDesk 三显示模式）：
+  /* ---- 文件夹磁贴 → 条目网格弹层。打开方式：
           click 单击 toggle（默认）；hover 悬停意图 90ms 展开、离开 200ms
           宽限收回（重进取消）；pin 钉住（外点不关）。 ---- */
   const [sfPopup, setSfPopup] = useState<{ folderId: string; anchor: PopoverAnchor } | null>(null);
@@ -816,7 +898,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       ? (config.sfolderOpenMode as SfOpenMode)
       : "click";
   const openSfPopup = (folder: ShortcutFolder, rect: DOMRect) => {
-    const anchor = { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    const anchor = sfAnchorFromRect(rect);
     setSfPopup((cur) => (cur && cur.folderId === folder.id ? null : { folderId: folder.id, anchor }));
   };
   const sfFolder = sfPopup ? folders.find((f) => f.id === sfPopup.folderId) : undefined;
@@ -876,7 +958,12 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
      240ms 播完再真正落删，网格不再「图标瞬消突然补位」。 */
   const [removingIds, setRemovingIds] = useState<ReadonlySet<string>>(() => new Set());
   const removingTimerRef = useRef(0);
+  /** 待提交的退场批次：240ms 内连续两次删除时，后一次调用会重置计时器——
+      commit 若只挂在 timer 上，前一批的删除会被静默丢弃（确认了却复活）。
+      批次排队，计时器到点统一清状态并依次提交。 */
+  const pendingExitsRef = useRef<Array<{ ids: string[]; commit: () => void }>>([]);
   const beginTileExit = useCallback((ids: string[], commit: () => void) => {
+    pendingExitsRef.current.push({ ids: [...ids], commit });
     setRemovingIds((prev) => {
       const next = new Set(prev);
       for (const id of ids) next.add(id);
@@ -884,29 +971,36 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     });
     window.clearTimeout(removingTimerRef.current);
     removingTimerRef.current = window.setTimeout(() => {
+      const batch = pendingExitsRef.current;
+      pendingExitsRef.current = [];
       setRemovingIds((prev) => {
         const next = new Set(prev);
-        for (const id of ids) next.delete(id);
+        for (const b of batch) for (const id of b.ids) next.delete(id);
         return next;
       });
-      commit();
+      for (const b of batch) b.commit();
     }, 240);
   }, []);
   const onDropTargetMove = useCallback((t: SfDropTarget | null) => setOutDrag(t), []);
   const hitTestCanvas = (x: number, y: number): SfDropTarget | null => {
     const rect = boardRef.current?.getBoundingClientRect();
-    if (!rect || marquee) return null;
+    if (!rect) return null;
     for (const [id, el] of folderTileRefs.current) {
       const r = el.getBoundingClientRect();
       if (r.width === 0 && r.height === 0) continue;
       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { kind: "folder", folderId: id };
     }
     if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return null;
+    /* x/y 是 gBCR 视觉坐标，cellW/CELL_H/CELL_GAP 是布局单位——先除回
+       uiZoom 再算格位，否则缩放 ≠100% 时 OS 拖放与文件夹拖出整体偏移。 */
+    const z = uiZoom();
+    const lx = (x - rect.left) / z;
+    const ly = (y - rect.top) / z;
     return {
       kind: "canvas",
       cell: {
-        x: Math.min(columns - 1, Math.max(0, Math.floor((x - rect.left) / (cellW + CELL_GAP)))),
-        y: Math.max(0, Math.floor((y - rect.top) / (CELL_H + CELL_GAP)))
+        x: Math.min(columns - 1, Math.max(0, Math.floor(lx / (cellW + CELL_GAP)))),
+        y: Math.max(0, Math.floor(ly / (CELL_H + CELL_GAP)))
       }
     };
   };
@@ -926,14 +1020,28 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
   }, []);
   const cellW = boardW > 0 ? Math.max(40, (boardW - (columns - 1) * CELL_GAP) / columns) : 64;
 
-  /** 渲染期布局：有存位用存位，缺位按顺序补第一个空格并**计入占用**——否则所有
-      缺位条目独立算到同一个「第一个空格」，全部叠在一格（设置页新增 / 旧配置
-      升级时 positions 为空表是常态）。只在内存累积，不回写配置。 */
+  /** 渲染期布局，两阶段分配：先让有存位的条目落存位并**计入占用**，缺位条目
+      再按顺序补第一个空格——单遍分配时内置位置（永远缺位，设置页勾选只写
+      builtinShortcuts）先分到第一个空格，后面有存位的条目不查冲突直接落存位，
+      第一枚图标（存位即首格）就与它叠在同一格。只在内存累积，不回写配置。 */
   const layoutCells = useMemo(() => {
     const m = new Map<string, ShortcutCell>();
+    const occupied = new Set<string>();
     for (const e of entries) {
-      const c = positions[e.id] ?? nextFreeCell(m, columns);
+      const c = positions[e.id];
+      if (!c) continue;
+      // （columns 缩小格位越界）：列数调小后，存量存位 x ≥ columns 按新列宽
+      // 渲染会排到画布右缘外抓不回来——视同缺位，第二遍归位到空格。
+      if (c.x >= columns) continue;
+      // 同格撞车的存位（撤销恢复旧格等路径可能产生）后者降级到第二遍。
+      const key = `${c.x}:${c.y}`;
+      if (occupied.has(key)) continue;
+      occupied.add(key);
       m.set(e.id, c);
+    }
+    for (const e of entries) {
+      if (m.has(e.id)) continue;
+      m.set(e.id, nextFreeCell(m, columns));
     }
     return m;
   }, [entries, positions, columns]);
@@ -946,23 +1054,63 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
   }, [layoutCells]);
 
   const addCustom = (items: CustomShortcut[], dropCell?: ShortcutCell) => {
-    const list = loadCustomShortcuts(config);
+    // 写前现读权威副本：drop 的 classify 是异步的，回来后渲染闭包里的
+    // config/positions 可能已落后（watch 标缺失、并发的其它写入），
+    // 拿旧闭包当基底会覆盖丢失——与组件其它写路径同一模式。
+    const cfg = loadWidgetConfig(instanceId);
+    const list = loadCustomShortcuts(cfg);
+    // （画布直拖不去重）：拖进文件夹的路径有 byNorm 去重，画布直落没有
+    // ——同一文件拖两次出两条。同款归一比对：已存在的跳过（位置不动）。
+    const byNorm = new Map(list.map((s) => [normShortcutPath(s.path), s]));
+    const fresh = items.filter((it) => !byNorm.has(normShortcutPath(it.path)));
+    if (fresh.length === 0) return;
     // 以完整布局为占用基线：新条目排在现有条目（含未存位的）之后，不与它们叠格。
     const taken = new Map(layoutCells);
-    const nextPositions = { ...positions };
+    const nextPositions = { ...loadShortcutPositions(cfg) };
     let cursor = dropCell;
-    for (const it of items) {
+    for (const it of fresh) {
       const cell = nextFreeCell(taken, columns, cursor);
       taken.set(it.id, cell);
       nextPositions[it.id] = cell;
       cursor = cell.x + 1 < columns ? { x: cell.x + 1, y: cell.y } : { x: 0, y: cell.y + 1 };
     }
-    update({ customShortcuts: [...list, ...items], positions: nextPositions });
+    update({ customShortcuts: [...list, ...fresh], positions: nextPositions });
+    /* 拖入新增入撤销栈（undo = 撤条目与格位，redo 原样补回）：行级按 id
+       增删，与后续并发的其他改动天然可组合；redo 的格位若已被后来者占用，
+       由 layoutCells 撞车降级在渲染期化解。 */
+    const freshIds = new Set(fresh.map((it) => it.id));
+    pushOp({
+      label: tr("添加快捷方式"),
+      undo: () => {
+        const now = loadWidgetConfig(instanceId);
+        const nowPos = loadShortcutPositions(now);
+        update({
+          customShortcuts: loadCustomShortcuts(now).filter((x) => !freshIds.has(x.id)),
+          positions: Object.fromEntries(Object.entries(nowPos).filter(([id]) => !freshIds.has(id)))
+        });
+      },
+      redo: () => {
+        const now = loadWidgetConfig(instanceId);
+        const known = new Set(loadCustomShortcuts(now).map((x) => x.id));
+        const add = fresh.filter((x) => !known.has(x.id));
+        update({
+          customShortcuts: [...loadCustomShortcuts(now), ...add],
+          positions: {
+            ...loadShortcutPositions(now),
+            ...Object.fromEntries(add.map((it) => [it.id, nextPositions[it.id]]))
+          }
+        });
+      }
+    });
   };
 
   /* ---- 自由拖动：pointer 捕获，位移 >4px 视为移动，松手吸附落格；
           落到已占用格 = 与占用者交换（互斥，拖动期 previewCells 实时预演）；
-          落到文件夹磁贴 = 收进文件夹（拖动期被拖条目压在磁贴上预演）---- */
+          落到文件夹磁贴 = 收进文件夹（拖动期被拖条目压在磁贴上预演）。
+          二.4 rAF 合帧 + CSS 变量直写（GroupCard 同范式）：逐帧像素位移写
+          --drag-dx/--drag-dy（合成器 transform，不重渲整树），setState 只在
+          「过阈值起拖 / 吸附目标格变化」这两个结构性时刻发生（预演交换与
+          占位框跟着走）。 ---- */
   const dragRef = useRef<{
     id: string;
     pointerId: number;
@@ -970,11 +1118,32 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     startY: number;
     origCell: ShortcutCell;
     moved: boolean;
+    /** 最新位移（rAF 回调与松手共用，避免依赖 React 状态时序）。 */
+    dx: number;
+    dy: number;
+    /** 上次发布的吸附格（格没变就不重渲）。 */
+    lastCell: ShortcutCell;
+    /** 被拖条目元素（CSS 变量直写的落点）。 */
+    el: HTMLDivElement;
   } | null>(null);
+  const dragRafRef = useRef(0);
+  const clearDragVars = (el: HTMLElement | null) => {
+    if (!el) return;
+    el.style.removeProperty("--drag-dx");
+    el.style.removeProperty("--drag-dy");
+  };
   /** 刚完成一次拖拽：随后的合成 click 不再触发打开（见 onItemUp）。 */
   const suppressClickRef = useRef(false);
   const [drag, setDrag] = useState<{ id: string; dx: number; dy: number; cell: ShortcutCell; moved: boolean } | null>(
     null
+  );
+  /* 卸载兜底：在途拖拽会话的 rAF 与元素变量不能带到下一次挂载。 */
+  useEffect(
+    () => () => {
+      if (dragRafRef.current) window.cancelAnimationFrame(dragRafRef.current);
+      clearDragVars(dragRef.current?.el ?? null);
+    },
+    []
   );
 
   /** 拖动中的互斥预演：目标格已有条目时，把它实时挪到被拖条目的原格
@@ -1005,7 +1174,7 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
   };
 
   const onItemDown = (entry: ShortcutEntry, cell: ShortcutCell, e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || marquee) return;
+    if (e.button !== 0) return;
     e.stopPropagation();
     dragRef.current = {
       id: entry.id,
@@ -1013,7 +1182,11 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       startX: e.clientX,
       startY: e.clientY,
       origCell: cell,
-      moved: false
+      moved: false,
+      dx: 0,
+      dy: 0,
+      lastCell: cell,
+      el: e.currentTarget
     };
     e.currentTarget.setPointerCapture(e.pointerId);
     setDrag({ id: entry.id, dx: 0, dy: 0, cell, moved: false });
@@ -1024,13 +1197,36 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
     if (!d.moved && Math.hypot(dx, dy) < 4) return;
+    const firstMove = !d.moved;
     d.moved = true;
-    setDrag({ id: d.id, dx, dy, cell: snapCell(d.origCell, dx, dy), moved: true });
+    d.dx = dx;
+    d.dy = dy;
+    const cell = snapCell(d.origCell, dx, dy);
+    const cellChanged = cell.x !== d.lastCell.x || cell.y !== d.lastCell.y;
+    // 结构性时刻才 setState（起拖亮态 / 吸附格变化驱动预演与占位框）；
+    // 逐帧位移由 rAF 写 CSS 变量承担，不再每个 pointermove 重渲整树。
+    if (firstMove || cellChanged) {
+      d.lastCell = cell;
+      setDrag({ id: d.id, dx, dy, cell, moved: true });
+    }
+    if (dragRafRef.current) return;
+    dragRafRef.current = window.requestAnimationFrame(() => {
+      dragRafRef.current = 0;
+      const cur = dragRef.current;
+      if (!cur || !cur.moved) return;
+      cur.el.style.setProperty("--drag-dx", `${cur.dx}px`);
+      cur.el.style.setProperty("--drag-dy", `${cur.dy}px`);
+    });
   };
   const onItemUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = dragRef.current;
     if (!d || e.pointerId !== d.pointerId) return;
     dragRef.current = null;
+    if (dragRafRef.current) {
+      window.cancelAnimationFrame(dragRafRef.current);
+      dragRafRef.current = 0;
+    }
+    clearDragVars(d.el);
     const dx = e.clientX - d.startX;
     const dy = e.clientY - d.startY;
     const wasDrag = d.moved && Math.hypot(dx, dy) >= 4;
@@ -1063,6 +1259,24 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     const nextPositions = { ...positions, [d.id]: cell };
     if (occupantId) nextPositions[occupantId] = d.origCell;
     update({ positions: nextPositions });
+    /* 格位调整入撤销栈（补齐与文件夹操作的一致性）：undo/redo 现读权威
+       positions 后只改本组 id，其余条目的后续移动不受影响；冲突格由
+       layoutCells 的撞车降级在渲染期自然化解。 */
+    pushOp({
+      label: tr("调整位置"),
+      undo: () => {
+        const nowPos = { ...loadShortcutPositions(loadWidgetConfig(instanceId)) };
+        nowPos[d.id] = d.origCell;
+        if (occupantId) nowPos[occupantId] = cell;
+        update({ positions: nowPos });
+      },
+      redo: () => {
+        const nowPos = { ...loadShortcutPositions(loadWidgetConfig(instanceId)) };
+        nowPos[d.id] = cell;
+        if (occupantId) nowPos[occupantId] = d.origCell;
+        update({ positions: nowPos });
+      }
+    });
   };
 
   const cellOf = (entry: ShortcutEntry): ShortcutCell => {
@@ -1071,11 +1285,17 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
   };
 
   /* ---- OS 文件拖入：悬停高亮 + 落下自动识别入列。落点命中文件夹磁贴 =
-          直接收进文件夹（BentoDesk per-zone drop hit-test）；其余落画布格位。 ---- */
+          直接收进文件夹；其余落画布格位。 ---- */
   const [osHover, setOsHover] = useState(false);
   useOsFileDrop((ev) => {
+    // 拖拽离开窗口（不投放）：清掉高亮，防滞留（leave 此前被钩子吞掉）。
+    if (ev.type === "leave") {
+      setOsHover(false);
+      setOsFolderHover(null);
+      return;
+    }
     const rect = boardRef.current?.getBoundingClientRect();
-    if (!rect || marquee) return;
+    if (!rect) return;
     const inside = ev.x >= rect.left && ev.x <= rect.right && ev.y >= rect.top && ev.y <= rect.bottom;
     if (!inside) {
       setOsHover(false);
@@ -1184,13 +1404,43 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     return <FileText size={26} />;
   };
 
-  /** 文件夹磁贴图标：成员前 4 枚真实图标排 2×2 迷你网格（手机桌面同款）；
-      空文件夹显示文件夹图标。成员图标与画布共享同一份缓存。 */
+  /** 磁贴缩略图随 folder.sort：name 纯排序无 IO；time 需要目标 mtime——对
+      time 排序的文件夹按成员签名批量拉一次（paths_mtimes，与弹层排序同一
+      命令），此前磁贴恒为 free 序、弹层内却是排序后的，视觉不一致。 */
+  const [tileMtimes, setTileMtimes] = useState<Record<string, number>>({});
+  const timeFolders = useMemo(() => folders.filter((f) => f.sort === "time"), [folders]);
+  const tileMtimeSig = timeFolders.map((f) => `${f.id}:${f.childIds.join("\u{1}")}`).join("\u{2}");
+  useEffect(() => {
+    if (!isTauri() || timeFolders.length === 0) return;
+    const paths = [
+      ...new Set(
+        timeFolders.flatMap((f) => f.childIds.map((id) => customById.get(id)?.path).filter((p): p is string => !!p))
+      )
+    ];
+    if (paths.length === 0) return;
+    let cancelled = false;
+    void invoke<number[]>("paths_mtimes", { paths })
+      .then((arr) => {
+        if (cancelled || !Array.isArray(arr)) return;
+        setTileMtimes(Object.fromEntries(paths.map((p, i) => [p, arr[i] ?? 0])));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // 签名驱动：成员增删/换序才重拉；mtime 变化不追（磁贴预览容忍陈旧序）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tileMtimeSig]);
+
+  /** 文件夹磁贴图标：按 folder.sort 排序后的前 4 枚真实图标排 2×2 迷你网格
+      （手机桌面同款，与弹层内展示序一致）；空文件夹显示文件夹图标。成员图标
+      与画布共享同一份缓存。 */
   const folderTileIcon = (folder: ShortcutFolder) => {
-    const kids = folder.childIds
-      .map((id) => customById.get(id))
-      .filter((x): x is CustomShortcut => !!x)
-      .slice(0, 4);
+    const kids = sortFolderItems(
+      folder.childIds.map((id) => customById.get(id)).filter((x): x is CustomShortcut => !!x),
+      folder.sort ?? "free",
+      (it) => tileMtimes[it.path] ?? 0
+    ).slice(0, 4);
     if (kids.length === 0) return <FolderClosed size={26} />;
     return (
       <span className="widget-shortcut-folder-grid" aria-hidden="true">
@@ -1225,32 +1475,32 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     return folderTileIcon(entry.folder);
   };
 
-  /** 右键菜单（W-080）：自定义项免跳设置页直接编辑/删除；文件夹磁贴就地
-      打开/重命名/移除；「移入文件夹」二级选择器完成手机桌面式收纳。 */
-  const [menu, setMenu] = useState<MenuState>(null);
-  /* #57 统一弹层退场：关闭后播 .is-closing（ctx-menu-out）再卸载，期间以最后
-     一份菜单快照渲染——与 ContextMenu.tsx / FileBrowser 同语言。 */
-  const menuVisible = useDelayedUnmount(!!menu, Math.round(animDurations().fxFastMs));
-  const lastMenu = useRef(menu);
-  if (menu) lastMenu.current = menu;
-  const shownMenu = menu ?? lastMenu.current;
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("click", close);
-    window.addEventListener("blur", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("blur", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [menu]);
-
-  /** 条目右键 → 就地菜单（网格与滚动带共用；内置项无菜单，放行给卡片右键）。 */
+  /** 右键菜单：统一走 openContextMenu（ContextMenuHost 渲染）——
+      自带视口钳制、键盘导航与统一退场，取代此前的私有 .widget-context-menu
+      （无钳制：屏幕右/下缘右键菜单会被窗口裁掉；也无键盘导航）。自定义项免
+      跳设置页直接编辑/删除；文件夹磁贴就地打开/重命名/移除；「移入文件夹」
+      二级选择器完成手机桌面式收纳。 */
+  const openMoveMenu = (item: CustomShortcut, x: number, y: number) => {
+    openContextMenu(
+      // 二级菜单沿一级菜单的原位展开（合成事件对象：菜单项 onSelect 里没有
+      // 原生事件可用）。
+      { clientX: x, clientY: y, preventDefault() {}, stopPropagation() {} },
+      [
+        { label: tr("新建文件夹"), icon: <FolderPlus size={15} />, onSelect: () => createFolderWith(item.id) },
+        ...folders.map((f) => ({
+          label: f.label,
+          icon: <FolderClosed size={15} />,
+          onSelect: () => {
+            if (moveIntoFolder(item.id, f.id)) {
+              pushAppToast(tr("已移入文件夹"), item.label, "info", {
+                action: { label: tr("撤销"), run: () => undoOp() }
+              });
+            }
+          }
+        }))
+      ]
+    );
+  };
   const openItemMenu = (
     e: {
       clientX: number;
@@ -1263,32 +1513,76 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
   ) => {
     if (!isTauri()) return;
     if (entry.kind === "sfolder") {
-      e.preventDefault();
-      e.stopPropagation();
       const rect = e.currentTarget.getBoundingClientRect();
-      setMenu({
-        kind: "folder",
-        x: e.clientX,
-        y: e.clientY,
-        folder: entry.folder,
-        anchor: { x: rect.x, y: rect.y, w: rect.width, h: rect.height }
-      });
+      const anchor = sfAnchorFromRect(rect);
+      openContextMenu(e, [
+        {
+          label: tr("打开"),
+          onSelect: () => setSfPopup({ folderId: entry.folder.id, anchor })
+        },
+        { label: tr("重命名"), onSelect: () => void renameFolder(entry.folder) },
+        {
+          label: tr("移除文件夹"),
+          icon: <Trash2 size={15} />,
+          danger: true,
+          onSelect: () => void removeFolder(entry.folder)
+        }
+      ]);
       return;
     }
     if (entry.kind !== "custom") return; // 内置项：放行给卡片右键菜单
-    e.preventDefault();
-    e.stopPropagation();
-    setMenu({ kind: "item", x: e.clientX, y: e.clientY, item: entry.item });
+    const item = entry.item;
+    openContextMenu(e, [
+      { label: tr("打开"), onSelect: () => openCustom(item) },
+      ...(item.missing ? [{ label: tr("重新定位…"), onSelect: () => void relocateCustom(item) }] : []),
+      ...(item.kind !== "url" && !item.missing
+        ? [
+            {
+              label: tr("在资源管理器中显示"),
+              icon: <FolderOpen size={15} />,
+              onSelect: () => revealCustom(item)
+            }
+          ]
+        : []),
+      { label: tr("复制路径"), onSelect: () => void copyCustomPath(item) },
+      { label: tr("重命名"), onSelect: () => void renameCustom(item) },
+      {
+        label: tr("移入文件夹"),
+        icon: <FolderClosed size={15} />,
+        onSelect: () => openMoveMenu(item, e.clientX, e.clientY)
+      },
+      { label: tr("移除"), icon: <Trash2 size={15} />, danger: true, onSelect: () => void removeCustom(item) }
+    ]);
   };
 
   const renameCustom = async (s: CustomShortcut) => {
     const label = await promptDialog({ title: tr("重命名快捷方式"), initialValue: s.label });
     const next = label?.trim();
     if (!next || next === s.label) return;
+    const prev = s.label;
     update({
       customShortcuts: loadCustomShortcuts(loadWidgetConfig(instanceId)).map((x) =>
         x.id === s.id ? { ...x, label: next } : x
       )
+    });
+    /* 与 renameFolder 对称：重命名入撤销栈（此前文件夹重命名可撤销、条目
+       重命名不可，同一右键菜单里体验割裂）。 */
+    pushOp({
+      label: tr("重命名快捷方式"),
+      undo: () => {
+        update({
+          customShortcuts: loadCustomShortcuts(loadWidgetConfig(instanceId)).map((x) =>
+            x.id === s.id ? { ...x, label: prev } : x
+          )
+        });
+      },
+      redo: () => {
+        update({
+          customShortcuts: loadCustomShortcuts(loadWidgetConfig(instanceId)).map((x) =>
+            x.id === s.id ? { ...x, label: next } : x
+          )
+        });
+      }
     });
   };
   const removeCustom = async (s: CustomShortcut) => {
@@ -1316,6 +1610,15 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
         positions: Object.fromEntries(Object.entries(loadShortcutPositions(cfg)).filter(([id]) => id !== s.id)),
         ...(foldersNext !== foldersCur ? { shortcutFolders: foldersNext } : {})
       });
+      // 实例图标表只增不减会随增删缓慢累积（每枚数 KB～数十 KB base64）：
+      // 条目落删时同步清掉它的缓存项（模块级共享缓存保留——FolderPopup 可能
+      // 仍在显示同一路径，watch modified 才是它的失效时机）。
+      setIcons((prev) => {
+        if (!(s.path in prev)) return prev;
+        const next = { ...prev };
+        delete next[s.path];
+        return next;
+      });
       pushOp({
         label: tr("移除快捷方式"),
         undo: () => {
@@ -1323,7 +1626,14 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
           const nowList = loadCustomShortcuts(now);
           if (nowList.some((x) => x.id === s.id)) return;
           const at = Math.min(index, nowList.length);
-          const restored: CustomShortcut = { id: s.id, label: s.label, path: s.path, kind: s.kind };
+          const restored: CustomShortcut = {
+            id: s.id,
+            label: s.label,
+            path: s.path,
+            kind: s.kind,
+            // 缺失态一并还原（此前重建丢标志，要等 60s 复检才补回）。
+            ...(s.missing ? { missing: true } : {})
+          };
           const nowPos = { ...loadShortcutPositions(now) };
           if (prevCell) nowPos[s.id] = prevCell;
           update({
@@ -1350,30 +1660,48 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       });
     });
   };
-  /** 缺失条目重新定位：文件对话框选新目标，classify 重挂（id/格位/文件夹归属保留）。 */
+  /** 缺失条目重新定位：文件对话框选新目标，classify 重挂（id/格位/文件夹归属保留）。
+      新目标必然存在（刚从对话框选出）——顺手清 missing 标志，不必等 60s 复检；
+      操作入撤销栈，undo 完整还原旧 path/kind/label 与缺失态。 */
   const relocateCustom = async (s: CustomShortcut) => {
     try {
       const path = await pickFilePath({ title: tr("重新定位") });
       if (!path) return;
       const r = await invoke<{ label: string; kind: string; path?: string | null }>("classify_path", { path });
-      update({
-        customShortcuts: loadCustomShortcuts(loadWidgetConfig(instanceId)).map((x) =>
-          x.id === s.id
-            ? { id: x.id, label: r.label || x.label, path: r.path ?? path, kind: normalizeKind(r.kind, x.kind) }
-            : x
-        )
+      const prev = { path: s.path, kind: s.kind, label: s.label, missing: s.missing === true };
+      const next = {
+        path: r.path ?? path,
+        kind: normalizeKind(r.kind, s.kind),
+        label: r.label || s.label
+      };
+      const apply = (
+        v: { path: string; kind: CustomShortcut["kind"]; label: string; missing?: boolean },
+        clearMissing = false
+      ) => {
+        update({
+          customShortcuts: loadCustomShortcuts(loadWidgetConfig(instanceId)).map((x) => {
+            if (x.id !== s.id) return x;
+            const merged = { ...x, ...v };
+            if (clearMissing) delete merged.missing;
+            return merged;
+          })
+        });
+      };
+      apply(next, true);
+      pushOp({
+        label: tr("重新定位"),
+        undo: () => apply(prev),
+        redo: () => apply(next, true)
       });
-      pushAppToast(tr("已重新定位"), r.label || s.label, "ok");
+      pushAppToast(tr("已重新定位"), next.label, "ok");
     } catch {
       /* 用户取消或对话框不可用 */
     }
   };
   const copyCustomPath = async (s: CustomShortcut) => {
-    try {
-      await navigator.clipboard.writeText(s.path);
-    } catch {
-      void alertDialog({ title: tr("复制失败") });
-    }
+    // 走 lib/clipboard 的双路径降级：WebView2 的 Clipboard API 不可用/被拒时
+    // 回退 execCommand，而不是直接弹「复制失败」。
+    if (!(await copyText(s.path))) void alertDialog({ title: tr("复制失败") });
   };
   const revealCustom = (s: CustomShortcut) => {
     if (!isTauri() || s.kind === "url") return;
@@ -1400,7 +1728,8 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
       width: Math.round(cellW)
     };
     if (dragging) {
-      style.transform = `translate(${dragging.dx}px, ${dragging.dy}px)`;
+      // 位移走 CSS 变量（onItemMove 的 rAF 直写）：合成器层跟手，不重渲整树。
+      style.transform = "translate(var(--drag-dx, 0px), var(--drag-dy, 0px))";
       style.zIndex = 2;
     }
     const folderHovered = osFolderHover === entry.id || (outDrag?.kind === "folder" && outDrag.folderId === entry.id);
@@ -1447,7 +1776,13 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
         onPointerMove={onItemMove}
         onPointerUp={onItemUp}
         onPointerCancel={() => {
+          const d = dragRef.current;
           dragRef.current = null;
+          if (dragRafRef.current) {
+            window.cancelAnimationFrame(dragRafRef.current);
+            dragRafRef.current = 0;
+          }
+          clearDragVars(d?.el ?? null);
           setDrag(null);
         }}
         onPointerEnter={isFolder ? () => tilePointerEnter(entry.folder) : undefined}
@@ -1485,247 +1820,45 @@ export function ShortcutsWidget({ instanceId }: { instanceId: string }) {
     <div className="widget-shortcuts">
       {showTitle && <div className={`widget-shortcuts-title${titleCompact ? " is-compact" : ""}`}>SHORTCUTS</div>}
 
-      {marquee ? (
-        <div className="sc-marquee">
-          {/* 双份内容 + translateX(-50%) 无缝循环；第二份仅作视觉填充（aria-hidden
-              不进无障碍树、不可聚焦），悬停暂停、单项浮起。滚动带保持扁平：
-              全部自定义条目照常参与（含文件夹成员），文件夹磁贴不进带。 */}
-          <div
-            className="sc-marquee-track"
-            style={{ "--dur": `${Math.max(18, flatEntries.length * 3.6)}s` } as React.CSSProperties}
-          >
-            {[0, 1].map((copy) =>
-              flatEntries.map((entry, i) => {
-                const clone = copy === 1;
-                const isBuiltin = entry.kind === "builtin";
-                const item = isBuiltin ? null : entry.kind === "custom" ? entry.item : null;
-                const itemProps = clone
-                  ? { "aria-hidden": true as const, tabIndex: -1 }
-                  : {
-                      role: "button" as const,
-                      tabIndex: 0,
-                      onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          if (isBuiltin) openBuiltin(entry.id);
-                          else if (item) openCustom(item);
-                        }
-                      },
-                      // 滚动带条目与网格条目同权：右键就地编辑/移除，不必回设置页。
-                      onContextMenu: (e: React.MouseEvent<HTMLDivElement>) => openItemMenu(e, entry)
-                    };
-                return (
-                  <div
-                    className="sc-marquee-item"
-                    key={`${copy}-${entry.id}-${i}`}
-                    onClick={(e) => {
-                      if (isBuiltin) openBuiltin(entry.id);
-                      else if (item) activateEntry(item, e.currentTarget.getBoundingClientRect());
-                    }}
-                    title={isBuiltin ? entry.label : item?.path}
-                    {...itemProps}
-                    {...(clone ? {} : { "aria-label": entry.label })}
-                  >
-                    <span className={`widget-shortcut-icon ${isBuiltin ? entry.def.icon : "custom"}`}>
-                      {isBuiltin ? builtinIcon(entry.def.icon) : item ? iconFor(item) : null}
-                      {isBuiltin ? badgeFor(entry.def) : undefined}
-                    </span>
-                    {showLabels && <span className="widget-shortcut-name">{entry.label}</span>}
-                  </div>
-                );
-              })
-            )}
+      <div
+        ref={boardRef}
+        className={`widget-shortcuts-board${osHover ? " os-hover" : ""}${drag ? " is-dragging" : ""}`}
+        data-interactive
+      >
+        {entries.length === 0 && (
+          <div className="widget-shortcuts-hint">
+            <MousePointerClick size={20} />
+            <span>{tr("把桌面上的文件或快捷方式拖进来")}</span>
+            <span className="widget-shortcuts-hint-sub">{tr("松手自动识别，点击直接打开")}</span>
           </div>
-        </div>
-      ) : (
-        <div
-          ref={boardRef}
-          className={`widget-shortcuts-board${osHover ? " os-hover" : ""}${drag ? " is-dragging" : ""}`}
-          data-interactive
-        >
-          {entries.length === 0 && (
-            <div className="widget-shortcuts-hint">
-              <MousePointerClick size={20} />
-              <span>{tr("把桌面上的文件或快捷方式拖进来")}</span>
-              <span className="widget-shortcuts-hint-sub">{tr("松手自动识别，点击直接打开")}</span>
-            </div>
-          )}
-          {drag && drag.moved && (
-            <div
-              className="widget-shortcut-placeholder"
-              style={{
-                left: Math.round(drag.cell.x * (cellW + CELL_GAP)),
-                top: Math.round(drag.cell.y * (CELL_H + CELL_GAP)),
-                width: Math.round(cellW),
-                height: CELL_H
-              }}
-              aria-hidden="true"
-            />
-          )}
-          {/* 弹层条目拖出到画布的落点预演（BentoDesk 投影落位）。 */}
-          {outDrag?.kind === "canvas" && (
-            <div
-              className="widget-shortcut-placeholder"
-              style={{
-                left: Math.round(outDrag.cell.x * (cellW + CELL_GAP)),
-                top: Math.round(outDrag.cell.y * (CELL_H + CELL_GAP)),
-                width: Math.round(cellW),
-                height: CELL_H
-              }}
-              aria-hidden="true"
-            />
-          )}
-          {entries.map(renderItem)}
-        </div>
-      )}
-
-      {/* 右键菜单必须 Portal 到 body：卡片壳层的 backdrop-filter 会成为 fixed
-          后代的包含块，菜单留在卡片里会按卡片坐标系换算 clientX/Y 而跑偏被裁剪
-          （用户右键"看不到菜单"）。Portal 后才是真视口坐标。 */}
-      {menuVisible &&
-        shownMenu &&
-        createPortal(
-          <div
-            className={`widget-context-menu${menu ? "" : " is-closing"}`}
-            style={{ left: shownMenu.x, top: shownMenu.y }}
-            onClick={(e) => e.stopPropagation()}
-            role="menu"
-          >
-            {shownMenu.kind === "item" && (
-              <>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    openCustom(shownMenu.item);
-                    setMenu(null);
-                  }}
-                >
-                  {tr("打开")}
-                </button>
-                {shownMenu.item.missing && (
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      void relocateCustom(shownMenu.item);
-                      setMenu(null);
-                    }}
-                  >
-                    {tr("重新定位…")}
-                  </button>
-                )}
-                {shownMenu.item.kind !== "url" && !shownMenu.item.missing && (
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      revealCustom(shownMenu.item);
-                      setMenu(null);
-                    }}
-                  >
-                    <FolderOpen size={13} /> {tr("在资源管理器中显示")}
-                  </button>
-                )}
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    void copyCustomPath(shownMenu.item);
-                    setMenu(null);
-                  }}
-                >
-                  {tr("复制路径")}
-                </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    void renameCustom(shownMenu.item);
-                    setMenu(null);
-                  }}
-                >
-                  {tr("重命名")}
-                </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setMenu({ kind: "move", x: shownMenu.x, y: shownMenu.y, item: shownMenu.item });
-                  }}
-                >
-                  <FolderClosed size={13} /> {tr("移入文件夹")}
-                </button>
-                <button
-                  role="menuitem"
-                  className="danger"
-                  onClick={() => {
-                    void removeCustom(shownMenu.item);
-                    setMenu(null);
-                  }}
-                >
-                  <Trash2 size={13} /> {tr("移除")}
-                </button>
-              </>
-            )}
-            {shownMenu.kind === "move" && (
-              <>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    createFolderWith(shownMenu.item.id);
-                    setMenu(null);
-                  }}
-                >
-                  <FolderPlus size={13} /> {tr("新建文件夹")}
-                </button>
-                {folders.map((f) => (
-                  <button
-                    key={f.id}
-                    role="menuitem"
-                    onClick={() => {
-                      if (moveIntoFolder(shownMenu.item.id, f.id)) {
-                        pushAppToast(tr("已移入文件夹"), shownMenu.item.label, "info", {
-                          action: { label: tr("撤销"), run: () => undoOp() }
-                        });
-                      }
-                      setMenu(null);
-                    }}
-                  >
-                    <FolderClosed size={13} /> {f.label}
-                  </button>
-                ))}
-              </>
-            )}
-            {shownMenu.kind === "folder" && (
-              <>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setSfPopup({ folderId: shownMenu.folder.id, anchor: shownMenu.anchor });
-                    setMenu(null);
-                  }}
-                >
-                  {tr("打开")}
-                </button>
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    void renameFolder(shownMenu.folder);
-                    setMenu(null);
-                  }}
-                >
-                  {tr("重命名")}
-                </button>
-                <button
-                  role="menuitem"
-                  className="danger"
-                  onClick={() => {
-                    void removeFolder(shownMenu.folder);
-                    setMenu(null);
-                  }}
-                >
-                  <Trash2 size={13} /> {tr("移除文件夹")}
-                </button>
-              </>
-            )}
-          </div>,
-          document.body
         )}
+        {drag && drag.moved && (
+          <div
+            className="widget-shortcut-placeholder"
+            style={{
+              left: Math.round(drag.cell.x * (cellW + CELL_GAP)),
+              top: Math.round(drag.cell.y * (CELL_H + CELL_GAP)),
+              width: Math.round(cellW),
+              height: CELL_H
+            }}
+            aria-hidden="true"
+          />
+        )}
+        {/* 弹层条目拖出到画布的落点预演。 */}
+        {outDrag?.kind === "canvas" && (
+          <div
+            className="widget-shortcut-placeholder"
+            style={{
+              left: Math.round(outDrag.cell.x * (cellW + CELL_GAP)),
+              top: Math.round(outDrag.cell.y * (CELL_H + CELL_GAP)),
+              width: Math.round(cellW),
+              height: CELL_H
+            }}
+            aria-hidden="true"
+          />
+        )}
+        {entries.map(renderItem)}
+      </div>
 
       {/* key 用初始目录：换目录预览时重挂载，旧实例的关闭计时器随卸载清除。 */}
       {folderPopup && (

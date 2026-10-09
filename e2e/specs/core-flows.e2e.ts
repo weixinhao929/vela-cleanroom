@@ -61,12 +61,12 @@ describe("Focus Desk 核心链路", () => {
   });
 });
 
-// 本轮（第二轮路线图）新增功能冒烟回归。E-2 修复「空转通过」：组件不在
+// 新增功能冒烟回归。修复「空转通过」：组件不在
 // 画布上时用例此前直接通过（isExisting 容错），等于没测。现在先走真实
-// 用户路径主动添加（画布空白右键 → 添加小组件 → 图库双击卡片），再对
-// 内容做无条件断言；已存在（上次运行遗留，布局持久化）则跳过添加直接
+// 用户路径主动添加（画布空白右键 → 添加小组件 → 图库单击卡片 → Esc 收起），
+// 再对内容做无条件断言；已存在（上次运行遗留，布局持久化）则跳过添加直接
 // 断言。不依赖外部数据（天气/课表内容），可离线稳定运行。
-describe("第二轮新增功能冒烟", () => {
+describe("新增功能冒烟", () => {
   /** 确保画布上存在指定类型的小组件（无则经图库添加），返回是否新添加。 */
   async function ensureWidget(type: string, galleryName: string): Promise<boolean> {
     await browser.switchWindow("Vela Widgets");
@@ -79,21 +79,23 @@ describe("第二轮新增功能冒烟", () => {
     const addItem = await $(".ctx-item*=添加小组件");
     await addItem.waitForDisplayed({ timeout: 5000 });
     await addItem.click();
-    // 图库打开后搜索定位目标卡片，双击落组件（单击仅选中）。
+    // 图库打开后搜索定位目标卡片，单击即落组件（图库保持打开，可连续添加）。
     const search = await $(".widget-gallery-search input");
     await search.waitForDisplayed({ timeout: 5000 });
     await search.setValue(galleryName);
     const card = await $(`.widget-gallery-card*=${galleryName}`);
     await card.waitForDisplayed({ timeout: 5000 });
-    await card.doubleClick();
-    // 图库关闭 + 新卡片挂载（跨窗落盘 + 卡片入场）。
-    await browser.waitUntil(async () => !(await $(".widget-gallery-overlay").isDisplayed()), {
-      timeout: 8000,
-      timeoutMsg: "添加后图库未关闭"
-    });
+    await card.click();
+    // 新卡片挂载（跨窗落盘 + 卡片入场）。
     await $(`.widget-card[data-widget-type="${type}"]`).waitForDisplayed({
       timeout: 8000,
       timeoutMsg: `小组件实例 ${type} 未挂载`
+    });
+    // Esc 收起图库（单击添加不再自动关闭图库）。
+    await browser.keys(["Escape"]);
+    await browser.waitUntil(async () => !(await $(".widget-gallery-overlay").isDisplayed()), {
+      timeout: 8000,
+      timeoutMsg: "Esc 后图库未关闭"
     });
     return true;
   }

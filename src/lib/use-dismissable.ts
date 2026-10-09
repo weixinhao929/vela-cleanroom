@@ -57,12 +57,25 @@ export function useDismissable(
       }
       return false;
     };
+    /* 与统一右键菜单（ContextMenuHost）的分层协作（DOM 判定，不反向
+       import components 保持 lib 依赖方向）：
+       - 右键菜单开着时，菜单内的按下不是「弹层外点」——点菜单项不应连坐
+         关闭它底下的弹层（菜单有自己的关闭管理）；
+       - Esc 分层：菜单开着时第一下 Esc 只关菜单（Host 的 document 捕获
+           处理器随后接手），本弹层不抢键——否则 stopPropagation 会把菜单
+           留成无主浮层。 */
+    const ctxMenuOpen = () => document.querySelector(".ctx-menu") !== null;
     const onDown = (e: PointerEvent) => {
       if (!optsRef.current.outside || inside(e.target)) return;
+      /* fd-prompt-overlay（PromptDialog 模态确认/
+         命名对话框）同 ctx-menu 语义——配置弹层内唤起的对话框上按下「取消」
+         不得连坐关闭底下的配置面板（GroupConfigPanel / WidgetConfigPopover）。 */
+      if ((e.target as Element | null)?.closest?.(".ctx-menu, .fd-prompt-overlay")) return;
       closeRef.current();
     };
     const onKey = (e: KeyboardEvent) => {
       if (!optsRef.current.escape || e.key !== "Escape") return;
+      if (ctxMenuOpen()) return;
       e.stopPropagation();
       e.preventDefault();
       closeRef.current();

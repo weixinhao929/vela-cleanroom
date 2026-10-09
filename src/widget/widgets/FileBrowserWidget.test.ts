@@ -1,11 +1,18 @@
 /**
- * 文件浏览小组件纯逻辑测试（B5/B6/B8/B9）：
+ * 文件浏览小组件纯逻辑测试：
  *  - displayFileName 三态（完整 / 去扩展名 / 仅图标）与 stripExt 边界；
  *  - sortEntries：目录前置、类型聚簇排序、别名感知的名称序；
  *  - 预览分类（图片 / 可文本预览）。
  */
 import { describe, expect, it } from "vitest";
-import { displayFileName, isImageFile, isTextPreviewable, sortEntries, stripExt } from "./FileBrowserWidget";
+import {
+  displayFileName,
+  isImageFile,
+  isTextPreviewable,
+  sortEntries,
+  stripExt,
+  truncateCrumbs
+} from "./FileBrowserWidget";
 
 type Entry = { name: string; path: string; is_dir: boolean; size: number | null; modified: string | null };
 const e = (name: string, is_dir = false): Entry => ({
@@ -63,5 +70,20 @@ describe("预览分类（B5）", () => {
     expect(isTextPreviewable("main.rs")).toBe(true);
     expect(isTextPreviewable("photo.jpg")).toBe(false);
     expect(isTextPreviewable("app.exe")).toBe(false);
+  });
+});
+
+describe("面包屑收敛（truncateCrumbs）", () => {
+  const segs = ["C:", "Users", "x", "Desktop", "工作"];
+  it("未超保留段数：原样返回、不折叠", () => {
+    expect(truncateCrumbs(segs.slice(0, 2), 2)).toEqual({ items: segs.slice(0, 2), truncated: false });
+  });
+  it("超段数：只留最后 keep 段并标记折叠", () => {
+    expect(truncateCrumbs(segs, 2)).toEqual({ items: ["Desktop", "工作"], truncated: true });
+    expect(truncateCrumbs(segs, 3)).toEqual({ items: ["x", "Desktop", "工作"], truncated: true });
+  });
+  it("keep 至少为 1（防呆）", () => {
+    expect(truncateCrumbs(segs, 0)).toEqual({ items: ["工作"], truncated: true });
+    expect(truncateCrumbs(["仅一段"], 0)).toEqual({ items: ["仅一段"], truncated: false });
   });
 });

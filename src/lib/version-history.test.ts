@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadVersionHistory, recordCurrentVersion } from "./version-history";
 import { __resetMirrorSyncStateForTests } from "./local-backup";
 
-/** 本机版本历史（借鉴 CSH #7）：upsert / 通道分条 / 容量上限 / 坏数据防御。 */
+/** 本机版本历史：upsert / 通道分条 / 容量上限 / 坏数据防御。 */
 
 beforeEach(() => localStorage.clear());
 afterEach(() => __resetMirrorSyncStateForTests());

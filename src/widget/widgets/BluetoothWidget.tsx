@@ -24,6 +24,8 @@ import { invoke, isTauri } from "../../lib/tauri";
 import { sourceNotify } from "../../lib/notifications";
 import { openContextMenu } from "../../components/ContextMenu";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
+/* 设备 tooltip 的 fixed 坐标换算（视觉 → 布局）。 */
+import { uiZoom } from "../../lib/ui-zoom";
 
 type Device = {
   name: string;
@@ -32,7 +34,7 @@ type Device = {
   battery: number | null;
 };
 
-/** W-139 扩展图标集：手柄 / 打印机 / 手机 / 触控笔不再用通用图标。 */
+/** 扩展图标集：手柄 / 打印机 / 手机 / 触控笔不再用通用图标。 */
 function DeviceIcon({ type, size }: { type: string; size: number }) {
   if (type === "音频") return <Headphones size={size} />;
   if (type === "鼠标") return <Mouse size={size} />;
@@ -58,7 +60,7 @@ function batteryColor(level: number | null): string {
  * that represents the battery level. When the battery is unknown (null) the
  * ring is drawn as a full muted circle.
  *
- * W-141：单击圆环快速连接/断开（classic 设备）；右键打开操作菜单。
+ * 单击圆环快速连接/断开（classic 设备）；右键打开操作菜单。
  */
 function BatteryRing({
   device,
@@ -93,10 +95,18 @@ function BatteryRing({
     const tw = tip?.offsetWidth ?? 120;
     const th = tip?.offsetHeight ?? 52;
     const gap = 12;
-    let x = e.clientX + gap;
-    let y = e.clientY + gap;
-    if (x + tw > window.innerWidth - 8) x = e.clientX - tw - gap;
-    if (y + th > window.innerHeight - 8) y = e.clientY - th - gap;
+    /* clientX/Y 是视觉坐标（已含 --ui-zoom），而
+       .bt-tooltip 是 fixed 定位（left/top 布局单位）、window.innerWidth 也是
+       布局单位——统一先 ÷uiZoom() 归一到布局单位再参与偏移/贴边翻转/钳制
+       （SystemBarWidget 同范式）；tw/th 读 offsetWidth/Height 本就是布局 px，
+       与换算后的坐标同量纲，直接比较。 */
+    const z = uiZoom();
+    const px = e.clientX / z;
+    const py = e.clientY / z;
+    let x = px + gap;
+    let y = py + gap;
+    if (x + tw > window.innerWidth - 8) x = px - tw - gap;
+    if (y + th > window.innerHeight - 8) y = py - th - gap;
     setTooltipPos({ x: Math.max(4, x), y: Math.max(4, y) });
   };
 
@@ -203,6 +213,12 @@ function BatteryRing({
  * Bluetooth device widget — iOS-style, no header text. Reads the real paired
  * Bluetooth devices from the Rust backend (name / connection / battery).
  */
+/* 的通知去重基线（模块级，多实例共享）：
+ *  - sharedPrevConnected：上次快照已连接设备名集合（断连 diff 基线）；
+ *  - sharedLowBattery：设备名 → 低电通知时间戳（同设备每小时最多一次）。 */
+let sharedPrevConnected: Set<string> | null = null;
+const sharedLowBattery = new Map<string, number>();
+
 export function BluetoothWidget({ instanceId }: { instanceId: string }) {
   const tr = useT();
   const safeTimeout = useSafeTimeout();
@@ -213,10 +229,6 @@ export function BluetoothWidget({ instanceId }: { instanceId: string }) {
   const [ringSize, setRingSize] = useState(56);
   const containerRef = useRef<HTMLDivElement>(null);
   const loadSeq = useRef(0);
-  /** 上次快照中已连接的设备名集合（W-136 断连通知的 diff 基线）。 */
-  const prevConnected = useRef<Set<string> | null>(null);
-  /** W-137 低电量通知去重：设备名 → 上次通知时间戳（同设备每小时最多一次）。 */
-  const lowBatteryNotified = useRef<Map<string, number>>(new Map());
   const { config } = useWidgetConfig(instanceId);
   const showDisconnected = !!config.showDisconnected;
   const showDeviceType = config.showDeviceType !== false;
@@ -246,9 +258,12 @@ export function BluetoothWidget({ instanceId }: { instanceId: string }) {
         setDevices(list ?? []);
         setError(false);
 
-        // W-136 断连通知：与上次快照 diff，新断开的设备推系统通知
+        // 断连通知：与上次快照 diff，新断开的设备推系统通知。
+        // （多实例重复通知）：diff 基线与低电去重表是模块级共享——每实例
+        // 私有 ref 时 N 个蓝牙组件对同一次断连各推一条；共享后先扫的实例
+        // 更新基线，后扫的 diff 不到该断连（顺序扫描即可去重）。
         const nowConnected = new Set(list.filter((d) => d.connected).map((d) => d.name));
-        const prev = prevConnected.current;
+        const prev = sharedPrevConnected;
         if (prev) {
           for (const name of prev) {
             if (!nowConnected.has(name)) {
@@ -256,19 +271,19 @@ export function BluetoothWidget({ instanceId }: { instanceId: string }) {
             }
           }
         }
-        prevConnected.current = nowConnected;
+        sharedPrevConnected = nowConnected;
 
         if (lowBatteryThreshold > 0) {
           const now = Date.now();
           for (const d of list) {
             if (d.battery !== null && d.battery <= lowBatteryThreshold) {
-              const last = lowBatteryNotified.current.get(d.name) ?? 0;
+              const last = sharedLowBattery.get(d.name) ?? 0;
               if (now - last > 60 * 60 * 1000) {
-                lowBatteryNotified.current.set(d.name, now);
+                sharedLowBattery.set(d.name, now);
                 void sourceNotify("bluetooth", tr("设备电量低"), `${d.name}：${d.battery}%`);
               }
             } else {
-              lowBatteryNotified.current.delete(d.name);
+              sharedLowBattery.delete(d.name);
             }
           }
         }
@@ -325,12 +340,12 @@ export function BluetoothWidget({ instanceId }: { instanceId: string }) {
     safeTimeout(() => setRefreshed(false), 1200);
   };
 
-  /** W-138 打开系统「蓝牙和其他设备」设置页。 */
+  /** 打开系统「蓝牙和其他设备」设置页。 */
   const openSettings = () => {
     if (isTauri()) void invoke("open_bluetooth_settings").catch(() => {});
   };
 
-  /** W-141 快速连接/断开：classic 设备直接切换；失败回落系统设置页。 */
+  /** 快速连接/断开：classic 设备直接切换；失败回落系统设置页。 */
   const toggleDevice = (device: Device, e: React.MouseEvent, menu = false) => {
     if (menu) {
       e.preventDefault();
@@ -404,9 +419,12 @@ export function BluetoothWidget({ instanceId }: { instanceId: string }) {
       </button>
       <div className={`bt-scroll bt-${layout}`} style={{ gap: ringGap }}>
         {error && (
-          <div className="widget-empty" onClick={openSettings} title={tr("点击打开蓝牙设置")}>
+          /* 错误空态由 div onClick 改 button——键盘
+             Tab/Enter 与读屏可达（读态失败时能进蓝牙设置自救）。样式重置见
+             widget.css 的 button.widget-empty。 */
+          <button type="button" className="widget-empty" onClick={openSettings} title={tr("点击打开蓝牙设置")}>
             {tr("无法读取蓝牙设备")}
-          </div>
+          </button>
         )}
         {!error && visible.length === 0 && (
           <div className="widget-empty">

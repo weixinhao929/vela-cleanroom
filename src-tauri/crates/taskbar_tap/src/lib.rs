@@ -1,4 +1,4 @@
-//! velatap.dll —— 注入 explorer.exe 的 XAML TAP（TB-TAP 会话）。
+//! velatap.dll —— 注入 explorer.exe 的 XAML TAP。
 //!
 //! # 职责
 //! 被加载进 explorer.exe 后：`InitializeXamlDiagnosticsEx` 挂上 XAML 可视树
@@ -12,23 +12,23 @@
 //! - [`appearance`]：任务栏登记表 + 五种 accent 的画刷映射与恢复；
 //! - [`blur_brush`] + [`effects`]：自定义模糊画刷（组合类聚合 + D2D1 interop）；
 //! - [`pipe_client`]：管道客户端（NDJSON 握手 / 心跳 / 分派）；
-//! - [`parent_watch`]：主进程死亡自恢复（F-9 线 2）。
+//! - [`parent_watch`]：主进程死亡自恢复（线 2）。
 //!
 //! # 铁律
 //! 任何 panic 都可能连累 explorer：每个 COM/FFI 入口包
 //! [`util::guarded`]（catch_unwind 折错），extern "system" 非 unwind ABI
 //! 兜底；失败 = 静默退出注入，绝不重试风暴。
 //!
-//! 协议定义与主进程共享同一份源码（见 protocol.rs 头部注释），本 crate 通过
-//! `#[path]` 直接包含，**不许在本 crate 内改动该文件**。
+//! 协议定义与主进程共享：两侧共同依赖 workspace crate `taskbar_common`
+//! （审计修复——原先 `#[path]` 跨目录包含主 crate 源文件，只靠注释
+//! 约束不改，现在边界由编译器保证）。
 
 #![cfg(windows)]
 #![allow(clippy::upper_case_acronyms)] // COM 接口名保持 SDK 原样（IShape 等）
 #![allow(non_snake_case)] // COM/WinRT 方法名保持 SDK 原样（put_Fill 等）
 #![allow(unused_parens)] // let-else 携 unsafe 块时必须带括号，lint 有误报
 
-#[path = "../../../src/taskbar/protocol.rs"]
-pub mod protocol;
+pub use taskbar_common::protocol;
 
 mod appearance;
 mod blur_brush;
@@ -104,7 +104,7 @@ pub extern "system" fn DllCanUnloadNow() -> windows_core::HRESULT {
 }
 
 /// WH_CALLWNDPROC 占位钩子：SetWindowsHookEx 为把本 DLL 映进 explorer 而
-/// 挂的载体，链式放行即可（对齐标杆 api.cpp:12-16）。
+/// 挂的载体，链式放行即可。
 #[no_mangle]
 pub extern "system" fn VelaTapHookProc(
     ncode: i32,
@@ -115,7 +115,7 @@ pub extern "system" fn VelaTapHookProc(
 }
 
 /// 注入器契约：标记事件名（注入前创建，DllMain 靠它区分“被注入”与
-/// “被手动加载”）。给 TB-INJECT / inject_demo 复用。
+/// “被手动加载”）。给注入器 / inject_demo 复用。
 pub fn inject_marker_event_name(explorer_pid: u32) -> String {
     bootstrap::inject_marker_event_name(explorer_pid)
 }

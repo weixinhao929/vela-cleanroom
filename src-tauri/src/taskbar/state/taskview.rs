@@ -1,4 +1,4 @@
-//! 任务视图状态源（F-3；标杆 CreateTaskViewManager :949-971）。Win11：
+//! 任务视图状态源。Win11：
 //! ShellViewCoordinator(TaskView) 的 VisibilityChanged（全局布尔，不分
 //! 显示器）。Win10 通道（注入 DLL 内 IMultitaskingViewVisibilityService）
 //! 不实现，能力上报不可用。

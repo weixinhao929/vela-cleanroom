@@ -5,7 +5,7 @@
 
 export const DAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"];
 
-/** 弹层通用键盘处理（B-16）：Escape 取消 + Tab 焦点圈定在弹层内。 */
+/** 弹层通用键盘处理：Escape 取消 + Tab 焦点圈定在弹层内。 */
 export function dialogKeyDown(
   e: {
     key: string;

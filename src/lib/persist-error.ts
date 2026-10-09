@@ -11,7 +11,7 @@ import { t } from "../i18n-lite";
  * 的静默发散。计时类（番茄钟 tick/会话记录）不阻塞主流程，仅上报。
  */
 
-/** P2（审计修复）：同一上下文 5s 内只弹一次 toast。写链单 op 卡满超时期间
+/** 同一上下文 5s 内只弹一次 toast。写链单 op 卡满超时期间
     排队的每个写都会依次失败，无节流时形成"保存失败"toast 风暴（每秒数条）。 */
 const TOAST_SUPPRESS_MS = 5000;
 const lastToastAt = new Map<string, number>();
@@ -39,7 +39,7 @@ export function reportPersistError(context: string): (err: unknown) => void {
     const last = lastToastAt.get(context) ?? 0;
     if (now - last < TOAST_SUPPRESS_MS) return;
     lastToastAt.set(context, now);
-    // P0-DDL：把上下文与原始错误带进 toast——「删不掉/存不上」时用户能直接
+    // -DDL：把上下文与原始错误带进 toast——「删不掉/存不上」时用户能直接
     // 读到真实原因（如 unknown command / SQLITE_BUSY），不再只有笼统提示。
     const detail =
       typeof err === "object" && err !== null && "message" in err

@@ -1,5 +1,5 @@
 /**
- * 天气站数据层（C1 天气沉浸页 + WeatherWidget 卡片增强共用，§4.7）。
+ * 天气站数据层（天气沉浸页 + WeatherWidget 卡片增强共用，§4.7）。
  *
  * 纯函数（可单测）：
  *  - 气候常模：Open-Meteo archive 逐日 max/min/mean → 按 MM-DD 聚合多年均值，
@@ -27,6 +27,19 @@ export function localTimeToMs(t: string, utcOffsetSeconds: number | undefined): 
 /** 小时标签直接取时间串里的城市本地小时（避免 Date 往返受 DST 影响）。 */
 export function hourLabel(t: string): string {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(t) ? `${t.slice(11, 13)}:00` : "";
+}
+
+/**
+ * 预警时间串 → UTC 毫秒。Open-Meteo `timezone=auto` 下 alerts 的 start/end
+ * 可能是**无偏移**的城市本地时间（此时必须用 utc_offset_seconds 换算，否则
+ * 跨时区城市的生效窗口整体错位），也可能是带 `Z` / `±hh:mm` 偏移的瞬时
+ * （直接解析）。无法解析返回 NaN——调用方对 NaN 自行决定兜底（宁推勿漏）。
+ */
+export function alertTimeMs(iso: string, utcOffsetSeconds: number | undefined): number {
+  if (!iso) return NaN;
+  if (/[Zz]$|[+-]\d{2}:?\d{2}$/.test(iso)) return Date.parse(iso);
+  if (utcOffsetSeconds === undefined) return Date.parse(iso);
+  return Date.parse(`${iso}Z`) - utcOffsetSeconds * 1000;
 }
 
 /** "2026-09-15" / "2026-09-15T13:00" → "09-15"（常模按日历日聚合的键）。 */

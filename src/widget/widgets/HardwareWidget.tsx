@@ -8,11 +8,19 @@ import { formatBytesTotal } from "../../lib/network";
 import { invoke, isTauri } from "../../lib/tauri";
 import { useT } from "../../i18n-lite";
 import { FxCount } from "../../lib/fx";
-import { useNetRate, useSystemBroadcast, type GpuInfo, type NetworkDetail } from "../../lib/system-stats";
+import {
+  fmtUptime,
+  useNetRate,
+  useSystemBroadcast,
+  type GpuInfo,
+  type NetworkDetail,
+  type SystemBroadcast,
+  type TrafficSummary
+} from "../../lib/system-stats";
 import { useWidgetConfig } from "../widget-config";
 import { Sparkline } from "./sparkline";
 
-/** W-146 单核占用率 → 色阶（任务管理器小格子）。 */
+/** 单核占用率 → 色阶（任务管理器小格子）。 */
 function coreColor(v: number): string {
   if (v >= 90) return "var(--danger, #ef4444)";
   if (v >= 60) return "var(--amber, #f59e0b)";
@@ -20,14 +28,7 @@ function coreColor(v: number): string {
   return "var(--accent-2, #4fc3f7)";
 }
 
-function fmtUptime(sec: number, tr: (s: string) => string): string {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  if (h >= 24) return `${Math.floor(h / 24)}${tr("天")} ${h % 24}${tr("小时")}`;
-  return h > 0 ? `${h}${tr("小时")} ${m}${tr("分")}` : `${m}${tr("分")}`;
-}
-
-/** W-145 网络趋势纵轴满量程：窗口峰值 ×1.2（下限 1KB/s）。 */
+/** 网络趋势纵轴满量程：窗口峰值 ×1.2（下限 1KB/s）。 */
 function netHistMax(data: number[]): number {
   const peak = data.length ? Math.max(...data) : 0;
   return Math.max(1024, peak * 1.2);
@@ -59,22 +60,22 @@ function Meter({ label, value, color }: { label: string; value: number; color: s
  * `sys:stats` broadcast (one shared sampler for all monitor widgets); in
  * browser mode it shows "–" placeholders (never fabricated).
  *
- * W-148 静态硬件信息头（CPU/GPU 型号 + 总内存 + 核数）。
- * W-149 开机时长 + 进程数（头部 meta 行）。
- * W-150 historyLen 可配趋势窗口 + showPeak 峰值虚线。
- * W-151 点击卡片展开明细（每核格子 / 每 GB 内存 / VRAM 明细）。
+ * 静态硬件信息头（CPU/GPU 型号 + 总内存 + 核数）。
+ * 开机时长 + 进程数（头部 meta 行）。
+ * historyLen 可配趋势窗口 + showPeak 峰值虚线。
+ * 点击卡片展开明细（每核格子 / 每 GB 内存 / VRAM 明细）。
  */
 export function HardwareWidget({ instanceId }: { instanceId: string }) {
   const cpuHist = useRef<number[]>([]);
   const memHist = useRef<number[]>([]);
   const gpuHist = useRef<number[]>([]);
-  /** W-145 网络趋势（全网卡聚合 ↓/↑）。 */
+  /** 网络趋势（全网卡聚合 ↓/↑）。 */
   const netDownHist = useRef<number[]>([]);
   const netUpHist = useRef<number[]>([]);
   const [, force] = useState(0);
-  /** W-151 展开的卡片（"cpu" | "ram" | "gpu" | "net" | null）。 */
+  /** 展开的卡片（"cpu" | "ram" | "gpu" | "net" | null）。 */
   const [expanded, setExpanded] = useState<string | null>(null);
-  /** W-168 网卡详情（展开网络卡片时按需拉取一次）。 */
+  /** 网卡详情（展开网络卡片时按需拉取一次）。 */
   const [netDetails, setNetDetails] = useState<NetworkDetail[] | null>(null);
   const { config } = useWidgetConfig(instanceId);
   const tr = useT();
@@ -82,7 +83,7 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
   // settings Stepper. Passed to the shared broadcast as this instance's
   // requested cadence — Rust samples once per smallest interval across widgets.
   const refreshIntervalSec = Math.max(1, (config.refreshInterval as number) || 3);
-  // W-150 趋势窗口：historyLen 个样本 × 刷新间隔 ≈ 时间范围（默认 40 ≈ 2 分钟）。
+  // 趋势窗口：historyLen 个样本 × 刷新间隔 ≈ 时间范围（默认 40 ≈ 2 分钟）。
   const historyLen = Math.max(10, Math.min(120, (config.historyLen as number) || 40));
 
   const showCPU = (config.showCPU as boolean) !== false;
@@ -101,13 +102,19 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
   const disks = frame?.disks ?? [];
   const network = frame?.networks ?? [];
   const battery = frame?.battery ?? null;
-  // W-167 全局网速显示选项。
+  // 全局网速显示选项。
   const { fmt: fmtRate } = useNetRate();
+
+  /** 已 append 过的最后一帧：effect 依赖含 historyLen 等配置项，配置变更
+   *  会让 effect 带着同一帧对象重跑——无守卫时同一采样被重复追加，趋势
+   *  曲线被阶梯状失真（「一帧一样本」不变量）。 */
+  const lastSampled = useRef<SystemBroadcast | null>(null);
 
   // Append each broadcast frame to the trend history (refs + forced re-render
   // keep the sparklines cheap — no per-tick state churn on the whole widget).
   useEffect(() => {
-    if (!frame) return;
+    if (!frame || lastSampled.current === frame) return;
+    lastSampled.current = frame;
     const s = frame.stats;
     if (showCPU) cpuHist.current = [...cpuHist.current, s.cpu_usage].slice(-historyLen);
     if (showRAM) memHist.current = [...memHist.current, s.mem_percent].slice(-historyLen);
@@ -126,17 +133,23 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frame, historyLen]);
 
-  // W-168 展开网络卡片时按需拉取一次网卡详情（名称/类型/MAC/IP/链路速度）。
+  // 展开网络卡片时拉取网卡详情（名称/类型/MAC/IP/链路速度），展开
+  // 期间每 60s 重拉：VPN 拨上/断开、DHCP 续租后不展示陈旧 IP/网关。
   useEffect(() => {
     if (expanded !== "net" || !isTauri()) return;
     let alive = true;
-    void invoke<NetworkDetail[]>("get_network_details")
-      .then((d) => {
-        if (alive) setNetDetails(d);
-      })
-      .catch(() => {});
+    const load = () => {
+      void invoke<NetworkDetail[]>("get_network_details")
+        .then((d) => {
+          if (alive) setNetDetails(d);
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = window.setInterval(load, 60_000);
     return () => {
       alive = false;
+      window.clearInterval(id);
     };
   }, [expanded]);
 
@@ -150,7 +163,7 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
       : stats
         ? `${Math.round(gpu)}%`
         : tr("加载中…");
-  /* BUG-1：多卡列表（后端 DXGI 名称 + 每-LUID 采样）；旧后端/空数据回退单标量。 */
+  /* 多卡列表（后端 DXGI 名称 + 每-LUID 采样）；旧后端/空数据回退单标量。 */
   const gpuList: GpuInfo[] = stats?.gpus?.length
     ? stats.gpus
     : stats && stats.gpu_present
@@ -165,18 +178,41 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
       : [];
   const gpuModels = gpuList.map((g) => g.model).filter(Boolean);
 
-  /** W-151 点击卡片切换展开态（再点收起）。 */
+  /** 点击卡片切换展开态（再点收起）。 */
   const toggleCell = (key: string) => setExpanded((cur) => (cur === key ? null : key));
 
-  // W-145 网络聚合速率（全部在连网卡求和）与 W-153 累计收发字节。
+  // 网络聚合速率（全部在连网卡求和）与 累计收发字节。
   const netAggRx = network.reduce((s, n) => s + (n.up ? n.rx_bps : 0), 0);
   const netAggTx = network.reduce((s, n) => s + (n.up ? n.tx_bps : 0), 0);
   const netTotalRx = network.reduce((s, n) => s + n.total_received, 0);
   const netTotalTx = network.reduce((s, n) => s + n.total_transmitted, 0);
 
+  /* 「今日收发」改用 net_history 的当日口径——total_received 是开机以来
+     累计字节（挂机一周显示 7 天总量却标着「今日」）。60s 轮询足够（量级为
+     字节累计，非速率）；DB 不可用时回退旧口径。仅在显示网络区时轮询——
+     关掉 showNetwork 的实例不必每分钟空打一条 IPC。 */
+  const [todayTraffic, setTodayTraffic] = useState<{ rx: number; tx: number } | null>(null);
+  useEffect(() => {
+    if (!isTauri() || !showNetwork) return;
+    let alive = true;
+    const load = () => {
+      void invoke<TrafficSummary>("get_traffic_summary")
+        .then((s) => {
+          if (alive && s) setTodayTraffic({ rx: s.today_rx, tx: s.today_tx });
+        })
+        .catch(() => {});
+    };
+    load();
+    const id = window.setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [showNetwork]);
+
   return (
     <div className="hw">
-      {/* W-148 静态硬件信息头：型号行 + meta 行。 */}
+      {/* 静态硬件信息头：型号行 + meta 行。 */}
       {showStaticInfo && stats && (
         <div className="hw-static">
           <div className="hw-static-models">
@@ -195,7 +231,9 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
               {tr(" 核")}
             </span>
             <span>
-              {stats.mem_total_gb.toFixed(0)} GB{tr("内存")}
+              {/* 空格独立于词条：zh「32 GB 内存」/ en「32 GB Memory」，
+                  直接把 GB 拼进 tr 会让英文变成 GBMemory。 */}
+              {stats.mem_total_gb.toFixed(0)} GB {tr("内存")}
             </span>
             {showUptimeProcess && stats.uptime_secs > 0 && (
               <>
@@ -245,7 +283,7 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
             <div className="hw-cell-sub">
               {stats?.cores ?? 0} {tr("核")}
             </div>
-            {/* W-151 展开：grid-rows 0fr→1fr 平滑展开（天气预警同款样板）。 */}
+            {/* 展开：grid-rows 0fr→1fr 平滑展开（天气预警同款样板）。 */}
             <div className={`hw-detail-wrap${expanded === "cpu" ? " open" : ""}`}>
               <div className="hw-detail-clip">
                 {stats && stats.cpu_per_core.length > 0 && (
@@ -356,14 +394,14 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
               <div className="hw-detail-clip">
                 {stats && (
                   <div className="hw-detail">
-                    {/* BUG-1：逐卡展示型号/占用/显存——独显空闲时也可见。 */}
+                    {/* 逐卡展示型号/占用/显存——独显空闲时也可见。 */}
                     {gpuList.flatMap((g, i) => [
                       <span key={`gn${i}`} className="hw-detail-wide" title={g.model || undefined}>
                         {g.model || tr("型号未知")} · {Math.round(g.usage)}%
                       </span>,
                       ...(g.mem_total_gb > 0
                         ? [
-                            <span key={`gm${i}`}>
+                            <span key={`gm${i}`} title={tr("显存为已提交口径（独占+共享，与任务管理器一致）")}>
                               {tr("显存")} {g.mem_used_gb.toFixed(1)} / {g.mem_total_gb.toFixed(1)} GB
                             </span>
                           ]
@@ -377,7 +415,7 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
         )}
       </div>
 
-      {/* W-145/W-153 网络卡片：↓/↑ 聚合速率 + 双趋势曲线 + 可展开明细。 */}
+      {/* 网络卡片：↓/↑ 聚合速率 + 双趋势曲线 + 可展开明细。 */}
       {showNetwork && (
         <div
           className={`hw-cell${expanded === "net" ? " expanded" : ""}`}
@@ -417,7 +455,8 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
               {frame && (
                 <div className="hw-detail">
                   <span>
-                    {tr("今日收发")} {formatBytesTotal(netTotalRx)} / {formatBytesTotal(netTotalTx)}
+                    {tr("今日收发")} {formatBytesTotal(todayTraffic?.rx ?? netTotalRx)} /{" "}
+                    {formatBytesTotal(todayTraffic?.tx ?? netTotalTx)}
                   </span>
                   {(
                     netDetails ??
@@ -504,6 +543,11 @@ export function HardwareWidget({ instanceId }: { instanceId: string }) {
             <div className="hw-row-right">
               <span className="hw-chip">
                 {Math.round(battery.percent)}% {battery.charging ? tr("充电中") : tr("使用中")}
+                {/* 剩余时间：仅放电且系统给出有效估计时显示（secs_left=0
+                    表示未知/交流供电，隐藏而非编造）。 */}
+                {!battery.charging && battery.secs_left > 0
+                  ? ` · ${tr("剩余约 {t}", { t: fmtUptime(battery.secs_left, tr) })}`
+                  : ""}
               </span>
             </div>
           </div>

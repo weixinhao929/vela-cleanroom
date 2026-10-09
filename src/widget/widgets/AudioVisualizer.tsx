@@ -3,13 +3,28 @@
  * 性能设计：Float32Array 复用、DPR 缓存、主题色低频刷新、空闲降帧 15fps、
  * 页面隐藏停绘、reduce-motion 静帧；设备切换经 Rust 枚举事件驱动。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Volume2, VolumeX } from "lucide-react";
 import { invoke, isTauri } from "../../lib/tauri";
+import { useTauriEvent } from "../../lib/use-tauri-event";
 import { prefersReducedMotion } from "../../lib/anim";
+import { coveredTickGate } from "../../lib/use-covered";
 import { animDurations } from "../../lib/durations";
 import { useT } from "../../i18n-lite";
+
+/* （多实例参数互踩）：Rust 采集线程是全局单管线（同参共享、异参换代重拉，
+ * ），两个可视化实例配不同 mode/dist 时后启动者会顶掉先前的口径，先前
+ * 的订阅者收到的是别人口径的频谱。前端把 mode/dist 收敛为窗口级共享参数：
+ * 最后挂载/改配置的实例生效，全部实例跟随（口径全局一致，不再互踩）。 */
+type AudioParams = { mode: AudioSourceMode; dist: BandDistMode };
+const audioParamsByInstance = new Map<object, AudioParams>();
+const audioParamListeners = new Set<() => void>();
+function currentAudioParams(): AudioParams | null {
+  let last: AudioParams | null = null;
+  for (const p of audioParamsByInstance.values()) last = p;
+  return last;
+}
 
 /**
  * 音频监控小组件的实时频谱可视化。
@@ -18,21 +33,21 @@ import { useT } from "../../i18n-lite";
  * （audio:spectrum 事件，已做过快攻慢放包络），前端在 rAF 里再插值一层
  * （上升快、下降慢），两级平滑叠加出连续丝滑的动画。
  *
- * 样式（visualStyle / W-126 扩展）：
- *  - bars      经典渐变圆头条 + 底部倒影
- *  - wave      平滑曲线 + 渐变填充
- *  - mirror    中轴上下对称生长的条
- *  - minimal   细线极简点
- *  - radial    环形放射频谱（中心圆随音量脉动）
+ * 样式（visualStyle / 扩展）：
+ *  - bars 经典渐变圆头条 + 底部倒影
+ *  - wave 平滑曲线 + 渐变填充
+ *  - mirror 中轴上下对称生长的条
+ *  - minimal 细线极简点
+ *  - radial 环形放射频谱（中心圆随音量脉动）
  *  - butterfly 蝴蝶双翼（左右对称、上下呼应，Rainmeter 皮肤风）
  *
- * 可调参数（W-119/124/125/127）：
+ * 可调参数（/124/125/127）：
  *  - bandCount 前端把 64 频带重采样为 16–96 根（取区间峰值，宽窄卡片皆宜）
- *  - peakHold  峰值保持：每根上方一条缓慢下落的帽线（专业频谱表语言）
+ *  - peakHold 峰值保持：每根上方一条缓慢下落的帽线（专业频谱表语言）
  *  - colorMode theme 跟随主题 / mono 单色 / rainbow 彩虹渐变
- *  - gain      灵敏度（0.5–3）：小音量场景把频谱"抬"起来
+ *  - gain 灵敏度（0.5–3）：小音量场景把频谱"抬"起来
  *  - smoothing 平滑度（0–1）：替换绘制循环里的硬编码插值系数
- *  - dist      频带分布 log（音乐）/ linear（语音），传给 Rust 重建分带
+ *  - dist 频带分布 log（音乐）/ linear（语音），传给 Rust 重建分带
  *
  * 主题自适应：颜色取自 --accent / --accent-2 / --ink（每 400ms 刷新缓存），
  * 跟随全局预设与主色实时变化；空闲（无声/非 Tauri）时播放低幅呼吸动画。
@@ -68,6 +83,41 @@ function readTheme(): ThemeColors {
   };
 }
 
+/* 主题色缓存（模块级共享）：绘制每帧读 computed style 代价高，定时
+ * 400ms 刷新；窗口隐藏停表（绘制循环本就 hidden 早退，别让 getComputedStyle
+ * 空转），恢复可见立即重读一次再续表。多实例共享一份表——此前每实例一个
+ * 定时器 + 一对 visibilitychange 监听。监听装好后常驻（模块级单例语义）。 */
+let sharedTheme: ThemeColors | null = null;
+let sharedThemeTimer = 0;
+let sharedThemeVisInstalled = false;
+
+function getSharedTheme(): ThemeColors {
+  if (sharedTheme === null) sharedTheme = readTheme();
+  if (!sharedThemeVisInstalled) {
+    sharedThemeVisInstalled = true;
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        if (sharedThemeTimer !== 0) {
+          window.clearInterval(sharedThemeTimer);
+          sharedThemeTimer = 0;
+        }
+      } else {
+        sharedTheme = readTheme();
+        ensureSharedThemeTimer();
+      }
+    });
+  }
+  ensureSharedThemeTimer();
+  return sharedTheme;
+}
+
+function ensureSharedThemeTimer(): void {
+  if (sharedThemeTimer !== 0 || document.hidden) return;
+  sharedThemeTimer = window.setInterval(() => {
+    sharedTheme = readTheme();
+  }, 400);
+}
+
 export type AudioSourceMode = "playback" | "microphone" | "both";
 
 export function AudioVisualizer({
@@ -99,50 +149,60 @@ export function AudioVisualizer({
   const liveRef = useRef({ style, colorMode, gain, smoothing, peakHold, bandCount });
   liveRef.current = { style, colorMode, gain, smoothing, peakHold, bandCount };
 
+  /* 共享参数注册：本实例配置变化/挂载 → 写入注册表并广播；卸载 → 摘除并
+   * 广播（回落到最后一个存活实例的口径）。eff* 供采集管线使用。 */
+  const instanceKeyRef = useRef<object>({});
+  const [, bumpAudioParams] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => {
+    const key = instanceKeyRef.current;
+    // 先 delete 再 set：Map 更新既有键不改变插入顺序，「最后挂载/改配置的
+    // 实例生效」在改配置方向会失灵（先挂载的实例改 mode 仍在队首，队尾
+    // 实例的旧口径继续生效）。delete+set 把改配置者移到队尾，语义与注释一致。
+    audioParamsByInstance.delete(key);
+    audioParamsByInstance.set(key, { mode, dist });
+    audioParamListeners.forEach((fn) => fn());
+    return () => {
+      audioParamsByInstance.delete(key);
+      audioParamListeners.forEach((fn) => fn());
+    };
+  }, [mode, dist]);
+  useEffect(() => {
+    const fn = bumpAudioParams;
+    audioParamListeners.add(fn);
+    return () => {
+      audioParamListeners.delete(fn);
+    };
+  }, []);
+  const sharedParams = currentAudioParams();
+  const effMode = sharedParams?.mode ?? mode;
+  const effDist = sharedParams?.dist ?? dist;
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const NB = Math.max(8, Math.min(96, Math.round(liveRef.current.bandCount)));
+    // （bandCount 整拆管线）：数组按上限 96 分配一次，NB 改为每拍从
+    // liveRef 现读——改频带数不再停 Rust 采集、重建订阅与 canvas 管线。
+    const MAX_NB = 96;
+    const nbOf = () => Math.max(8, Math.min(MAX_NB, Math.round(liveRef.current.bandCount)));
     /** Rust 推送、重采样 + 增益后的最新目标值（0~1）。 */
-    const target = new Float32Array(NB);
+    const target = new Float32Array(MAX_NB);
     /** rAF 插值后的平滑值。 */
-    const smoothed = new Float32Array(NB);
-    /** W-119 峰值保持帽线（缓慢下落，只升不降的视觉记忆）。 */
-    const peaks = new Float32Array(NB);
+    const smoothed = new Float32Array(MAX_NB);
+    /** 峰值保持帽线（缓慢下落，只升不降的视觉记忆）。 */
+    const peaks = new Float32Array(MAX_NB);
     let level = 0;
     let levelSmooth = 0;
     let alive = true;
+    // （presence 空闲频谱冻结）：presence 暂停后 audio:spectrum 停发，
+    // target[] 停在最后一帧的非零值——能量判定看不出「无事件」，频谱条冻结
+    // 在半高。记录最近事件时刻，>2s 无事件按 silent 处理（回落空闲呼吸）。
+    let lastEventAt = 0;
 
-    // --- 主题色缓存：绘制每帧读 computed style 代价高，定时刷新。
-    // 窗口隐藏时停表（绘制循环本来就 hidden 早退，采集也随 F-6 停了），
-    // 别让 getComputedStyle 每 400ms 空转；恢复可见即重读一次再续表。 ---
-    let theme = readTheme();
-    let themeTimer = window.setInterval(() => {
-      theme = readTheme();
-    }, 400);
-    const pauseThemeTimer = () => {
-      if (themeTimer !== 0) {
-        window.clearInterval(themeTimer);
-        themeTimer = 0;
-      }
-    };
-    const resumeThemeTimer = () => {
-      if (themeTimer === 0) {
-        theme = readTheme();
-        themeTimer = window.setInterval(() => {
-          theme = readTheme();
-        }, 400);
-      }
-    };
-    const onThemeVis = () => {
-      if (document.hidden) pauseThemeTimer();
-      else resumeThemeTimer();
-    };
-    document.addEventListener("visibilitychange", onThemeVis);
-    if (document.hidden) pauseThemeTimer();
+    // 主题色缓存已上移模块级共享（getSharedTheme）：多实例一份
+    // 400ms 刷新表 + 可见性暂停，本 effect 不再持有定时器与监听。
 
     // --- 频谱事件订阅（Tauri）；浏览器模式无事件，走空闲动画。 ---
     let unlisten: (() => void) | undefined;
@@ -150,7 +210,7 @@ export function AudioVisualizer({
     // start/stop 是异步 IPC 且顺序不保证：若 cleanup 的 stop 先于 start 到达，
     // Rust 侧计数为 0 会忽略 stop，随后 start 落地 → 计数永久 +1，采集线程
     // 从此无人回收。用 running 保证「成功 start 必有对应 stop」。
-    // F-6：窗口隐藏时停采集、恢复可见再重启；running 守卫确保 refcount 严格配对。
+    // 窗口隐藏时停采集、恢复可见再重启；running 守卫确保 refcount 严格配对。
     // starting/wanted：start 在途时再次 doStart（快速 hide→show）不能再发一次
     // ——此前 running 只在 resolve 后置位，两次并发 start 让 Rust 计数 +2、
     // cleanup 只 stop 一次；在途期间收到 stop 也要记住"不再想要"，落地后立即回收。
@@ -168,7 +228,7 @@ export function AudioVisualizer({
       wanted = true;
       if (running || starting) return;
       starting = true;
-      void invoke("start_audio_spectrum", { mode, dist })
+      void invoke("start_audio_spectrum", { mode: effMode, dist: effDist })
         .then(() => {
           starting = false;
           running = true;
@@ -188,12 +248,14 @@ export function AudioVisualizer({
       void listen<{ level: number; bands: number[] }>("audio:spectrum", (e) => {
         const bands = e.payload?.bands;
         if (!Array.isArray(bands)) return;
-        // W-119/125：64 源频带 → bandCount 根（区间取峰保留能量感），
-        // 再乘灵敏度增益，小音量也能撑起画面。
+        lastEventAt = performance.now();
+        // /125：64 源频带 → bandCount 根（区间取峰保留能量感），
+        // 再乘灵敏度增益，小音量也能撑起画面。NB 现读（bandCount 实时可变）。
+        const curNB = nbOf();
         const g = Math.max(0.5, Math.min(3, liveRef.current.gain));
-        for (let j = 0; j < NB; j++) {
-          const s = Math.floor((j * SOURCE_BANDS) / NB);
-          const t = Math.floor(((j + 1) * SOURCE_BANDS) / NB);
+        for (let j = 0; j < curNB; j++) {
+          const s = Math.floor((j * SOURCE_BANDS) / curNB);
+          const t = Math.floor(((j + 1) * SOURCE_BANDS) / curNB);
           let peak = 0;
           for (let k = s; k < Math.max(t, s + 1) && k < SOURCE_BANDS; k++) {
             const v = Number(bands[k]);
@@ -203,10 +265,13 @@ export function AudioVisualizer({
         }
         const lv = Number(e.payload?.level);
         level = Number.isFinite(lv) ? Math.min(1, Math.max(0, lv)) : 0;
-      }).then((f) => {
-        if (disposed) f();
-        else unlisten = f;
-      });
+      })
+        .then((f) => {
+          if (disposed) f();
+          else unlisten = f;
+        })
+        /* 注册失败不留未处理 rejection（频谱是增强行为）。 */
+        .catch((err: unknown) => console.error("[audio-visualizer] listen audio:spectrum failed:", err));
     }
 
     // --- 尺寸自适应（DPR 感知）。CSS 尺寸缓存在闭包里由 ResizeObserver 更新，
@@ -232,14 +297,16 @@ export function AudioVisualizer({
     // 降到 ~30fps —— 静音时全速重绘 64 条频谱纯属浪费；不再压到 15fps，
     // 正弦呼吸在 15fps 下呈可见离散步进（抽帧感），30fps 仍省一半开销。
     // 双信号：应用内「减少动态」开关（data-reduce-motion）+ OS 偏好。
-    // C11 实时性：不再在 effect 建立时快照（运行中切换偏好不生效），改为
+    // 实时性：不再在 effect 建立时快照（运行中切换偏好不生效），改为
     // draw 循环体内每帧实时读——prefersReducedMotion() 是廉价读，热路径安全。
     const IDLE_FRAME_MS = 33;
     const start = performance.now();
     let lastDraw = start;
     const draw = (now: number) => {
       if (!alive) return;
-      if (document.hidden) {
+      if (document.hidden || coveredTickGate()) {
+        // [COVERED]：被前台全屏完全遮挡时与
+        // document.hidden 同待遇——保活 rAF 但跳过绘制工作。
         requestAnimationFrame(draw);
         return;
       }
@@ -248,11 +315,13 @@ export function AudioVisualizer({
       const h = cssH;
       const t = (now - start) / 1000;
       const { style: st, colorMode: cm, smoothing: sm, peakHold: ph } = liveRef.current;
+      const NB = nbOf();
 
       // 是否有真实音频：目标值几乎为零且事件从未带来能量 → 空闲呼吸。
       let energy = 0;
       for (let i = 0; i < NB; i++) energy += target[i];
-      const silent = energy < 0.02;
+      const stale = isTauri() && lastEventAt > 0 && performance.now() - lastEventAt > 2000;
+      const silent = stale || energy < 0.02;
 
       if (silent && now - lastDraw < IDLE_FRAME_MS && !reduceMotion) {
         requestAnimationFrame(draw);
@@ -268,7 +337,7 @@ export function AudioVisualizer({
 
       ctx.clearRect(0, 0, w, h);
 
-      // W-125：平滑度滑杆驱动插值系数（0.5 时与旧硬编码 0.5/0.12 一致）。
+      // 平滑度滑杆驱动插值系数（0.5 时与旧硬编码 0.5/0.12 一致）。
       const kUp = Math.max(0.15, 0.75 - sm * 0.5);
       const kDown = 0.02 + sm * 0.2;
       for (let i = 0; i < NB; i++) {
@@ -283,44 +352,79 @@ export function AudioVisualizer({
       }
       levelSmooth += ((silent ? 0.12 : level) - levelSmooth) * (1 - Math.pow(0.82, norm));
 
+      // 绘制函数按数组长度迭代：传 [0, NB) 子视图，bandCount 变化即时生效。
+      const theme = getSharedTheme();
+      const bands = smoothed.subarray(0, NB);
+      const peakView = peaks.subarray(0, NB);
       if (st === "wave") {
-        drawWave(ctx, w, h, smoothed, theme, t, cm);
+        drawWave(ctx, w, h, bands, theme, t, cm);
       } else if (st === "mirror") {
-        drawMirror(ctx, w, h, smoothed, theme, cm, ph ? peaks : null);
+        drawMirror(ctx, w, h, bands, theme, cm, ph ? peakView : null);
       } else if (st === "minimal") {
-        drawMinimal(ctx, w, h, smoothed, theme, cm);
+        drawMinimal(ctx, w, h, bands, theme, cm);
       } else if (st === "radial") {
-        drawRadial(ctx, w, h, smoothed, theme, t, levelSmooth, silent, cm);
+        drawRadial(ctx, w, h, bands, theme, t, levelSmooth, silent, cm);
       } else if (st === "butterfly") {
-        drawButterfly(ctx, w, h, smoothed, theme, t, cm);
+        drawButterfly(ctx, w, h, bands, theme, t, cm);
       } else {
-        drawBars(ctx, w, h, smoothed, theme, silent, cm, ph ? peaks : null);
+        drawBars(ctx, w, h, bands, theme, silent, cm, ph ? peakView : null);
       }
 
-      if (reduceMotion) return; // 静态基线一帧即止，不再排帧
+      // reduce-motion 下不排 rAF（静态基线一帧即止），但挂一个低频
+      // 监听——运行期**关闭**偏好时恢复绘制循环（此前循环永久死亡，只有
+      // 开启方向能实时生效）；偏好仍开启时零绘制开销。
+      if (reduceMotion) {
+        if (!reduceMotionWatcher) {
+          reduceMotionWatcher = window.setInterval(() => {
+            // 偏好翻回 false（用户关掉「减少动态」）→ 重新入列，draw 自续。
+            if (!alive || prefersReducedMotion()) return;
+            requestAnimationFrame(draw);
+          }, 1000);
+        }
+        return;
+      }
+      if (reduceMotionWatcher) {
+        window.clearInterval(reduceMotionWatcher);
+        reduceMotionWatcher = 0;
+      }
       requestAnimationFrame(draw);
     };
+    let reduceMotionWatcher = 0;
     requestAnimationFrame(draw);
 
     return () => {
       alive = false;
       disposed = true;
-      pauseThemeTimer();
-      document.removeEventListener("visibilitychange", onThemeVis);
+      if (reduceMotionWatcher) window.clearInterval(reduceMotionWatcher);
       ro.disconnect();
       unlisten?.();
       document.removeEventListener("visibilitychange", onVis);
       doStop();
     };
-    // mode / dist 变化时重启采集管线，让 Rust 侧按新检测源/分带重建；
-    // 其余参数经 liveRef 实时生效，不重启。bandCount 例外：effect 建立时按
-    // 它分配 Float32Array 并固定长度，绘制循环不重读——不加入 deps 的话改
-    // 频带数永远不生效（头注释宣称的「实时生效」对此参数不成立）。
-  }, [mode, dist, bandCount]);
+    // mode / dist（共享口径 eff*）变化时重启采集管线，让 Rust 侧按新检测源/
+    // 分带重建；其余参数（含 bandCount）经 liveRef 实时生效，不重启——bandCount
+    // 的数组按上限分配、每拍现读 NB（见 effect 头部），不再需要进 deps 整拆管线。
+  }, [effMode, effDist]);
 
-  /* W-128 点击频谱切换系统静音：切换后 1.5s 内浮现状态角标；退场先摘 .show
+  /* 点击频谱切换系统静音：切换后 1.5s 内浮现状态角标；退场先摘 .show
      播完过渡再延迟卸载（setTimeout + cleanup），避免角标瞬间消失。 */
   const [muted, setMuted] = useState(false);
+  /* muted 与系统真实静音态对齐（审计修复）：挂载初值走 get_system_mute，
+   * 此后键盘静音键/其它软件改静音经 osd:volume（audio_events.rs 默认端点
+   * 回调，Rust 已节流）同步——此前 aria-pressed 只反映本组件自己的点击，
+   * 外部改静音后状态陈旧。本组件的 toggle 也会触发端点回调，两条路径
+   * 收敛到同一事件源。 */
+  useTauriEvent<{ level: number; muted: boolean } | null>("osd:volume", (payload) => {
+    if (payload && typeof payload.muted === "boolean") setMuted(payload.muted);
+  });
+  useEffect(() => {
+    if (!isTauri()) return;
+    void invoke<boolean>("get_system_mute")
+      .then((m) => {
+        if (typeof m === "boolean") setMuted(m);
+      })
+      .catch(() => {});
+  }, []);
   const [muteFlash, setMuteFlash] = useState<string | null>(null);
   const [flashClosing, setFlashClosing] = useState(false);
   const flashTimer = useRef(0);
@@ -337,7 +441,7 @@ export function AudioVisualizer({
         flashTimer.current = window.setTimeout(() => {
           setFlashClosing(true);
           // 与 .music-mute-flash 的 --anim-dur 过渡对齐（时长单一真源运行时
-          // 读取，P1：写死 260ms 不随动效速度档缩放），播完再卸载。
+          // 读取：写死 260ms 不随动效速度档缩放），播完再卸载。
           flashHideTimer.current = window.setTimeout(() => setMuteFlash(null), animDurations().animMs + 10);
         }, 1500);
       })
@@ -373,7 +477,7 @@ export function AudioVisualizer({
 }
 
 /* ------------------------------------------------------------------ */
-/* 配色（W-124）：theme 跟随主题 / mono 单色 / rainbow 按频带取色相。    */
+/* 配色：theme 跟随主题 / mono 单色 / rainbow 按频带取色相。 */
 /* ------------------------------------------------------------------ */
 
 function bandColor(i: number, n: number, theme: ThemeColors, cm: BandColorMode): string {
@@ -425,7 +529,7 @@ function drawBars(
   }
   ctx.shadowBlur = 0;
 
-  // W-119 峰值保持帽线：每根条上方一条 2px 横线缓慢下落。
+  // 峰值保持帽线：每根条上方一条 2px 横线缓慢下落。
   if (peaks) {
     ctx.fillStyle = hexToRgba(cm === "mono" ? theme.accent : theme.accent2, 0.85);
     for (let i = 0; i < n; i++) {
@@ -586,7 +690,7 @@ function drawMinimal(
 /* ------------------------------------------------------------------ */
 
 /**
- * 环形频谱（风格化 AudioVisualizer）：频带呈放射状围绕中心圆，
+ * 环形频谱（AudioVisualizer 风）：频带呈放射状围绕中心圆，
  * 圆环随音量脉动 + 整体缓慢旋转；圆点端帽 + 外辉光，声浪从圆心向外生长。
  */
 function drawRadial(
@@ -617,6 +721,10 @@ function drawRadial(
   ctx.fillRect(0, 0, w, h);
 
   // 频带放射条：向外长条 + 向内短反射，色相沿圆周渐变。
+  // 主题双色预解析一次通道，逐频带数值混色——此前每频带 2 次字符串
+  // 解析 + 模板格式化（48 频带 × 每帧）。解析失败回退旧 mixColor 路径。
+  const pa = parseChannel(theme.accent);
+  const pb = parseChannel(theme.accent2);
   const barLen = maxR - ring - 2;
   if (barLen > 2) {
     ctx.lineCap = "round";
@@ -625,7 +733,12 @@ function drawRadial(
       const ca = Math.cos(a);
       const sa = Math.sin(a);
       const len = Math.max(1.5, v[i] * barLen);
-      const stroke = cm === "theme" ? mixColor(theme.accent, theme.accent2, i / n) : bandColor(i, n, theme, cm);
+      const stroke =
+        cm === "theme"
+          ? pa && pb
+            ? mixChannels(pa, pb, i / n)
+            : mixColor(theme.accent, theme.accent2, i / n)
+          : bandColor(i, n, theme, cm);
       // 外侧主条。
       ctx.strokeStyle = stroke;
       ctx.lineWidth = Math.max(1.5, ((Math.PI * 2 * ring) / n) * 0.5);
@@ -661,7 +774,7 @@ function drawRadial(
 }
 
 /**
- * W-126 蝴蝶样式：左右对称的双翼轮廓 —— 上翼随频带生长，下翼取反相频带
+ * 蝴蝶样式：左右对称的双翼轮廓 —— 上翼随频带生长，下翼取反相频带
  * 呼应，整体随节拍开合，像一只停在桌面上的光蝶。
  */
 function drawButterfly(
@@ -745,18 +858,51 @@ function mixColor(from: string, to: string, t: number): string {
   const pa = parseChannel(from);
   const pb = parseChannel(to);
   if (!pa || !pb) return from;
+  return mixChannels(pa, pb, t);
+}
+
+/** 预解析通道的数值混色（热路径用：radial 每帧逐频带，见 drawRadial）。 */
+function mixChannels(pa: [number, number, number], pb: [number, number, number], t: number): string {
   const r = Math.round(pa[0] + (pb[0] - pa[0]) * t);
   const g = Math.round(pa[1] + (pb[1] - pa[1]) * t);
   const b = Math.round(pa[2] + (pb[2] - pa[2]) * t);
   return `rgb(${r},${g},${b})`;
 }
 
-function parseChannel(color: string): [number, number, number] | null {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color.trim());
-  if (m) return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
-  const m2 = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(color.trim());
-  if (m2) return [Number(m2[1]), Number(m2[2]), Number(m2[3])];
+/* （hsl/oklch 解析失真）：主题变量可能是 hsl()/oklch()/color-mix() 等现代
+ * 写法，字面量正则不识别 → mixColor 退化为单色渐变、hexToRgba 丢 alpha。
+ * 经离屏 canvas 的 fillStyle 让浏览器引擎归一成 #rrggbb/rgba() 再读回，
+ * 覆盖全部合法颜色语法（无头模式下 getContext 失败则维持旧回退）。 */
+let normalizeCanvas: HTMLCanvasElement | null = null;
+
+function parseRgbish(color: string): [number, number, number] | null {
+  const hex = color.trim().match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (hex) return [parseInt(hex[1], 16), parseInt(hex[2], 16), parseInt(hex[3], 16)];
+  const rgb = color.trim().match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i);
+  if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
   return null;
+}
+
+function normalizeViaCanvas(color: string): string | null {
+  try {
+    if (!normalizeCanvas) normalizeCanvas = document.createElement("canvas");
+    const ctx = normalizeCanvas.getContext("2d");
+    if (!ctx) return null;
+    // 哨兵色：非法颜色赋值后 fillStyle 保持原值，与哨兵相等即解析失败。
+    ctx.fillStyle = "#010203";
+    ctx.fillStyle = color;
+    const normalized = String(ctx.fillStyle);
+    return normalized === "#010203" ? null : normalized;
+  } catch {
+    return null;
+  }
+}
+
+function parseChannel(color: string): [number, number, number] | null {
+  const direct = parseRgbish(color);
+  if (direct) return direct;
+  const normalized = normalizeViaCanvas(color);
+  return normalized ? parseRgbish(normalized) : null;
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -772,23 +918,27 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 
 /** 支持 #rgb/#rrggbb/rgba()；非可解析色原样返回并给出回退 alpha。 */
 function hexToRgba(color: string, alpha: number): string {
-  const m = /^#?([a-f\d])([a-f\d])([a-f\d])$/i.exec(color.trim());
+  const m = color.trim().match(/^#?([a-f\d])([a-f\d])([a-f\d])$/i);
   if (m) {
     const r = parseInt(m[1] + m[1], 16);
     const g = parseInt(m[2] + m[2], 16);
     const b = parseInt(m[3] + m[3], 16);
     return `rgba(${r},${g},${b},${alpha})`;
   }
-  const m2 = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(color.trim());
+  const m2 = color.trim().match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
   if (m2) {
     return `rgba(${parseInt(m2[1], 16)},${parseInt(m2[2], 16)},${parseInt(m2[3], 16)},${alpha})`;
   }
-  const m3 = /^rgba?\(([^)]+)\)$/i.exec(color.trim());
+  const m3 = color.trim().match(/^rgba?\(([^)]+)\)$/i);
   if (m3) {
     const parts = m3[1].split(/[\s,/]+/).filter(Boolean);
     if (parts.length >= 3) {
       return `rgba(${parts[0]},${parts[1]},${parts[2]},${alpha})`;
     }
   }
+  // hsl()/oklch() 等现代写法经 canvas 归一成 #rrggbb 后补 alpha，
+  // 不再原样返回（丢失 alpha 的颜色用于半透明中轴线会完全不透明）。
+  const ch = parseChannel(color);
+  if (ch) return `rgba(${ch[0]},${ch[1]},${ch[2]},${alpha})`;
   return color;
 }

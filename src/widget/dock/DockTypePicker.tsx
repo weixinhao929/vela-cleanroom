@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 「+」磁贴的类型选择器（F-2 入口 b，ISLAND-SORT）：锚定在「+」磁贴旁的玻璃弹层，
+ * 「+」磁贴的类型选择器（入口 b，ISLAND-SORT）：锚定在「+」磁贴旁的玻璃弹层，
  * 按 CATEGORY_NAMES 分组列出 WIDGET_REGISTRY 全部类型（图标 + 名称 + 有迷你形态
  * 标记），顶部搜索走 match-tier 五级评分（名称 / 描述 / 拼音首字母 / 类型 id），
  * 选中即 onPick(type)，调用方 addDockTile 追加到末尾。
@@ -27,6 +27,7 @@ import { Search, X } from "lucide-react";
 import { useT } from "../../i18n-lite";
 import { useDelayedUnmount } from "../../lib/anim";
 import { animDurations } from "../../lib/durations";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useDismissable } from "../../lib/use-dismissable";
 import { scoreMatch } from "../../lib/match-tier";
 import { pinyinInitials } from "../../lib/pinyin";
@@ -61,6 +62,10 @@ export type PickerGroup = { category: WidgetCategory; items: WidgetMeta[] };
  * 过滤 + 分组（纯函数，便于单测）。query 为空 → 全部类型按 registry 顺序分组；
  * 否则按 match-tier 评分过滤（名称 / 描述 / 中文名拼音首字母 / 类型 id 四路取最大，
  * 「jsq」命中「计算器」、「calc」命中 calculator），组内按分降序、同分保持 registry 顺序。
+ * query 非空时**组间也按组内最高分降序**——此前组序固定为 focus>tools>
+ * system>online，回车/首项选到的是「分类第一」而非全局最佳匹配（「jsq」会被
+ * focus 类的弱匹配劫持）；组内 + 组间双降序后 flatMap 拉平即全局降序，方向键
+ * 遍历顺序与之一致。query 为空保持固定分类序。
  */
 export function groupPickerItems(
   registry: readonly WidgetMeta[],
@@ -85,10 +90,18 @@ export function groupPickerItems(
     }))
     .filter((x) => x.score > 0);
   if (q) scored.sort((a, b) => b.score - a.score);
-  return CATEGORY_ORDER.map((category) => ({
+  const groups: PickerGroup[] = CATEGORY_ORDER.map((category) => ({
     category,
     items: scored.filter((x) => x.meta.category === category).map((x) => x.meta)
   })).filter((g) => g.items.length > 0);
+  if (q) {
+    /* 组间按组内最高分（scored 已全局降序，首个同分类项即峰值；并列保持
+       分类序——sort 稳定）。 */
+    const top = new Map<WidgetCategory, number>();
+    for (const x of scored) if (!top.has(x.meta.category)) top.set(x.meta.category, x.score);
+    groups.sort((a, b) => (top.get(b.category) ?? 0) - (top.get(a.category) ?? 0));
+  }
+  return groups;
 }
 
 type Placement = ReturnType<typeof placePopover>;
@@ -118,9 +131,13 @@ export function DockTypePicker({ anchor, open, onClose, onPick, isTypeDisabled }
   const place = useCallback(() => {
     const el = ref.current;
     if (!el) return;
+    /* 锚点来自「+」按钮 gBCR（视觉坐标）：除回布局单位再定位（fixed left/top
+       渲染会再乘 zoom）；offsetWidth / innerWidth 本就是未缩放值。 */
+    const z = uiZoom();
+    const a = anchorRef.current;
     setPos(
       placePopover(
-        anchorRef.current,
+        { x: a.x / z, y: a.y / z, w: a.w / z, h: a.h / z },
         { w: el.offsetWidth, h: el.offsetHeight },
         { w: window.innerWidth, h: window.innerHeight }
       )
@@ -130,10 +147,13 @@ export function DockTypePicker({ anchor, open, onClose, onPick, isTypeDisabled }
     if (visible) place();
   }, [visible, place]);
   useEffect(() => {
-    if (!visible) return;
-    window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  }, [visible, place]);
+    if (!visible || !open) return;
+    /* 窗口尺寸变化（缩放档 / 分辨率 / 岛随布局重排）后锚点快照已陈旧，
+       按旧锚点重摆会挂错位置（甚至出屏）——直接关闭，重开取新锚点。 */
+    const onResize = () => onClose("outside");
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [visible, open, onClose]);
 
   /* Esc 关闭（capture 阶段拦截，不让画布 / 编辑模式的 Esc 监听抢先）。
      理由感知：closePicker 对 Esc / 外点的焦点归还策略不同（见 DockTiles），
@@ -171,7 +191,9 @@ export function DockTypePicker({ anchor, open, onClose, onPick, isTypeDisabled }
     // 弹层 Portal 在 body 下但 React 树仍挂在 DockTiles 内：一律截断，磁贴层的
     // 方向键 / Delete 处理器不得收到弹层里的按键。
     e.stopPropagation();
-    if (e.key === "Enter" && e.target === inputRef.current) {
+    if (e.key === "Enter" && !e.nativeEvent.isComposing && e.target === inputRef.current) {
+      /* IME 组合期回车选词会被误当作「回车选首条」
+         把第一个小组件误添加进灵动岛（React 合成事件读 nativeEvent.isComposing）。 */
       if (first) {
         e.preventDefault();
         onPick(first.type);

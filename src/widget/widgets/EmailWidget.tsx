@@ -1,12 +1,14 @@
 ﻿/**
  * 邮件小组件：IMAP 轮询未读（Rust 侧实现协议），展示最近邮件列表，
- * 点击经系统默认客户端打开；凭据仅存于系统凭据库，不入 localStorage。
+ * 点击经系统默认客户端打开；密码经 DPAPI 加密存于本地数据库
+ * （email:accounts 键），前端只持空掩码、绝不回传明文，不入 localStorage。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, CheckCheck, ExternalLink, Inbox, Lock, Mail, MailOpen, RefreshCw, Trash2 } from "lucide-react";
 import { invoke, isTauri } from "../../lib/tauri";
 import { withRetry } from "../../lib/retry";
 import { useWidgetConfig } from "../widget-config";
+import { useWidgetExpand } from "../expand-store";
 import { useT, appLocale } from "../../i18n-lite";
 import { sourceNotify } from "../../lib/notifications";
 import { openContextMenu, type ContextMenuItem } from "../../components/ContextMenu";
@@ -72,7 +74,7 @@ const DEMO: Email[] = [
  * 不再用捏造邮件冒充真实收件箱。 */
 const demoMode = !isTauri();
 
-/** W-131 邮箱域名 → Webmail 收件箱页；未收录域名回退到 https://域名。 */
+/** 邮箱域名 → Webmail 收件箱页；未收录域名回退到 https://域名。 */
 const WEBMAIL_MAP: [string, string][] = [
   ["gmail.com", "https://mail.google.com/mail/u/0/#inbox"],
   ["googlemail.com", "https://mail.google.com/mail/u/0/#inbox"],
@@ -99,7 +101,7 @@ function webmailUrl(addr: string): string {
 }
 
 /** RFC 822 日期 → 友好时间：今天显示 HH:mm，一周内显示星期，更早显示日期。
- *  经 Intl.DateTimeFormat 跟随应用语言（appLocale，E5 约定）。 */
+ *  经 Intl.DateTimeFormat 跟随应用语言（appLocale，约定）。 */
 function friendlyTime(raw: string, tr: (s: string) => string): string {
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return raw;
@@ -116,21 +118,30 @@ function friendlyTime(raw: string, tr: (s: string) => string): string {
 }
 
 /**
- * Unified inbox widget with multi-account real IMAP support (W-134).
+ * Unified inbox widget with multi-account real IMAP support ().
  * In Tauri mode, all configured accounts are polled in parallel and merged
  * into one inbox; falls back to demo data in browser mode or when no account
  * is configured.
  */
+
+/** 「全部」页签的内部哨兵值（此前用翻译串当值，切语言后 matchFilter
+ * 对不上、列表被清空——哨兵与语言无关）。 */
+const ALL_TAB = "__all__";
+
+/** 模块级已见邮件基线（此前 per-instance ref，卡片+沉浸页双实例各自
+ * 建基线 → 同一封新邮件双通知）。所有实例共享，首个拉取者建基线。 */
+let sharedSeenIds: Set<string> | null = null;
+
 export function EmailWidget({ instanceId, paused = false }: { instanceId: string; paused?: boolean }) {
   const tr = useT();
   const safeTimeout = useSafeTimeout();
-  const [filter, setFilter] = useState(tr("全部"));
+  const [filter, setFilter] = useState<string>(ALL_TAB);
   const [emails, setEmails] = useState<Email[]>(() => (demoMode ? DEMO : []));
   const [refreshing, setRefreshing] = useState(false);
   // 新邮件一次性高亮 + 删除退场（对齐书签/习惯的 w-item-out 语言）。
   const [newMailKeys, setNewMailKeys] = useState<Set<string>>(new Set());
   const [removingKeys, setRemovingKeys] = useState<Set<string>>(new Set());
-  // W-135 删除会 EXPUNGE 服务器邮件：右键菜单内两段式确认（对齐回收站 #71）。
+  // 删除会 EXPUNGE 服务器邮件：右键菜单内两段式确认（对齐回收站 #71）。
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [refreshed, setRefreshed] = useState(false);
   const [accounts, setAccounts] = useState<EmailAccount[]>([]);
@@ -144,7 +155,7 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
   const notifyNewMail = config.notifyNewMail !== false;
   const dndHour = typeof config.doNotDisturbHour === "number" ? config.doNotDisturbHour : -1;
 
-  /** W-133 定时免打扰：指定小时内不自动检查、不推送新邮件通知。 */
+  /** 定时免打扰：指定小时内不自动检查、不推送新邮件通知。 */
   const dndActive = useCallback(() => dndHour >= 0 && new Date().getHours() === dndHour, [dndHour]);
 
   const fetchSeq = useRef(0);
@@ -156,9 +167,9 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
     };
   }, []);
 
-  /** W-130 已见邮件 id 集合（`${账户}|${UID}`），首次拉取只建基线不通知。 */
-  const seenIds = useRef<Set<string> | null>(null);
-
+  /** 已见邮件 id 集合（`${账户}|${UID}`），首次拉取只建基线不通知。
+   *  基线为模块级共享（sharedSeenIds）——沉浸页/多实例不再各自建基线
+   *  导致同一封新邮件重复通知。 */
   // Load saved accounts on mount (Tauri only)
   useEffect(() => {
     if (!isTauri()) return;
@@ -179,7 +190,7 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
     const seq = ++fetchSeq.current;
     setRefreshing(true);
     setError(null);
-    // W-134 多账户并行拉取；单账户失败不影响其余账户，错误聚合展示。
+    // 多账户并行拉取；单账户失败不影响其余账户，错误聚合展示。
     // 审计修复：Promise.all 一败全败（与注释矛盾、failures 死代码）→
     // allSettled，成功账户照常落地，失败账户聚合进错误提示。
     Promise.allSettled(
@@ -224,10 +235,10 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
               : `${tr("全部账户拉取失败：")}${failures.join("；")}`
         );
 
-        // W-130 新邮件通知：与上次快照差集（未读 && 未见过的 UID）。
+        // 新邮件通知：与上次快照差集（未读 && 未见过的 UID）。
         const freshKeys = new Set<string>();
         if (notifyNewMail && !dndActive()) {
-          const prev = seenIds.current;
+          const prev = sharedSeenIds;
           if (prev) {
             for (const m of mapped) {
               const key = `${m.account}|${m.id}`;
@@ -240,7 +251,7 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
         }
         const next = new Set<string>();
         for (const m of mapped) next.add(`${m.account}|${m.id}`);
-        seenIds.current = next;
+        sharedSeenIds = next;
 
         // 新邮件行一次性高亮（accent 淡出），3s 后回归常态。
         if (freshKeys.size > 0) {
@@ -284,23 +295,28 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
+  /* 本实例的沉浸页展开时，画布卡片暂停轮询——沉浸页里的 EmailWidget
+     副本（paused=!active）在 active 时负责拉取；否则双实例并行对全部账户
+     各建一条 TLS+IMAP 会话（Gmail 类并发受限的服务器会互相挤掉连接）。 */
+  const expandPaused = useWidgetExpand((s) => s.expandedId === instanceId);
+  const effectivePaused = paused || expandPaused;
   useEffect(() => {
     const id = window.setInterval(() => {
       // 不可见即不拉（桌面层被隐藏时不再对全部账户发 IMAP 请求，与
       // system-stats「不可见即不花钱」同原则）；恢复可见立即补一拉。
-      // paused：G9 沉浸页收起（active=false）时停轮询——遮罩 display:none
+      // paused：沉浸页收起（active=false）时停轮询——遮罩 display:none
       // 不改 document.hidden，须显式门控。
-      if (!paused && !dndActive() && !document.hidden) refreshRef.current();
+      if (!effectivePaused && !dndActive() && !document.hidden) refreshRef.current();
     }, refreshInterval);
     const onVis = () => {
-      if (!paused && !document.hidden && !dndActive()) refreshRef.current();
+      if (!effectivePaused && !document.hidden && !dndActive()) refreshRef.current();
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [refreshInterval, dndActive, paused]);
+  }, [refreshInterval, dndActive, effectivePaused]);
 
   useEffect(() => {
     if (accounts.length > 0) fetchReal();
@@ -326,7 +342,7 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
     }
   };
 
-  /** W-135 删除回写：服务器 EXPUNGE + 本地移除；演示数据仅本地删除。 */
+  /** 删除回写：服务器 EXPUNGE + 本地移除；演示数据仅本地删除。 */
   const removeEmail = (email: Email) => {
     const key = `${email.account}-${email.id}`;
     setRemovingKeys((s) => new Set(s).add(key));
@@ -344,7 +360,7 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
     }, 200);
   };
 
-  /** W-131 点击打开：跳账户对应的 Webmail（演示数据仅切换已读态）。 */
+  /** 点击打开：跳账户对应的 Webmail（演示数据仅切换已读态）。 */
   const openMail = (email: Email) => {
     if (email.account.includes("@")) {
       const url = webmailUrl(email.account);
@@ -406,14 +422,19 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
 
   const tabs =
     accounts.length > 0
-      ? [tr("全部"), ...Array.from(new Set(accounts.map((a) => a.email.split("@")[0])))]
+      ? [ALL_TAB, ...Array.from(new Set(accounts.map((a) => a.email.split("@")[0])))]
       : demoMode
-        ? [tr("全部"), "工作", "个人"]
-        : [tr("全部")];
+        ? /* 浏览器演示页签也走 tr（此前只译 ALL_TAB，
+             英文预览仍显示中文页签）；matchFilter 对 demo 账户本就按 tr()
+             比较，两侧一致。词典键「工作」「个人」已有。 */
+          [ALL_TAB, tr("工作"), tr("个人")]
+        : [ALL_TAB];
   const realMode = accounts.length > 0;
+  /** 页签显示名：「全部」走翻译，其余原样（账户前缀/演示名）。 */
+  const tabLabel = (t: string) => (t === ALL_TAB ? tr("全部") : t);
 
   const matchFilter = (e: Email) => {
-    if (filter === tr("全部")) return true;
+    if (filter === ALL_TAB) return true;
     if (!realMode) return tr(e.account) === filter;
     return e.account.split("@")[0] === filter;
   };
@@ -449,7 +470,7 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
             title={refreshed ? tr("已刷新") : tr("刷新邮件")}
             data-interactive
           >
-            {/* #114 刷新完成：图标旋转 → 绿色对勾交叉淡切 + 一次呼吸光晕 */}
+            {/* 刷新完成：图标旋转 → 绿色对勾交叉淡切 + 一次呼吸光晕 */}
             <span key={refreshed ? "done" : "spin"} className="mail-refresh-ico">
               {refreshed ? <Check size={14} /> : <RefreshCw size={14} className={refreshing ? "spin" : ""} />}
             </span>
@@ -475,7 +496,7 @@ export function EmailWidget({ instanceId, paused = false }: { instanceId: string
             onClick={() => setFilter(a)}
             data-interactive
           >
-            {a}
+            {tabLabel(a)}
           </button>
         ))}
       </div>

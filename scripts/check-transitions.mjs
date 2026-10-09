@@ -45,7 +45,7 @@ const PROP_MAP = {
 // 分组头等 7 处 hover 瞬跳就是这么漏的——PROP_MAP 不含颜色属性，门禁
 // 对这类缺口全盲）。background 简写同样改变背景色，一并检测。
 const COLOR_PROPS = ["background-color", "background", "color", "border-color", "box-shadow"];
-const COLOR_RE = new RegExp(`(^|;|\\s)(${COLOR_PROPS.join("|")})\\s*:`);
+// COLOR_RE 从未消费（行 190 内联构造同款正则）——删死代码。
 
 // 四.1 状态类交互态：类/属性切换（.active/.on/.selected/.lit/.open/.checked/
 // .expanded 及 .is-* 变体）与 :hover/:active/:focus 同属「瞬时状态变化」，
@@ -334,7 +334,7 @@ if (colorWarnings.length > 0) {
   process.exitCode = 1;
 }
 
-/* ═══ H3 时长/easing 令牌绕过告警（非阻断）═══
+/* ═══ 时长/easing 令牌绕过告警（非阻断）═══
    动效时长微调（--anim-dur/--fx-scale）与两族曲线（--ease-*）只作用于消费
    token 的声明；裸 ms 时长 / 裸 ease 关键字完全不受控，调档后同一屏出现
    快慢不一致的混合节奏。已 token 化（var(--dur-x) / var(--ease-x) / var(--anim-dur) / var(--fx-scale)）
@@ -344,12 +344,53 @@ if (colorWarnings.length > 0) {
    var(--ease-spring)` 这类「裸时长 + token 曲线」混血声明从不被告警。现在
    先剔除全部 var(--token[, fallback])（含一层嵌套括号），再对剩余部分分别
    判定裸时长与裸 ease，时长与曲线各自独立过关。 */
-const VAR_TOKEN_RE = /var\((?:[^()]|\([^()]*\))*\)/g;
+/* var() 剥离改括号深度配平（与 check-size-tokens 同款
+   助手）——单层容错正则对两层嵌套回退（var(--x, calc(max(14px,1vw)))）剥离
+   失败，深层回退里的裸时长对棘轮不可见（漏报向）。 */
+function stripWrapped(value, names) {
+  let s = value;
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const name of names) {
+      const needle = name + "(";
+      let from = 0;
+      let idx;
+      while ((idx = s.indexOf(needle, from)) !== -1) {
+        const prev = idx === 0 ? "" : s[idx - 1];
+        if (/[-\w]/.test(prev)) {
+          from = idx + needle.length;
+          continue;
+        }
+        let depth = 0;
+        let end = -1;
+        for (let i = idx + needle.length - 1; i < s.length; i++) {
+          if (s[i] === "(") depth++;
+          else if (s[i] === ")") {
+            depth--;
+            if (depth === 0) {
+              end = i;
+              break;
+            }
+          }
+        }
+        if (end === -1) {
+          from = idx + needle.length;
+          continue;
+        }
+        s = s.slice(0, idx) + " " + s.slice(end + 1);
+        progressed = true;
+        from = idx;
+      }
+    }
+  }
+  return s;
+}
 const bareDurRe = /(^|[\s,(])(\d+(?:\.\d+)?|\.\d+)m?s\b/;
 const bareEaseRe = /(^|[\s,(])(ease-in-out|ease-in|ease-out|ease)\b/;
 const durHits = [];
 const easeHits = [];
-/* P1 连带修复（门禁盲区）命中：`${全大写常量}ms/s` 插值（见下方 TSX 计数块
+/* 连带修复（门禁盲区）命中：`${全大写常量}ms/s` 插值（见下方 TSX 计数块
    内注释）。无基线棘轮——直接阻断，现网要求零存量。 */
 const constInterpHits = [];
 /* baseline 棘轮（2026-09-27 升级为阻断）：scripts/anim-token-baseline.json
@@ -373,27 +414,37 @@ const bump = (f, kind) => {
   fileCounts.set(key, rec);
 };
 const delayHits = [];
+/* CSS 侧改**声明级**匹配（属性名到分号，跨行）——此前
+   逐行正则对 Prettier 折行的长声明（值在后续行）整条不可见，14 处存量裸
+   时长正落在盲区里（写成单行即超基线 fail，多行则计 0）。transition/
+   animation 值内不含分号（无字符串/无嵌套语句），按 ';' 截断是安全的。 */
+/* R-工程-2（复审）：后缀组 (-[a-z]+)* 吃多段连字符——transition-timing-function /
+   animation-timing-function 含第二段连字符，单段组让整类属性出扫描面。 */
+const cssDeclRe = /(^|[{;])(\s*)(transition|animation)(-[a-z]+)*\s*:([^;]*);/g;
 for (const f of files) {
   const raw = fs.readFileSync(f, "utf8");
   const stripped = raw.replace(/\/\*[\s\S]*?\*\//g, "");
-  for (const line of stripped.split("\n")) {
-    const t = line.trim();
-    if (!/^(transition|animation)(?:-|\s*:)/.test(t)) continue;
-    const isDelay = /^animation-delay/.test(t);
-    const bare = t.replace(VAR_TOKEN_RE, " ");
+  cssDeclRe.lastIndex = 0;
+  let m;
+  while ((m = cssDeclRe.exec(stripped))) {
+    const prop = m[3] + (m[4] ?? "");
+    const value = m[5];
+    const isDelay = prop === "animation-delay";
+    const firstLine = (m[2] + prop + ":" + value).replace(/\s+/g, " ").trim();
+    const bare = stripWrapped(value, ["var"]);
     if (isDelay) {
       if (bareDurRe.test(bare)) {
-        delayHits.push(`${f}: ${t.slice(0, 90)}`);
+        delayHits.push(`${f}: ${firstLine.slice(0, 90)}`);
         bump(f, "delay");
       }
       continue; // delay 行不再计入 dur 桶
     }
     if (bareDurRe.test(bare)) {
-      durHits.push(`${f}: ${t.slice(0, 90)}`);
+      durHits.push(`${f}: ${firstLine.slice(0, 90)}`);
       bump(f, "dur");
     }
     if (bareEaseRe.test(bare)) {
-      easeHits.push(`${f}: ${t.slice(0, 90)}`);
+      easeHits.push(`${f}: ${firstLine.slice(0, 90)}`);
       bump(f, "ease");
     }
   }
@@ -406,7 +457,13 @@ for (const f of files) {
    ${...} 插值保留（stagger 阶梯照常进 delay 桶）。分属性写值由
    transition[A-Za-z-]* 一并覆盖。 */
 {
-  const inlineAnimRe = /\btransition[A-Za-z-]*\b|\banimationDelay\b|\banimationDuration\b|\banimationTimingFunction\b/;
+  /* inlineAnimRe 增补裸 `animation:` 简写形态——此前
+     棘轮只认 transition* / animationDelay 等，TSX 内联 `animation: "x 300ms ease"`
+     完全游离（现网唯一实例 SettingsView.tsx:169 恰好全 token，但盲区存在）。
+     命中后走与 transition 同一套剥 var()/animDurations() 再判裸时长/裸 ease 的
+     棘轮逻辑，token 化写法照常放行。 */
+  const inlineAnimRe =
+    /\btransition[A-Za-z-]*\b|\banimationDelay\b|\banimationDuration\b|\banimationTimingFunction\b|\banimation\s*:/;
   const tsFiles = walkSrc("src", []).filter((f) => /\.(ts|tsx)$/.test(f));
   for (const f of tsFiles) {
     const lines = fs.readFileSync(f, "utf8").split("\n");
@@ -414,9 +471,12 @@ for (const f of files) {
       const line = lines[li];
       const t = line.trim();
       if (!inlineAnimRe.test(t)) continue;
-      if (!/["'`]/.test(t)) continue; // 纯字段引用 / 类型声明无字符串值，天然不命中
+      /*无字符串行不再整体跳过——`transitionDuration: 200` 这类纯
+         数字 prop（React style 单位即 ms）此前游离在棘轮外；无字符串且无数字
+         的行（纯字段引用/类型声明）天然不命中各检测，照旧跳过省扫描。 */
+      if (!/["'`]/.test(t) && !/\d/.test(t)) continue;
       if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) continue; // 注释里的示例/术语不算消费
-      // P1 连带修复（门禁盲区）：`${IDENT}ms` 形态且 IDENT 为全大写常量名时，
+      // 连带修复（门禁盲区）：`${IDENT}ms` 形态且 IDENT 为全大写常量名时，
       // 下方的棘轮替换按「纯变量引用」剥除放行——但全大写命名几乎必然是写死的
       // 数字常量（实案例：MiscBoardPanel 的 SETTLE_MS=450），曲线走 token 而
       // 时长游离在 设置→动效 速度三档之外。这里直接阻断（无基线棘轮，现网零
@@ -426,8 +486,16 @@ for (const f of files) {
         constInterpHits.push(`  ${posixKey(f)}:${li + 1}  ${constInterp.input.slice(0, 110)}`);
       }
       const isDelay = /\banimationDelay\b|\btransitionDelay\b/.test(t);
-      const bare = t
-        .replace(VAR_TOKEN_RE, " ")
+      /*无单位纯数字时长（`transitionDuration: 200`）——bareDurRe
+         只认带 m/s 单位形态，这里按字段名直接归桶。仅限 .tsx：style 属性的
+         实际存在面；.ts 里同名字段多为设置模型数据（settings-store 的
+         animationDuration: 100 即时长百分比设置项），不归动效棘轮管。 */
+      const numDurField = f.endsWith(".tsx") && /(?:transition|animation)(?:Duration|Delay)\s*[:=]\s*\d/.test(t);
+      if (numDurField) {
+        bump(f, isDelay ? "delay" : "dur");
+        continue;
+      }
+      const bare = stripWrapped(t, ["var"])
         .replace(/animDurations\(\)[\w.]*/g, " ")
         .replace(/Math\.\w+\(/g, " ")
         // ${...}：内含时长字面量的保留检测（stagger 阶梯；单位写在插值外的
@@ -488,7 +556,10 @@ if (updateBaseline) {
     process.exitCode = 1;
   }
   const baseTotal = Object.values(baseline).reduce((s, v) => s + (v.dur ?? 0) + (v.ease ?? 0) + (v.delay ?? 0), 0);
-  const curTotal = durHits.length + easeHits.length + delayHits.length;
+  /*curTotal 必须与 baseTotal 同口径——TS/TSX 内联棘轮只 bump
+     fileCounts 不进 hits 数组，此前用 hits 数组总量（CSS-only）对比基线总量
+     （CSS+TS）恒偏小，导致「收紧基线」提示跑完 --update-baseline 也不消失。 */
+  const curTotal = [...fileCounts.values()].reduce((s, v) => s + (v.dur ?? 0) + (v.ease ?? 0) + (v.delay ?? 0), 0);
   if (curTotal < baseTotal) {
     console.warn(
       `[anim-token] 存量已从 ${baseTotal} 降到 ${curTotal}，运行 node scripts/check-transitions.mjs --update-baseline 收紧基线`
@@ -500,7 +571,7 @@ if (updateBaseline) {
   );
 }
 
-/* ═══ 裸 cubic-bezier 门禁（阻断级，2026-09-27 F1 收口）═══
+/* ═══ 裸 cubic-bezier 门禁（阻断级，2026-09-27 收口）═══
    曲线只允许两种存在：feature-animations.css 的 token 定义（值契约由下方
    ease-contract 看守），或带「ease: ok <理由>」行内豁免的私有调参曲线。
    此前本检查对曲线字面量全盲——feature-fx.css 十余处逐字手抄
@@ -539,7 +610,7 @@ if (updateBaseline) {
   }
 }
 
-/* ═══ --anim-dur fallback 死值门禁（阻断级，2026-09-27 三轮 P0-1）═══
+/* ═══ --anim-dur fallback 死值门禁（阻断级，2026-09-27 三轮 ）═══
    theme-engine 无条件把 --anim-dur[-fast|-slow] 内联写在 :root，而 CSS var()
    的 fallback 只在变量未定义时生效——`var(--anim-dur, 0.12s)` 的 0.12s 永远
    不会生效，实际解析为全局当前档位。历史上 157 处此类写法把约 90 处微反馈
@@ -577,7 +648,7 @@ if (updateBaseline) {
   }
 }
 
-/* ═══ A3 动效两族分档 · token 契约（阻断级防退化） ═══
+/* ═══ 动效两族分档 · token 契约（阻断级防退化） ═══
    expressive 基准曲线必须原值存在、且只在 feature-animations.css 的
    :root 定义一次（其它文件重定义/改值视为体系漂移）；语义别名与 pageDepth
    配方不得被移除。值比对先去全部空白，容忍格式差异。 */
@@ -616,10 +687,10 @@ for (const [name, value] of EASE_CONTRACT) {
   else if (defined > 1) easeIssues.push(`[ease-contract] ${name} 定义了 ${defined} 次（应仅 1 次）`);
 }
 
-/* dockQ 弹簧（二.7，NPS 统一曲线）：s(t)=1−cos(2π·2.65·t)·e^(−10.8·t) 的
+/* dockQ 弹簧：s(t)=1−cos(2π·2.65·t)·e^(−10.8·t) 的
    linear() 采样近似 + 不支持时的 Spatial 回退，两处定义（:root 回退 +
    @supports 覆盖）都只允许在 feature-animations.css；linear() 版必须保留
-   1.1583 峰值（≈15.8% 过冲 @33%，NPS 实测「Q 弹」量），回退版必须指向
+   1.1583 峰值，回退版必须指向
    --ease-spatial。前代 --ease-island-expand（基准样条 1.035 峰值）已随
    本 token 接任消费点而退役删除。 */
 {
@@ -706,15 +777,33 @@ if (easeIssues.length > 0) {
     for (let i = 0; i < lines.length; i++) {
       if (!lines[i].includes(".animate(")) continue;
       let reported = false;
-      for (let j = i; j < Math.min(lines.length, i + 25) && !reported; j++) {
+      /* 扫描窗 25 → 60 行——.animate( 第二参常用多行
+         options 对象（keyframes 数组在前、duration/easing 挤在尾部），实测
+         25 行窗会漏掉尾部参数；同时窗口遇下一个 .animate( 即止，防止相邻
+         调用的参数互相串窗误报。 */
+      for (let j = i; j < Math.min(lines.length, i + 60) && !reported; j++) {
+        if (j > i && lines[j].includes(".animate(")) break;
         const l = lines[j];
         let bad = null;
         if (/\bduration:\s*["'`]?\d/.test(l)) bad = "duration 字面量";
+        /* 命名常量穿透阻断——`duration: SETTLE_MS` 这类全大写常量几乎
+           必然是写死的数字时长（对齐上方 constInterp 思路）；运行时派生值
+           （animDurations().fxMs / 小写局部变量）不受影响。 */
+        else if (/\bduration:\s*[A-Z][A-Z0-9_]*\b/.test(l)) bad = "duration 命名常量";
         else if (/\beasing:\s*["'`]/.test(l)) bad = "easing 字符串字面量";
+        else if (/\beasing:\s*[A-Z][A-Z0-9_]*\b/.test(l)) bad = "easing 命名常量";
         if (bad) {
-          let allowed = allowRe.test(l);
-          for (let k = Math.max(0, i - 3); k <= Math.min(lines.length - 1, i + 3) && !allowed; k++)
-            allowed = allowRe.test(lines[k]);
+          /* 豁免窗改为调用行 i±3 与命中行 j±3 的
+             并集——违规命中可在调用行后最远 59 行（扫描窗扩到 60 行后
+             duration/easing 属性行与 .animate( 调用行相距甚远），豁免注释写
+             在直觉位置（属性行旁）时旧窗 i±3 不识别 → 误报。 */
+          const winAllowed = (center) => {
+            const from = Math.max(0, center - 3);
+            const to = Math.min(lines.length, center + 4);
+            for (let k = from; k < to; k++) if (allowRe.test(lines[k])) return true;
+            return false;
+          };
+          const allowed = allowRe.test(l) || winAllowed(i) || winAllowed(j);
           if (!allowed) {
             waapiIssues.push(
               `  ${path.relative("src", f).replace(/\\/g, "/")}:${j + 1} ${bad}（应消费 animDurations()/token，或加「waapi: ok <理由>」）`
@@ -732,6 +821,176 @@ if (easeIssues.length > 0) {
     process.exitCode = 1;
   } else {
     console.log("[waapi] WAAPI 动画参数检查通过（时长/曲线走运行时读取）。");
+  }
+}
+
+/* ══ 退场时长配对静态对账══
+   useDelayedUnmount(cond, animDurations().TOKEN) 的 JS 卸载等待时长必须与
+   同组件 .cls.is-closing 退场动画实际消费的 CSS 时长 token 同档——错档时
+   元素会空挂（JS 比 CSS 长）或提前卸载截断动画（JS 比 CSS 短）。两处
+   错档（fxMs 200ms vs fx-fast 150ms）就是这么漏的：两侧各自「都用了 token」
+   但档位不同，没有任何门禁对账。
+   启发式配对（静态近似，宁可漏报不可误伤）：
+   1) JS 侧收集 useDelayedUnmount(…, [Math.round(]animDurations().TOKEN) 调用；
+   2) CSS 侧收集「选择器以 .X.is-closing 收尾」的规则体里全部时长 var（--dur 族
+      与 --anim-dur 族）；
+   3) TSX 内每个 is-closing 出现处，取其前方最近 className 字面（剔除 ${…}
+      插值后的词元）为类名候选，与最近（按行距）的 useDelayedUnmount 调用配对；
+   4) 配对成功且 token 期望 var 不在规则 var 集合 → exit 1；类名候选无 CSS
+      规则可对（自定义类/无退场 token）→ 仅警告不拦。 */
+{
+  /* durations.ts ↔ feature-animations.css 的同源映射（乘数一致，见上方
+     contract-sync 块的 multMap；animMs 直取 --anim-dur 本档）。 */
+  const TOKEN_VAR = {
+    animMs: "--anim-dur",
+    fastMs: "--anim-dur-fast",
+    slowMs: "--anim-dur-slow",
+    fxXfastMs: "--dur-fx-xfast",
+    fxFastMs: "--dur-fx-fast",
+    fxMs: "--dur-fx",
+    fxSlowMs: "--dur-fx-slow",
+    spatialFastMs: "--dur-spatial-fast",
+    spatialMs: "--dur-spatial",
+    spatialSlowMs: "--dur-spatial-slow",
+    dockSpringMs: "--dur-dock-spring"
+  };
+  // CSS 侧：.X.is-closing（选择器末复合）→ 规则体消费的时长 var 集合
+  const closingVars = new Map(); // class -> Set<var>
+  for (const { rules } of parsedFiles) {
+    for (const r of rules) {
+      for (const single of splitSelectorList(r.selector)) {
+        const cm = /\.([\w-]+)\.is-closing(?![\w-])\s*$/.exec(single.trim());
+        if (!cm) continue;
+        const vars = new Set(
+          (r.body.match(/var\(\s*(--(?:anim-dur|dur)[\w-]*)/g) || []).map((s) => s.replace(/var\(\s*/, ""))
+        );
+        const prev = closingVars.get(cm[1]) ?? new Set();
+        vars.forEach((v) => prev.add(v));
+        closingVars.set(cm[1], prev);
+      }
+    }
+  }
+  const unmountIssues = [];
+  const unpaired = [];
+  /* 类名候选与调用配对（两级启发，宁可漏报不可误伤）：
+   * A. 驱动表达式匹配——`…${DRIVER ? " is-closing" : ""}` 的 DRIVER 与
+   *    某调用的赋值变量（含 Closing↔Keep/Visible/Render 词干等价）或
+   *    条件表达式互为包含（payloadState ⊂ payloadState != null）；
+   * B. 渲染门回退——DRIVER 匹配不到时，向前找最近的 `{VAR &&` / `{VAR ?`
+   *    门（VAR 为调用变量），且 is-closing 必须仍处该门的花括号深度内
+   *    （防止列表行误吸隔壁弹层的调用）；
+   * 唯一命中才对账，零命中/多义 → 仅提示不拦。 */
+  const normExpr = (s) => s.replace(/[!(\s)]/g, "");
+  const stem = (name) => name.replace(/(Closing|Keep|Visible|Render|Mounted)$/i, "").toLowerCase();
+  for (const f of walkSrc("src", [])) {
+    if (!/\.(ts|tsx)$/.test(f)) continue;
+    const raw = fs.readFileSync(f, "utf8");
+    const stripped = raw.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+    const lineOfIdx = (i) => stripped.slice(0, i).split("\n").length;
+    // JS 侧调用点：捕获赋值变量 / 条件 / token（含 Math.round 包裹；+N 余量
+    // 后缀不参与档位比较）
+    const calls = [];
+    const callRe =
+      /const\s+([\w$]+)\s*=\s*useDelayedUnmount\s*\(\s*([^,()]+),\s*(?:Math\.round\s*\(\s*)?animDurations\(\)\s*\.\s*(\w+)/g;
+    let cm;
+    while ((cm = callRe.exec(stripped)) !== null)
+      calls.push({ varName: cm[1], cond: cm[2], token: cm[3], line: lineOfIdx(cm.index) });
+    if (calls.length === 0) continue;
+    const occRe = /is-closing/g;
+    let om;
+    while ((om = occRe.exec(stripped)) !== null) {
+      const occLine = lineOfIdx(om.index);
+      // A. 驱动表达式：本出现处（而非窗口内前一个三元）的 `?` 之前的条件文本
+      const winStart = Math.max(0, om.index - 250);
+      const win = stripped.slice(winStart, om.index + 150);
+      const dmRe = /([\w$][\w$.[\]()>!= &|]{0,120})\?[^?]{0,80}(is-closing)/g;
+      let driver = "";
+      let dm2;
+      while ((dm2 = dmRe.exec(win)) !== null) {
+        if (winStart + dm2.index + dm2[0].length - "is-closing".length === om.index) {
+          driver = dm2[1].trim();
+          break;
+        }
+      }
+      let matches = [];
+      if (driver) {
+        const core = normExpr(driver);
+        matches = calls.filter(
+          (c) =>
+            driver.includes(c.varName) ||
+            (stem(driver).length >= 3 && stem(driver) === stem(c.varName)) ||
+            normExpr(c.cond).includes(core)
+        );
+      }
+      // B. 渲染门回退：{VAR && …（is-closing 需仍在门的花括号深度内）
+      if (matches.length === 0) {
+        for (const c of calls) {
+          const gateRe = new RegExp(`\\{\\s*\\(?\\s*${c.varName}\\b[\\s\\S]{0,1500}?(&&|\\?)`, "g");
+          let gm;
+          let contained = false;
+          while ((gm = gateRe.exec(stripped)) !== null) {
+            if (gm.index > om.index) break;
+            // 从门 `{` 起数花括号深度：中途归零说明门已闭合，不含本出现处
+            let depth = 0;
+            let ok = false;
+            for (let i = gm.index; i < om.index; i++) {
+              if (stripped[i] === "{") depth++;
+              else if (stripped[i] === "}") depth--;
+              if (depth <= 0 && i > gm.index) {
+                ok = false;
+                break;
+              }
+              ok = depth > 0;
+            }
+            if (ok) contained = true;
+          }
+          if (contained) matches.push(c);
+        }
+        matches = [...new Set(matches)];
+      }
+      if (matches.length !== 1) {
+        unpaired.push(`  ${posixKey(f)}:${occLine}（${matches.length > 1 ? "多义" : "无"}调用可配）`);
+        continue;
+      }
+      const call = matches[0];
+      const expected = TOKEN_VAR[call.token];
+      if (!expected) continue; // 非 fx/anim 族 token（如自定义时长字段）不参与对账
+      const attrRe = /className\s*=\s*\{?\s*(["`])/g;
+      let attr = null;
+      let am2;
+      while ((am2 = attrRe.exec(stripped)) !== null) {
+        if (am2.index > om.index) break;
+        attr = am2;
+      }
+      if (!attr) continue;
+      const prefix = stripped.slice(attr.index, om.index).replace(/\$\{[^}]*\}/g, " ");
+      const candidates = [...new Set(prefix.match(/[\w-]{2,}/g) || [])].filter((w) => w !== "className");
+      let paired = false;
+      for (const cls of candidates) {
+        const vars = closingVars.get(cls);
+        if (!vars) continue;
+        paired = true;
+        if (vars.size === 0) break; // 规则无时长 var，无法对账（不拦）
+        if (!vars.has(expected)) {
+          unmountIssues.push(
+            `  ${posixKey(f)}:${occLine}  useDelayedUnmount(…${call.token}→${expected}) ≠ .${cls}.is-closing 消费 [${[...vars].join(", ")}]（退场等待与动画时长错档，Q-13 同款）`
+          );
+        }
+        break; // 命中第一个有 CSS 规则的候选即定档
+      }
+      if (!paired) unpaired.push(`  ${posixKey(f)}:${occLine}（类名无 .is-closing 规则可对）`);
+    }
+  }
+  if (unmountIssues.length > 0) {
+    console.error(`[unmount-dur] ${unmountIssues.length} 处退场 JS/CSS 时长 token 错档：`);
+    console.error(unmountIssues.join("\n"));
+    process.exitCode = 1;
+  } else {
+    console.log("[unmount-dur] useDelayedUnmount 退场时长与 .is-closing CSS token 配对一致。");
+  }
+  if (unpaired.length > 0) {
+    console.warn(`[unmount-dur] ${unpaired.length} 处 is-closing 未找到可对账的 CSS 规则（启发式限制，仅提示不拦）：`);
+    console.warn([...new Set(unpaired)].slice(0, 12).join("\n"));
   }
 }
 

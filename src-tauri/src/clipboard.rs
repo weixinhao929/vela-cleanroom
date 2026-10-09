@@ -5,7 +5,7 @@
 //! CF_UNICODETEXT。写方向（复制/剪切）仍走 `document.execCommand`，它对
 //! 页面内编辑控件可靠且保留撤销栈，无需后端参与。
 //!
-//! 另含 W-102 涂鸦复制：把 PNG dataURL 以 CF_DIBV5（带 alpha）+ CF_DIB
+//! 另含 涂鸦复制：把 PNG dataURL 以 CF_DIBV5（带 alpha）+ CF_DIB
 //! （白底合成）双格式写入系统剪贴板，兼容从 Paint 到微信的各类粘贴方。
 //!
 //! §4.10 剪贴板历史：`AddClipboardFormatListener` 隐藏窗口监听变化 → 文本
@@ -76,7 +76,7 @@ pub fn read_clipboard_text(window: tauri::Window) -> Result<String, String> {
 }
 
 /* ------------------------------------------------------------------ */
-/* W-102 涂鸦画布 → 系统剪贴板（图片）                                */
+/* 涂鸦画布 → 系统剪贴板（图片） */
 /* ------------------------------------------------------------------ */
 
 const CF_DIB: u32 = 8;
@@ -186,7 +186,7 @@ unsafe fn set_clipboard_bytes(format: u32, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// W-102 把 PNG dataURL（`data:image/png;base64,…`）写入系统剪贴板。
+/// 把 PNG dataURL（`data:image/png;base64,…`）写入系统剪贴板。
 /// 同时写 CF_DIBV5（带 alpha，支持透明粘贴进支持的应用）与 CF_DIB
 /// （白底合成，保证老应用不出现黑底）。
 ///
@@ -296,7 +296,7 @@ pub(crate) unsafe fn write_text_to_clipboard(text: &str) -> Result<(), String> {
     result
 }
 
-/// [CTX]（ZTools 借鉴 #2）写文本的公开入口：win_context::copy_text_to_clipboard
+/// [CTX]写文本的公开入口：win_context::copy_text_to_clipboard
 /// 命令复用（历史回写与上下文动作「复制路径 / 复制 URL」同一条写入路径）。
 /// 写入触发 WM_CLIPBOARDUPDATE 后由去重路径兜底（最新一条同哈希 → 刷新而非
 /// 新增行），不会把自己写的同内容刷成重复记录。
@@ -305,7 +305,7 @@ pub unsafe fn write_text_pub(text: &str) -> Result<(), String> {
     write_text_to_clipboard(text)
 }
 
-/// [SUPER-PANEL]（ZTools 借鉴 #11）打开剪贴板读一次文本（截断 1MB；空 / 无
+/// [SUPER-PANEL]打开剪贴板读一次文本（截断 1MB；空 / 无
 /// 文本格式为 None）。取词流程专用，不入历史。
 #[cfg(windows)]
 pub(crate) unsafe fn read_text_now() -> Option<String> {
@@ -352,11 +352,14 @@ pub(crate) unsafe fn read_text_now() -> Option<String> {
 use crate::db::{lock_db, DbError, DbResult};
 use crate::models::ClipboardEntry;
 use crate::repositories::{ClipboardRepo, NewClipboardEntry, SettingsRepo};
+use serde::Serialize;
+use ts_rs::TS;
 
-/// 剪贴板内容变化事件（载荷为空，前端收到后重新拉列表）。
+/// 剪贴板内容变化事件：载荷为 `()`（捕获/回写/删除/清空）或 `"pin"`
+/// （仅置顶切换——纯 UI 态变化，前端据此跳过一次多余刷新）。旧监听方
+/// 忽略载荷，向后兼容。
 pub const CLIPBOARD_CHANGED_EVENT: &str = "clipboard:changed";
-/// 复制了纯链接（载荷 { url }）：前端弹「链接快开」接管条（一.4，借鉴
-/// NotchPeninsula 的剪贴板链接面板）。仅在采集开启 + linkPopup 开启时发出；
+/// 复制了纯链接（载荷 { url }）：前端弹「链接快开」接管条。仅在采集开启 + linkPopup 开启时发出；
 /// 与历史入库互不影响（链接照常入历史）。
 pub const CLIPBOARD_URL_EVENT: &str = "clipboard:url";
 /// 设置镜像键（settings-store 双后端写入的 SQLite 快照）。
@@ -372,10 +375,10 @@ pub const CAN_INCLUDE_IN_CLIPBOARD_HISTORY: &str = "CanIncludeInClipboardHistory
 pub struct ClipCaptureConfig {
     pub enabled: bool,
     pub images: bool,
-    /// [FILES]（ZTools 借鉴 #8）记录文件复制（CF_HDROP，默认开）。
+    /// [FILES]记录文件复制（CF_HDROP，默认开）。
     pub files: bool,
     pub record_source: bool,
-    /// 复制纯链接时在灵动岛弹「快开」接管条（默认开；NPS 同款默认）。
+    /// 复制纯链接时在灵动岛弹「快开」接管条。
     pub link_popup: bool,
 }
 
@@ -420,7 +423,7 @@ pub fn parse_clip_config(json: &str) -> ClipCaptureConfig {
     cfg
 }
 
-/// 纯链接判定（NPS ClipboardMonitor 同款口径）：整段文本（去首尾空白后）
+/// 纯链接判定：整段文本（去首尾空白后）
 /// 就是一个 URL —— 以 http:// 、https:// 、ftp:// 或 www. 开头且不含任何
 /// 空白。正文里夹半截 URL 不算，避免普通复制误弹面板。
 pub fn is_pure_url(text: &str) -> bool {
@@ -428,7 +431,15 @@ pub fn is_pure_url(text: &str) -> bool {
     if t.is_empty() || t.chars().any(|c| c.is_whitespace()) {
         return false;
     }
-    let lower_prefix = |p: &str| t.len() >= p.len() && t[..p.len()].eq_ignore_ascii_case(p);
+    // 字节切片前必须过 get：中文等 UTF-8 多字节文本在 p.len() 处不是
+    // 字符边界时，t[..p.len()] 直接 panic（崩溃日志实锤：剪贴板监控线程
+    // 被一段以「哈…」开头的文本杀死）。落在字符中间必然不是 ASCII 前缀，
+    // get() 返回 None 按 false 处理即可。
+    let lower_prefix = |p: &str| {
+        t.get(..p.len())
+            .map(|s| s.eq_ignore_ascii_case(p))
+            .unwrap_or(false)
+    };
     lower_prefix("http://")
         || lower_prefix("https://")
         || lower_prefix("ftp://")
@@ -482,6 +493,22 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// 覆盖 4K 截图；更大的截图不入库，避免解码/转存放大内存）。
 pub fn clip_image_size_ok(w: u32, h: u32) -> bool {
     w > 0 && h > 0 && w <= 8192 && h <= 8192 && (w as u64) * (h as u64) <= 1 << 24
+}
+
+///带显式 limits 的解码——解压炸弹面（小文件、超大尺寸声明）不再
+/// 只依赖 image crate 默认预算（512MiB / 无尺寸界），峰值内存先于尺寸校验
+/// 发生的问题一并收口。尺寸界与 clip_image_size_ok 同口径（8192² 且 ≤2^24
+/// 像素），分配峰值按 4 字节/像素 + 1MiB 余量设界。
+fn decode_image_with_limits(bytes: &[u8]) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes));
+    // with_guessed_format 消耗 self，接回绑定。
+    reader = reader.with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some((1u64 << 24) * 4 + 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok()
 }
 
 /// 把 CF_DIB / CF_DIBV5 的 DIB 字节包装成 BMP 文件字节（前置 14 字节
@@ -560,7 +587,8 @@ pub fn clip_data_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 }
 
 /// 删除历史行引用的图片文件。文件名只由本模块生成（`<uuid>.png`），仍拒绝
-/// 路径分隔符与 `..`，防止任何途径把行内字段变成任意路径删除。
+/// 路径分隔符与 `..`，防止任何途径把行内字段变成任意路径删除。同名缩略图
+/// （`<uuid>.thumb.png`，get_clipboard_thumbnail 的磁盘缓存）一并回收。
 fn remove_clip_files(app: &tauri::AppHandle, files: &[String]) {
     let Some(dir) = clip_data_dir(app) else {
         return;
@@ -570,7 +598,15 @@ fn remove_clip_files(app: &tauri::AppHandle, files: &[String]) {
             continue;
         }
         let _ = std::fs::remove_file(dir.join(f));
+        let _ = std::fs::remove_file(dir.join(thumb_name_for(f)));
     }
+}
+
+/// 缩略图磁盘缓存名（纯函数，单测覆盖）：`shot.png` → `shot.thumb.png`；
+/// 无 .png 后缀的异常名追加 `.thumb.png`，不会与主文件重名。
+pub fn thumb_name_for(image_file: &str) -> String {
+    let stem = image_file.strip_suffix(".png").unwrap_or(image_file);
+    format!("{stem}.thumb.png")
 }
 
 /// 清空 clip 目录下的全部文件（清空历史 / 重置应用时；目录只归本模块使用）。
@@ -625,7 +661,7 @@ enum CapturedContent {
         hash: String,
         source_app: Option<String>,
     },
-    /// [FILES]（ZTools 借鉴 #8）文件列表（Explorer 复制/剪切）。
+    /// [FILES]文件列表（Explorer 复制/剪切）。
     Files {
         files: Vec<String>,
         preview: String,
@@ -634,7 +670,7 @@ enum CapturedContent {
     },
 }
 
-/// D-7：超级面板模拟 Ctrl+C 取词产生的剪贴板变化不进历史库（敏感明文
+/// 超级面板模拟 Ctrl+C 取词产生的剪贴板变化不进历史库（敏感明文
 /// 可能被选中却不应被留存 30 天）。抑制窗以 unix 毫秒计，取词方在发起
 /// 合成复制前后设置/清理。
 static SUPPRESS_HISTORY_UNTIL_MS: std::sync::atomic::AtomicU64 =
@@ -667,7 +703,7 @@ fn process_capture(app: &tauri::AppHandle) {
         return;
     }
     if history_suppressed() {
-        // D-7：取词窗口内的合成复制——读剪贴板面板用，不落历史库。
+        // 取词窗口内的合成复制——读剪贴板面板用，不落历史库。
         return;
     }
     let Some(captured) = capture_once(config) else {
@@ -682,14 +718,26 @@ fn process_capture(app: &tauri::AppHandle) {
         } => {
             // 一.4 纯链接快开：复制的就是一个 URL → 通知前端弹「链接快开」
             // 接管条（默认 3s 回落，见 DockTakeover；历史入库照常走下方路径）。
+            // 与其余事件同口径走 emit_filter 受信窗口——全局 emit 会把
+            // 用户剪贴板里的 URL 原文投给任意 WebView（含 web-preview 远程页）。
             if config.link_popup && is_pure_url(&text) {
                 #[derive(serde::Serialize, Clone)]
                 #[serde(rename_all = "camelCase")]
                 struct UrlPayload<'a> {
                     url: &'a str,
                 }
-                let _ =
-                    tauri::Emitter::emit(app, CLIPBOARD_URL_EVENT, UrlPayload { url: text.trim() });
+                let _ = tauri::Emitter::emit_filter(
+                    app,
+                    CLIPBOARD_URL_EVENT,
+                    UrlPayload { url: text.trim() },
+                    |win| match win {
+                        tauri::EventTarget::WebviewWindow { label }
+                        | tauri::EventTarget::Webview { label }
+                        | tauri::EventTarget::Window { label }
+                        | tauri::EventTarget::AnyLabel { label } => crate::trusted_window(label),
+                        _ => false,
+                    },
+                );
             }
             NewClipboardEntry {
                 kind: "text".into(),
@@ -771,12 +819,23 @@ fn process_capture(app: &tauri::AppHandle) {
             remove_clip_files(app, &outcome.orphaned_images);
             let _ = tauri::Emitter::emit(app, CLIPBOARD_CHANGED_EVENT, ());
         }
-        Err(e) => log::warn!("clipboard history record failed: {e}"),
+        // （孤儿 PNG）：图片先落盘后入库，record 失败（DB 锁等）时刚写的
+        // 文件无人回收，只能等未来被挤出——此处直接删除。
+        Err(e) => {
+            log::warn!("clipboard history record failed: {e}");
+            if let (Some(dir), Some(file)) = (clip_data_dir(app), &input.image_file) {
+                let _ = std::fs::remove_file(dir.join(file));
+            }
+        }
     }
 }
 
 /// 读取文本 / 图片上限。
 const MAX_TEXT_BYTES: usize = 512 * 1024;
+/// 文本捕获的 u16 截断点（= MAX_TEXT_BYTES 个 unit）：每 u16 至少展开 1 个
+/// UTF-8 字节，读满此处仍无 NUL 即断定超字节上限（精确判定仍在解码后按
+/// text.len() 做——CJK 每 unit 3 字节，512K units 可能解码出 1.5MB）。
+const MAX_TEXT_UNITS: usize = MAX_TEXT_BYTES;
 const MAX_CLIP_BYTES: usize = 64 * 1024 * 1024;
 
 /// 打开剪贴板并捕获一次内容（敏感过滤 → 文本 → 图片）。
@@ -848,115 +907,129 @@ fn capture_once(config: ClipCaptureConfig) -> Option<CapturedContent> {
                 None
             };
 
-            // 1.5 [FILES]（ZTools 借鉴 #8）文件列表（CF_HDROP）——优先级高于
-            // 文本：浏览器「复制下载链接」等场景文本与文件并存时，用户意图
-            // 几乎总是文件本身（ZTools 同款优先序：文件 > 图片 > 文本）。
+            // 捕获优先序：
+            // 文件 > 文本 > 图片。Excel 复制区域、富文本编辑器复制图文混排
+            // 时文本与图片并存，取文本——可搜索、可回写、信息不损失；纯截图
+            // 工具的输出通常只有图片格式，不会走错分支。
+            let mut captured: Option<CapturedContent> = None;
+
+            // 1. [FILES]文件列表（CF_HDROP）：浏览器「复制
+            // 下载链接」等场景文本与文件并存时，用户意图几乎总是文件本身。
             if config.files {
                 if let Some(list) = read_hdrop_list() {
                     if !list.is_empty() {
                         let preview = files_preview(&list);
                         let joined = list.join("\n");
-                        return Some(CapturedContent::Files {
+                        captured = Some(CapturedContent::Files {
                             hash: content_hash(&[b"files", joined.as_bytes()]),
                             preview,
                             files: list,
-                            source_app,
+                            // fall-through 结构下编译器无法证明分支互斥，克隆
+                            // 一次 Option<String> 可忽略。
+                            source_app: source_app.clone(),
                         });
                     }
                 }
             }
 
-            // 2. 文本优先。
-            if let Ok(handle) = GetClipboardData(CF_UNICODETEXT) {
-                if !handle.is_invalid() {
-                    let global = windows::Win32::Foundation::HGLOBAL(handle.0);
-                    let ptr = GlobalLock(global) as *const u16;
-                    if !ptr.is_null() {
-                        let cap = (GlobalSize(global) / 2).min(1024 * 1024);
-                        let mut units: Vec<u16> = Vec::with_capacity(cap);
-                        for i in 0..cap {
-                            let ch = *ptr.add(i);
-                            if ch == 0 {
-                                break;
+            // 2. 文本。空白 / 超限文本不算命中——**落到图片分支而非终结捕获**
+            //（部分截图 / Office 应用上剪贴板同时挂着空文本格式与图片，
+            // 此前的 return None 会把这类复制整条吞掉）。
+            if captured.is_none() {
+                if let Ok(handle) = GetClipboardData(CF_UNICODETEXT) {
+                    if !handle.is_invalid() {
+                        let global = windows::Win32::Foundation::HGLOBAL(handle.0);
+                        let ptr = GlobalLock(global) as *const u16;
+                        if !ptr.is_null() {
+                            // 每 u16 至少展开 1 个 UTF-8 字节：读满 MAX_TEXT_UNITS
+                            // 仍未到 NUL 即可断定超 512KB 上限，不必读完整个块
+                            //（旧实现最坏白读 2MB 再丢弃）。
+                            let cap = (GlobalSize(global) / 2).min(MAX_TEXT_UNITS + 1);
+                            let mut units: Vec<u16> = Vec::with_capacity(cap.min(4096));
+                            for i in 0..cap {
+                                let ch = *ptr.add(i);
+                                if ch == 0 {
+                                    break;
+                                }
+                                units.push(ch);
                             }
-                            units.push(ch);
-                        }
-                        let _ = GlobalUnlock(global);
-                        let text = String::from_utf16_lossy(&units);
-                        if text.trim().is_empty() {
-                            return None;
-                        }
-                        if text.len() > MAX_TEXT_BYTES {
-                            log::debug!("clipboard capture skipped: text too large");
-                            return None;
-                        }
-                        return Some(CapturedContent::Text {
-                            preview: text_preview(&text),
-                            hash: content_hash(&[b"text", text.as_bytes()]),
-                            text,
-                            source_app,
-                        });
-                    }
-                }
-            }
-
-            // 3. 图片（需开关开启）：PNG 注册格式直存，否则 DIBV5 / DIB 转 PNG。
-            if config.images {
-                if let Some(fmt) = png_format {
-                    if let Some(bytes) = read_hglobal_bytes(fmt) {
-                        if bytes.len() <= MAX_CLIP_BYTES {
-                            if let Ok(img) = image::load_from_memory(&bytes) {
-                                let rgba = img.to_rgba8();
-                                let (w, h) = rgba.dimensions();
-                                if clip_image_size_ok(w, h) {
-                                    return Some(CapturedContent::Image {
-                                        hash: image_pixel_hash(&rgba),
-                                        png: bytes,
-                                        w: w as i64,
-                                        h: h as i64,
-                                        source_app,
+                            let _ = GlobalUnlock(global);
+                            if units.len() <= MAX_TEXT_UNITS {
+                                let text = String::from_utf16_lossy(&units);
+                                if !text.trim().is_empty() && text.len() <= MAX_TEXT_BYTES {
+                                    captured = Some(CapturedContent::Text {
+                                        preview: text_preview(&text),
+                                        hash: content_hash(&[b"text", text.as_bytes()]),
+                                        text,
+                                        source_app: source_app.clone(),
                                     });
                                 }
                             }
                         }
                     }
                 }
-                for fmt in [CF_DIBV5, CF_DIB] {
-                    let Some(bytes) = read_hglobal_bytes(fmt) else {
-                        continue;
-                    };
-                    if bytes.len() > MAX_CLIP_BYTES {
-                        continue;
+            }
+
+            // 3. 图片（需开关开启）：PNG 注册格式直存，否则 DIBV5 / DIB 转 PNG。
+            if captured.is_none() && config.images {
+                if let Some(fmt) = png_format {
+                    if let Some(bytes) = read_hglobal_bytes(fmt) {
+                        if bytes.len() <= MAX_CLIP_BYTES {
+                            if let Some(img) = decode_image_with_limits(&bytes) {
+                                let rgba = img.to_rgba8();
+                                let (w, h) = rgba.dimensions();
+                                if clip_image_size_ok(w, h) {
+                                    captured = Some(CapturedContent::Image {
+                                        hash: image_pixel_hash(&rgba),
+                                        png: bytes,
+                                        w: w as i64,
+                                        h: h as i64,
+                                        source_app: source_app.clone(),
+                                    });
+                                }
+                            }
+                        }
                     }
-                    let Some(bmp) = wrap_dib_as_bmp(&bytes) else {
-                        continue;
-                    };
-                    let Ok(img) = image::load_from_memory(&bmp) else {
-                        continue;
-                    };
-                    let rgba = img.to_rgba8();
-                    let (w, h) = rgba.dimensions();
-                    if !clip_image_size_ok(w, h) {
-                        continue;
+                }
+                if captured.is_none() {
+                    for fmt in [CF_DIBV5, CF_DIB] {
+                        let Some(bytes) = read_hglobal_bytes(fmt) else {
+                            continue;
+                        };
+                        if bytes.len() > MAX_CLIP_BYTES {
+                            continue;
+                        }
+                        let Some(bmp) = wrap_dib_as_bmp(&bytes) else {
+                            continue;
+                        };
+                        let Some(img) = decode_image_with_limits(&bmp) else {
+                            continue;
+                        };
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        if !clip_image_size_ok(w, h) {
+                            continue;
+                        }
+                        let hash = image_pixel_hash(&rgba);
+                        let mut png: Vec<u8> = Vec::new();
+                        if image::DynamicImage::ImageRgba8(rgba)
+                            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        captured = Some(CapturedContent::Image {
+                            hash,
+                            png,
+                            w: w as i64,
+                            h: h as i64,
+                            source_app,
+                        });
+                        break;
                     }
-                    let hash = image_pixel_hash(&rgba);
-                    let mut png: Vec<u8> = Vec::new();
-                    if image::DynamicImage::ImageRgba8(rgba)
-                        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    return Some(CapturedContent::Image {
-                        hash,
-                        png,
-                        w: w as i64,
-                        h: h as i64,
-                        source_app,
-                    });
                 }
             }
-            None
+            captured
         };
         let result = inner();
         let _ = CloseClipboard();
@@ -989,13 +1062,12 @@ unsafe fn read_hglobal_bytes(fmt: u32) -> Option<Vec<u8>> {
 /// CF_HDROP 格式 id（windows crate 常量在 DataExchange 里也可用，这里显式
 /// 写死避免 feature 漂移；Winuser.h 的 CF_HDROP = 15）。
 const CF_HDROP_FMT: u32 = 15;
-/// 文件列表上限：超过按普通「不识别」处理（ZTools 同款保守闸门，防异常
-/// 超大 DROP 结构拖垮采集线程）。
+/// 文件列表上限：超过按普通「不识别」处理。
 const MAX_HDROP_FILES: usize = 64;
 
-/// [FILES]（ZTools 借鉴 #8）读 CF_HDROP 的文件路径列表（DragQueryFileW）。
+/// [FILES]读 CF_HDROP 的文件路径列表（DragQueryFileW）。
 /// 剪贴板须已打开；任何失败 / 空列表 / 超上限返回 None。
-/// [SUPER-PANEL]（ZTools 借鉴 #11）取词流程复用：pub(crate)。
+/// [SUPER-PANEL]取词流程复用：pub(crate)。
 #[cfg(windows)]
 pub(crate) unsafe fn read_hdrop_list() -> Option<Vec<String>> {
     use windows::Win32::System::DataExchange::GetClipboardData;
@@ -1155,11 +1227,43 @@ unsafe fn clipboard_owner_process() -> Option<String> {
 /// 启动剪贴板历史监听（非 Windows 为 no-op）。
 pub fn start_clipboard_watcher(app: tauri::AppHandle) {
     #[cfg(windows)]
-    win_history::start(app);
+    {
+        // 过期 / 超量清理此前只有「写路径（record）+ 流量统计跨日」两个
+        // 触发点，而流量采样可被用户关闭——长期不复制时过期行与孤儿 PNG
+        // 会一直滞留。监听线程不受采集开关影响常驻启动，在此补一次启动清理
+        //（异步，不阻塞 setup）。
+        let app_for_cleanup = app.clone();
+        std::thread::spawn(move || run_startup_cleanup(&app_for_cleanup));
+        win_history::start(app);
+    }
     #[cfg(not(windows))]
     {
         let _ = app;
         log::info!("clipboard watcher: unsupported platform, skipped");
+    }
+}
+
+/// 启动时清一次过期 / 超量行，并回收被清行引用的图片（含缩略图缓存）。
+#[cfg(windows)]
+fn run_startup_cleanup(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return;
+    };
+    let Ok(conn) = lock_db(&state.db) else {
+        return;
+    };
+    match ClipboardRepo::cleanup(&conn) {
+        Ok(orphaned) => {
+            if !orphaned.is_empty() {
+                log::debug!(
+                    "clipboard startup cleanup: {} orphaned image(s)",
+                    orphaned.len()
+                );
+            }
+            remove_clip_files(app, &orphaned);
+        }
+        Err(e) => log::debug!("clipboard startup cleanup failed: {e}"),
     }
 }
 
@@ -1177,9 +1281,10 @@ mod win_history {
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
-        RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE,
-        WM_DESTROY, WNDCLASSW, WS_OVERLAPPED,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        PeekMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, HWND_MESSAGE, MSG,
+        PEEK_MESSAGE_REMOVE_TYPE, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_QUIT,
+        WNDCLASSW, WS_OVERLAPPED,
     };
 
     // 窗口过程是 extern "system" 无法捕获环境：发送端放消息线程 TLS。
@@ -1214,59 +1319,99 @@ mod win_history {
     pub fn start(app: tauri::AppHandle) {
         let (tx, rx) = mpsc::channel::<()>();
         // 消息线程：message-only 窗口 + 格式监听 + GetMessage 循环。
+        // （监听失败永久静默）：四条失败路径此前都是 warn + return，线程
+        // 永久退出且无重试——剪贴板历史当次会话静默失效。改为带退避重试
+        //（10s → 5min 封顶），成功后回到正常循环。
         std::thread::spawn(move || unsafe {
             TICK_TX.with(|t| *t.borrow_mut() = Some(tx));
-            let hinstance: HINSTANCE = match GetModuleHandleW(None) {
-                Ok(h) => HINSTANCE(h.0),
-                Err(e) => {
-                    log::warn!("clipboard watcher: GetModuleHandleW failed: {e}");
-                    return;
+            let mut backoff = std::time::Duration::from_secs(10);
+            loop {
+                let attempt = (|| -> Result<HWND, String> {
+                    let hinstance: HINSTANCE = match GetModuleHandleW(None) {
+                        Ok(h) => HINSTANCE(h.0),
+                        Err(e) => return Err(format!("GetModuleHandleW failed: {e}")),
+                    };
+                    let class_name = w!("VelaClipboardListener");
+                    let wc = WNDCLASSW {
+                        lpfnWndProc: Some(wnd_proc),
+                        hInstance: hinstance,
+                        lpszClassName: class_name,
+                        ..Default::default()
+                    };
+                    if RegisterClassW(&wc) == 0 {
+                        // 窗口类是进程级注册且本实现从无 UnregisterClassW——
+                        // 泵退出重建（外层 loop 的设计场景）时二次 RegisterClassW
+                        // 必得 ERROR_CLASS_ALREADY_EXISTS。此错误继续建窗（类还在，
+                        // wnd_proc 不变）；其余错误才进退避重试（否则重建路径是死路）。
+                        let err = windows::Win32::Foundation::GetLastError();
+                        if err != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS {
+                            return Err(format!("RegisterClassW failed ({})", err.0));
+                        }
+                    }
+                    // message-only 窗口：WM_CLIPBOARDUPDATE 是定向投递而非广播，
+                    // HWND_MESSAGE 收得到，且不出现在任务栏 / Alt-Tab / 枚举里。
+                    let hwnd = CreateWindowExW(
+                        WINDOW_EX_STYLE(0),
+                        class_name,
+                        w!("Vela Clipboard Listener"),
+                        WS_OVERLAPPED,
+                        0,
+                        0,
+                        0,
+                        0,
+                        Some(HWND_MESSAGE),
+                        None,
+                        Some(hinstance),
+                        None,
+                    )
+                    .map_err(|e| format!("CreateWindowExW failed: {e}"))?;
+                    AddClipboardFormatListener(hwnd)
+                        .map_err(|e| format!("AddClipboardFormatListener failed: {e}"))?;
+                    Ok(hwnd)
+                })();
+                let hwnd = match attempt {
+                    Ok(hwnd) => hwnd,
+                    Err(why) => {
+                        log::warn!("clipboard watcher: {why}, retrying in {:?}", backoff);
+                        std::thread::sleep(backoff);
+                        backoff = (backoff * 2).min(std::time::Duration::from_secs(300));
+                        continue;
+                    }
+                };
+                backoff = std::time::Duration::from_secs(10);
+                log::info!("clipboard watcher started");
+                let mut msg = MSG::default();
+                // GetMessageW 出错返回 -1：as_bool() 对 -1 为真会拿旧 msg 无限
+                // 重复派发（剪贴板历史静默失效）。0 与 -1 都退出泵、走外层重建。
+                while {
+                    let r = GetMessageW(&mut msg, None, 0, 0);
+                    r.0 != 0 && r.0 != -1
+                } {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
                 }
-            };
-            let class_name = w!("VelaClipboardListener");
-            let wc = WNDCLASSW {
-                lpfnWndProc: Some(wnd_proc),
-                hInstance: hinstance,
-                lpszClassName: class_name,
-                ..Default::default()
-            };
-            if RegisterClassW(&wc) == 0 {
-                log::warn!("clipboard watcher: RegisterClassW failed");
-                return;
-            }
-            // message-only 窗口：WM_CLIPBOARDUPDATE 是定向投递而非广播，
-            // HWND_MESSAGE 收得到，且不出现在任务栏 / Alt-Tab / 枚举里。
-            let hwnd = match CreateWindowExW(
-                WINDOW_EX_STYLE(0),
-                class_name,
-                w!("Vela Clipboard Listener"),
-                WS_OVERLAPPED,
-                0,
-                0,
-                0,
-                0,
-                Some(HWND_MESSAGE),
-                None,
-                Some(hinstance),
-                None,
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    log::warn!("clipboard watcher: CreateWindowExW failed: {e}");
-                    return;
+                let _ = RemoveClipboardFormatListener(hwnd);
+                // 泵退出后销毁旧 message-only 窗口再进下一轮——此前
+                // 直接建新窗，旧 HWND 泄漏（仍挂在剪贴板格式监听链外的僵尸
+                // 窗随重建次数累积）。DestroyWindow 经 WM_DESTROY 触发
+                // PostQuitMessage，残留 WM_QUIT 不抽掉会让下一轮泵秒退，
+                // 陷入「建窗→秒退→重建」的闪循环。
+                let _ = DestroyWindow(hwnd);
+                let mut stale = MSG::default();
+                //（外层函数体整体在 unsafe 块内，此处不再嵌套 unsafe。）
+                while PeekMessageW(
+                    &mut stale,
+                    None,
+                    WM_QUIT,
+                    WM_QUIT,
+                    PEEK_MESSAGE_REMOVE_TYPE(1), // PM_REMOVE
+                )
+                .as_bool()
+                {
+                    // 抽干为止（正常至多一条）。
                 }
-            };
-            if let Err(e) = AddClipboardFormatListener(hwnd) {
-                log::warn!("clipboard watcher: AddClipboardFormatListener failed: {e}");
-                return;
+                // GetMessage 退出（错误 / WM_QUIT）：外层 loop 重建窗口继续监听。
             }
-            log::info!("clipboard watcher started");
-            let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-            let _ = RemoveClipboardFormatListener(hwnd);
         });
         // 工作线程：串行处理 tick，抖动合并（只关心最终剪贴板状态）。
         std::thread::spawn(move || {
@@ -1292,7 +1437,10 @@ fn untrusted() -> DbError {
     DbError::Denied("untrusted window".into())
 }
 
-/// 倒序列表：置顶在前；`query` 非空时对摘要/全文做子串搜索。
+/// 倒序列表：置顶在前；`query` 非空时对摘要/全文做子串搜索（查询词为类型词
+/// 时整类 kind 命中，见 ClipboardRepo::list）。`latest = true` 改为纯
+/// created_at 倒序（迷你磁贴的「最近一条」视角，置顶不霸位）。列表不带全文
+/// （每行至多 512KB），全文经 `get_clipboard_entry` 按需取。
 /// 剪贴板内容高度敏感（口令、截图都可能有），仅受信窗口可读。
 #[tauri::command]
 pub async fn list_clipboard_history(
@@ -1300,6 +1448,7 @@ pub async fn list_clipboard_history(
     app: tauri::AppHandle,
     query: Option<String>,
     limit: Option<i64>,
+    latest: Option<bool>,
 ) -> DbResult<Vec<ClipboardEntry>> {
     if !crate::trusted_window(window.label()) {
         return Err(untrusted());
@@ -1308,25 +1457,65 @@ pub async fn list_clipboard_history(
         .map(|q| q.trim().to_string())
         .filter(|q| !q.is_empty());
     let limit = limit.unwrap_or(200).clamp(1, 1000);
+    let latest = latest.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager;
         let state = app.state::<crate::AppState>();
         let conn = state.read_db.acquire()?;
-        ClipboardRepo::list(&conn, query.as_deref(), limit)
+        if latest {
+            ClipboardRepo::list_recent(&conn, limit)
+        } else {
+            ClipboardRepo::list(&conn, query.as_deref(), limit)
+        }
     })
     .await
     .map_err(|e| DbError::Task(e.to_string()))?
 }
 
-/// 点击条目回写系统剪贴板（文本 = CF_UNICODETEXT；图片 = DIBV5+DIB 双格式）。
+/// 单条全文（列表只给摘要 + 行数；「查看全文」浮层按需取）。与列表同门控。
+#[tauri::command]
+pub async fn get_clipboard_entry(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    id: String,
+) -> DbResult<Option<ClipboardEntry>> {
+    if !crate::trusted_window(window.label()) {
+        return Err(untrusted());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        let conn = state.read_db.acquire()?;
+        ClipboardRepo::get(&conn, &id)
+    })
+    .await
+    .map_err(|e| DbError::Task(e.to_string()))?
+}
+
+/// 点击条目回写系统剪贴板（文本 = CF_UNICODETEXT；图片 = DIBV5+DIB 双格式；
+/// 文件 = 重建 CF_HDROP）。
 /// 先 touch 置顶再写剪贴板：随后 WM_CLIPBOARDUPDATE 捕获到同内容时会命中
-/// 「与最新一条相同 → 刷新」去重路径，不产生重复行。
+/// 「与最新一条相同 → 刷新」去重路径，不产生重复行。这是刻意的顺序——若先
+/// 写后 touch，捕获线程可能赶在 touch 落库前读到库，把回写内容当新条目插出
+/// 重复行；代价是写剪贴板失败时该条已被顶到最前（接受：失败本就罕见，顺序
+/// 抖动无害于数据）。
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../src/types/bindings/")]
+pub struct ClipboardRestoreOutcome {
+    pub entry: ClipboardEntry,
+    /// 文件条目回写时因源路径已不存在而被跳过的文件数（其余条目为 0）——
+    /// 前端据此提示「部分文件已不存在」。JSON 序列化为 number（与
+    /// ClipboardEntry.image_bytes 同款覆盖，避免 ts-rs 默认映射成 bigint）。
+    #[ts(type = "number")]
+    pub skipped_missing: i64,
+}
+
 #[tauri::command]
 pub async fn restore_clipboard_entry(
     window: tauri::Window,
     app: tauri::AppHandle,
     id: String,
-) -> DbResult<Option<ClipboardEntry>> {
+) -> DbResult<Option<ClipboardRestoreOutcome>> {
     if !crate::trusted_window(window.label()) {
         return Err(untrusted());
     }
@@ -1341,6 +1530,7 @@ pub async fn restore_clipboard_entry(
             ClipboardRepo::touch(&conn, &entry.id)?
                 .ok_or_else(|| DbError::Task("clipboard entry vanished".into()))?
         };
+        let mut skipped_missing = 0i64;
         let write = match entry.kind.as_str() {
             #[cfg(windows)]
             "image" => {
@@ -1360,23 +1550,44 @@ pub async fn restore_clipboard_entry(
                     })()
                 }
             }
-            // [FILES]（ZTools 借鉴 #8）重建 CF_HDROP：files 列（JSON 数组）→
-            // 存在性过滤（失效路径跳过，全部失效则失败）→ DROPFILES 字节。
+            // [FILES]重建 CF_HDROP：files 列（JSON 数组）→
+            // 存在性过滤（失效路径跳过并计数回报，全部失效才失败）→ DROPFILES 字节。
             #[cfg(windows)]
             "files" => {
                 let raw = entry.files.clone().unwrap_or_default();
                 let paths: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
                 let live: Vec<String> = paths
                     .into_iter()
-                    .filter(|p| std::path::Path::new(p).exists())
+                    .filter(|p| {
+                        let ok = std::path::Path::new(p).exists();
+                        if !ok {
+                            skipped_missing += 1;
+                        }
+                        ok
+                    })
                     .collect();
                 if live.is_empty() {
+                    skipped_missing = 0; // 全部失效：走错误路径，无需部分提示
                     Err("文件已不存在".to_string())
                 } else {
                     (|| -> Result<(), String> {
                         let bytes =
                             build_hdrop_bytes(&live).ok_or_else(|| "文件列表过长".to_string())?;
-                        unsafe { set_clipboard_bytes(CF_HDROP_FMT, &bytes) }
+                        // SetClipboardData 前必须 OpenClipboard 成功（文本/
+                        // 图片分支均有 Open→Empty→Close，此前 files 分支漏开，
+                        // 回写 100% 失败返回 ERROR_CLIPBOARD_NOT_OPEN）。
+                        use windows::Win32::System::DataExchange::{
+                            CloseClipboard, EmptyClipboard, OpenClipboard,
+                        };
+                        unsafe {
+                            OpenClipboard(None).map_err(|_| "剪贴板被占用".to_string())?;
+                            let result = (|| {
+                                EmptyClipboard().map_err(|e| format!("清空剪贴板失败：{e}"))?;
+                                set_clipboard_bytes(CF_HDROP_FMT, &bytes)
+                            })();
+                            let _ = CloseClipboard();
+                            result
+                        }
                     })()
                 }
             }
@@ -1397,7 +1608,75 @@ pub async fn restore_clipboard_entry(
             return Err(DbError::Task(format!("回写剪贴板失败: {e}")));
         }
         let _ = tauri::Emitter::emit(&app, CLIPBOARD_CHANGED_EVENT, ());
-        Ok(Some(entry))
+        Ok(Some(ClipboardRestoreOutcome {
+            entry,
+            skipped_missing,
+        }))
+    })
+    .await
+    .map_err(|e| DbError::Task(e.to_string()))?
+}
+
+/// 撤销删除（前端「已删除」toast 的撤销动作）：按原内容重建条目——哈希与
+/// 摘要在服务端重算，命中去重（最近 50 条同哈希）时退化为 touch，天然幂等。
+/// 图片条目无撤销：PNG 已随删除物理回收（前端不展示该动作）。
+#[tauri::command]
+pub async fn undo_delete_clipboard_entry(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    kind: String,
+    text: Option<String>,
+    files: Option<Vec<String>>,
+) -> DbResult<()> {
+    if !crate::trusted_window(window.label()) {
+        return Err(untrusted());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let input = match kind.as_str() {
+            "text" => {
+                let Some(text) = text.filter(|t| !t.trim().is_empty()) else {
+                    return Err(DbError::Task("empty undo payload".into()));
+                };
+                NewClipboardEntry {
+                    kind: "text".into(),
+                    hash: content_hash(&[b"text", text.as_bytes()]),
+                    preview: text_preview(&text),
+                    text: Some(text),
+                    image_file: None,
+                    image_w: None,
+                    image_h: None,
+                    image_bytes: 0,
+                    files: None,
+                    source_app: None,
+                }
+            }
+            "files" => {
+                let Some(files) = files.filter(|f| !f.is_empty()) else {
+                    return Err(DbError::Task("empty undo payload".into()));
+                };
+                let joined = files.join("\n");
+                NewClipboardEntry {
+                    kind: "files".into(),
+                    hash: content_hash(&[b"files", joined.as_bytes()]),
+                    preview: files_preview(&files),
+                    text: None,
+                    image_file: None,
+                    image_w: None,
+                    image_h: None,
+                    image_bytes: 0,
+                    files: serde_json::to_string(&files).ok(),
+                    source_app: None,
+                }
+            }
+            _ => return Err(DbError::Task("unsupported undo kind".into())),
+        };
+        let state = app.state::<crate::AppState>();
+        let conn = lock_db(&state.db)?;
+        let out = ClipboardRepo::record(&conn, &input)?;
+        remove_clip_files(&app, &out.orphaned_images);
+        let _ = tauri::Emitter::emit(&app, CLIPBOARD_CHANGED_EVENT, ());
+        Ok(())
     })
     .await
     .map_err(|e| DbError::Task(e.to_string()))?
@@ -1419,20 +1698,23 @@ pub async fn toggle_clipboard_pin(
         let state = app.state::<crate::AppState>();
         let conn = lock_db(&state.db)?;
         let out = ClipboardRepo::set_pinned(&conn, &id, pinned)?;
-        let _ = tauri::Emitter::emit(&app, CLIPBOARD_CHANGED_EVENT, ());
+        // 载荷 "pin"：前端乐观更新已就位，这次刷新纯属多余，跳过（见
+        // CLIPBOARD_CHANGED_EVENT 注释）。
+        let _ = tauri::Emitter::emit(&app, CLIPBOARD_CHANGED_EVENT, "pin");
         Ok(out)
     })
     .await
     .map_err(|e| DbError::Task(e.to_string()))?
 }
 
-/// 删单条（含其引用的图片文件）。
+/// 删单条（含其引用的图片文件）。返回被删行（全文随行返回）——前端据此
+/// 提供「撤销删除」（文本 / 文件条目可按内容重建）。
 #[tauri::command]
 pub async fn delete_clipboard_entry(
     window: tauri::Window,
     app: tauri::AppHandle,
     id: String,
-) -> DbResult<()> {
+) -> DbResult<Option<ClipboardEntry>> {
     if !crate::trusted_window(window.label()) {
         return Err(untrusted());
     }
@@ -1449,7 +1731,7 @@ pub async fn delete_clipboard_entry(
             }
         }
         let _ = tauri::Emitter::emit(&app, CLIPBOARD_CHANGED_EVENT, ());
-        Ok(())
+        Ok(deleted)
     })
     .await
     .map_err(|e| DbError::Task(e.to_string()))?
@@ -1476,7 +1758,10 @@ pub async fn clear_clipboard_history(window: tauri::Window, app: tauri::AppHandl
     .map_err(|e| DbError::Task(e.to_string()))?
 }
 
-/// 图片条目缩略图（≤256px，PNG dataURL）。条目不可变，前端按 id 缓存即可。
+/// 图片条目缩略图（≤256px，PNG dataURL）。条目不可变，缩略图按
+/// `<uuid>.thumb.png` 落盘缓存（此前每次调用都全图解码 → thumbnail →
+/// PNG 编码 → base64，前端内存缓存淘汰后重算一遍）；缓存未命中才解码并
+/// 回写缓存（写失败不影响本次返回）。
 #[tauri::command]
 pub async fn get_clipboard_thumbnail(
     window: tauri::Window,
@@ -1504,6 +1789,15 @@ pub async fn get_clipboard_thumbnail(
         let Some(dir) = clip_data_dir(&app) else {
             return Ok(None);
         };
+        use base64::Engine as _;
+        // 命中磁盘缓存：直接 base64，跳过解码/编码。
+        let thumb_path = dir.join(thumb_name_for(&file));
+        if let Ok(cached) = std::fs::read(&thumb_path) {
+            return Ok(Some(format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(cached)
+            )));
+        }
         let bytes = match std::fs::read(dir.join(&file)) {
             Ok(b) => b,
             Err(_) => return Ok(None),
@@ -1520,7 +1814,8 @@ pub async fn get_clipboard_thumbnail(
         {
             return Ok(None);
         }
-        use base64::Engine as _;
+        // 缓存回写 best-effort：磁盘满 / 权限问题只损失缓存，不影响返回。
+        let _ = std::fs::write(&thumb_path, &png);
         Ok(Some(format!(
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(png)
@@ -1532,7 +1827,9 @@ pub async fn get_clipboard_thumbnail(
 
 /// 打开剪贴板数据目录（设置页隐私区入口；与 open_log_dir 同策略不设闸门）。
 #[tauri::command]
-pub fn open_clipboard_dir(app: tauri::AppHandle) -> Result<(), String> {
+pub fn open_clipboard_dir(window: tauri::Window, app: tauri::AppHandle) -> Result<(), String> {
+    // 驱动 explorer 打开目录是 UI 副作用面，仅设置窗可调。
+    crate::require_settings_window(&window)?;
     let Some(dir) = clip_data_dir(&app) else {
         return Err("无法定位剪贴板数据目录".to_string());
     };
@@ -1544,7 +1841,7 @@ pub fn open_clipboard_dir(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let r = std::process::Command::new("xdg-open").arg(&dir).spawn();
     // explorer.exe 成功打开时也可能返回非零退出码，spawn 成功即视为成功；
-    // 子进程句柄交后台线程回收（C-14）。
+    // 子进程句柄交后台线程回收。
     r.map(|mut child| {
         std::thread::spawn(move || {
             let _ = child.wait();
@@ -1557,7 +1854,16 @@ pub fn open_clipboard_dir(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    // ---- [FILES]（ZTools 借鉴 #8）HDROP 构造/解析 ----
+    #[test]
+    fn thumb_name_for_strips_png_and_never_collides_with_main_file() {
+        assert_eq!(thumb_name_for("shot.png"), "shot.thumb.png");
+        assert_eq!(thumb_name_for("a.b.png"), "a.b.thumb.png");
+        // 无后缀 / 异常名：追加而非覆盖，绝不与主文件同名。
+        assert_eq!(thumb_name_for("weird"), "weird.thumb.png");
+        assert_ne!(thumb_name_for("x.png"), "x.png");
+    }
+
+    // ---- [FILES]HDROP 构造/解析 ----
 
     #[test]
     fn hdrop_bytes_roundtrip() {
@@ -1669,6 +1975,18 @@ mod tests {
         assert!(!is_pure_url("example.com")); // 无协议头也不在 www. 白名单
         assert!(!is_pure_url(""));
         assert!(!is_pure_url("   "));
+    }
+
+    /// 崩溃日志实锤（2026-09-27 两次）：以多字节字符开头的文本在
+    /// p.len() 处不是字符边界，旧实现的 t[..p.len()] 直接 panic 杀死
+    /// 监控线程。修复后按非前缀处理。
+    #[test]
+    fn pure_url_multibyte_prefix_does_not_panic() {
+        assert!(!is_pure_url("哈哈哈哈哈哈哈哈哈"));
+        assert!(!is_pure_url("哈https://example.com"));
+        assert!(!is_pure_url("中文https://example.com/path"));
+        // 混合但确实以协议头开头（ASCII 前缀，边界安全）依旧成立。
+        assert!(is_pure_url("https://example.com/哈"));
     }
 
     // ---- 摘要与尺寸闸门 ----

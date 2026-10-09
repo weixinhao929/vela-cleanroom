@@ -1,3 +1,4 @@
+mod anticapture;
 mod audio;
 mod audio_events;
 mod auto_organize;
@@ -8,8 +9,10 @@ mod cli;
 mod clipboard;
 mod color;
 mod commands;
+/// [CRASH-DUMP]SEH 崩溃转储 + 崩溃自恢复提示。
+mod crash_dump;
 mod db;
-/// [DOUBLE-TAP]（ZTools 借鉴 #13）双击修饰键呼出命令面板（默认关）。
+/// [DOUBLE-TAP]双击修饰键呼出命令面板（默认关）。
 mod double_tap;
 mod email;
 mod excel;
@@ -32,23 +35,26 @@ mod os_notify;
 mod palette;
 mod presence;
 mod preset_package;
-/// 本地 HTTP 推送入口（一.3，借鉴 NPS 的 47300 端口）：127.0.0.1 POST → 事件。
+/// [PROC-WATCH]进程事件触发器：自动化规则的
+/// 「进程启动/退出」条件源（懒启停轮询 + 快照比对增量）。
+mod process_watch;
+/// 本地 HTTP 推送入口：127.0.0.1 POST → 事件。
 mod push_server;
 mod repositories;
-/// 设置镜像单一读取/变更通知助手（A-4/B-2：六处样板收敛 + 轮询事件化）。
+/// 设置镜像单一读取/变更通知助手（六处样板收敛 + 轮询事件化）。
 mod settings_mirror;
 mod shortcut_watch;
 mod shortcuts;
 mod snip;
 mod storage_util;
-/// [SUPER-PANEL]（ZTools 借鉴 #11）长按右键取词操作面板（默认关）。
+/// [SUPER-PANEL]长按右键取词操作面板（默认关）。
 mod super_panel;
 mod sys_actions;
-/// 系统 Toast 通知监听（一.1，借鉴 NPS UserNotificationListener 轮询管线）。
+/// 系统 Toast 通知监听。
 mod sysnotify;
 mod system;
 mod system_integration;
-/// 任务栏自定义契约面（TB-CORE）：Wave 1 其余会话按 `taskbar::*` 路径消费，
+/// 任务栏自定义契约面：各消费方按 `taskbar::*` 路径消费，
 /// 声明为 pub 使契约项在消费者落地前不被判为 dead_code。
 pub mod taskbar;
 mod taskbar_net;
@@ -56,9 +62,11 @@ mod tray;
 mod update_sig;
 mod wallpaper;
 mod widget;
-/// [CTX]（ZTools 借鉴 #2）窗口上下文探针：Explorer 当前路径 / 浏览器地址栏 /
+/// [CTX]窗口上下文探针：Explorer 当前路径 / 浏览器地址栏 /
 /// 在目录打开终端 / 复制文本。
 mod win_context;
+/// [WIN-OPS]前台窗口快捷操作：置顶/透明度/居中/分贴。
+mod window_ops;
 mod windows;
 
 pub use db::{DbError, MIGRATIONS};
@@ -67,7 +75,7 @@ pub use models::{AppData, Deadline, ImportResult, PomodoroSession, Task};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 
 use rusqlite::Connection;
 use tauri::{Emitter, Manager};
@@ -78,7 +86,7 @@ use widget::InteractiveRect;
 /// must let an explicit user quit through.
 pub(crate) static ALLOW_EXIT: AtomicBool = AtomicBool::new(false);
 
-/// P3 心跳开关（默认开）：番茄钟运行时 primary 前端置 true，停止/暂停置
+/// 心跳开关（默认开）：番茄钟运行时 primary 前端置 true，停止/暂停置
 /// false。纯内存态，不持久化——重启后由前端挂载时按 isRunning 重新表态。
 /// widget-0 销毁时不再关停（见 RunEvent::Destroyed 注释）：failover 广播
 /// 让其余窗口继续驱动 tick。
@@ -118,11 +126,14 @@ fn set_heartbeat(enabled: bool) {
     HEARTBEAT_CV.notify_all();
 }
 
-/// P3：前端（primary widget-0）按番茄钟 isRunning 调用。无窗口门控——
-/// 本命令只能把心跳关小/打开，无敏感面。
+/// 前端（primary widget-0）按番茄钟 isRunning 调用。补窗口闸门
+/// （调用方 GlobalPomodoroTicker / StandbyPomodoroTicker 跑在 widget-* 与
+/// settings）：低信任窗不该能驱动心跳线程的启停节律。
 #[tauri::command]
-fn set_heartbeat_enabled(enabled: bool) {
+fn set_heartbeat_enabled(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    require_trusted(&window)?;
     set_heartbeat(enabled);
+    Ok(())
 }
 
 /// A-tick failover：primary 对每拍心跳的应答。只认 widget-0 的 ack——
@@ -135,13 +146,29 @@ fn heartbeat_ack(window: tauri::WebviewWindow) {
     }
 }
 
-/// C-7/C-8/C-19 命令级窗口闸门：自定义 Tauri 命令不受 capability 门控，任何
+/// 命令级窗口闸门：自定义 Tauri 命令不受 capability 门控，任何
 /// webview 都能调用。桌面小组件层（`widget-*`）合法地需要启动应用、浏览/删除
 /// 文件、贴图、读课表，`settings` 拥有恢复备份/读日志/邮件账户管理流；`snip`
-/// 截图覆盖窗需要写剪贴板/落盘/钉图。除此之外（`quick-note` 及任何未知窗口）
-/// 一律拒绝，作为纵深防御的命令级防线。
+/// 截图覆盖窗需要写剪贴板/落盘/钉图；`taskbar-net` 任务栏网速条需要订阅系统
+/// 监控广播（补闸时被误伤，恒显 "—"）。除此之外（`quick-note` 及任何未知
+/// 窗口）一律拒绝，作为纵深防御的命令级防线。
 pub(crate) fn trusted_window(label: &str) -> bool {
+    label == "settings" || label.starts_with("widget-") || label == "snip" || label == "taskbar-net"
+}
+
+/// 系统枚举面（磁盘/网卡/电池详情）的收窄闸门——在 trusted 名单基础
+/// 上排除 `taskbar-net`：该零交互小窗进 trusted 只为订阅 sys:stats 速率广播
+/// （补闸），不该顺带获得硬件/连接枚举能力（纵深防御：一旦该窗被注入
+/// 类问题攻破，能碰的面越小越好）。
+pub(crate) fn enum_system_window(label: &str) -> bool {
     label == "settings" || label.starts_with("widget-") || label == "snip"
+}
+
+/// 非敏感只读外观状态（壁纸取色）的放宽闸门——super-panel / fullscreen
+/// 由本应用本地内容承载（非远程页），但历史上不在 trusted 名单（此前不需要
+/// 任何受闸命令）；web-preview / quick-note 仍被拒。
+pub(crate) fn local_ui_window(label: &str) -> bool {
+    trusted_window(label) || label == "super-panel" || label == "fullscreen"
 }
 
 /// 仅供设置窗口调用的敏感读命令（恢复备份的 read_text_file、运行日志）。
@@ -149,7 +176,7 @@ pub(crate) fn settings_only_window(label: &str) -> bool {
     label == "settings"
 }
 
-/// A-5：命令级窗口闸门收口（含统一错误文案）。新命令优先用它而非手写
+/// 命令级窗口闸门收口（含统一错误文案）。新命令优先用它而非手写
 /// `if !trusted_window(...) { return Err(自拟文案) }`——全仓单一样式可
 /// grep；漏写门控的命令由 scripts/check-window-gates.mjs 清单提醒。
 /// 历史上同一谓词出现过 5 种中文文案变体，这里统一回 canonical 文案。
@@ -170,20 +197,79 @@ pub(crate) fn require_settings_window(window: &tauri::Window) -> Result<(), Stri
     }
 }
 
+/// 同 [`require_trusted`]，谓词为 local_ui_window（非敏感只读外观状态）。
+pub(crate) fn require_local_ui(window: &tauri::Window) -> Result<(), String> {
+    if local_ui_window(window.label()) {
+        Ok(())
+    } else {
+        Err("untrusted window".into())
+    }
+}
+
+/// 最小化判定：Win32 WM_SIZE 的 SIZE_MINIMIZED 携带 0x0 客户区，tao 原样
+/// 转发为 `Resized(0,0)`（tao 至今没有 Minimized 事件，见其 event_loop 注释）。
+/// 正常拖拽调尺寸不会出现 0x0。
+#[cfg(windows)]
+fn is_minimize_resize(width: u32, height: u32) -> bool {
+    width == 0 && height == 0
+}
+
+/// P-占用①：窗口最小化时挂起 WebView 渲染。tao/wry 都不把 Win32 最小化
+/// 同步给 WebView2 控制器（wry 的 parent_subclass_proc 对 SIZE_MINIMIZED 只
+/// 跳过 SetBounds，不做 SetIsVisible），Chromium 因此认为页面依然可见：
+/// rAF 不节流、合成失去 present 阻塞后自由空转——实测最小化中的设置窗烧
+/// 50%+ 渲染 CPU 并把 GPU 进程顶到整核（present 无限速）。这里经全局窗口
+/// 事件兜底：识别 `Resized(0,0)` 后调 `Webview::hide()/show()`，只翻转
+/// 控制器可见性（`document.hidden` 随之翻转，前端 installAppVisibilityGate
+/// 的 CSS 暂停与 Chromium 自身的 rAF/定时器节流同时生效），不动窗口本身，
+/// 任务栏按钮与还原路径不受影响。普通 `hide()` 藏起的窗口（super-panel
+/// 等）由祖先可见性链被 Chromium 判隐，无需也不应在此 show()——故恢复
+/// 分支先查 `window.is_visible()`（最小化时 IsWindowVisible 仍为真，不受
+/// 该守卫影响）。重复调用幂等，无状态可失步。
+pub(crate) fn suspend_webview_when_minimized(window: &tauri::Window, event: &tauri::WindowEvent) {
+    #[cfg(windows)]
+    {
+        if let tauri::WindowEvent::Resized(size) = event {
+            if is_minimize_resize(size.width, size.height) {
+                for w in window.webviews() {
+                    if let Err(e) = w.hide() {
+                        log::warn!("minimize-suspend: hide webview '{}' failed: {e}", w.label());
+                    }
+                }
+            } else if window.is_visible().unwrap_or(false) {
+                for w in window.webviews() {
+                    if let Err(e) = w.show() {
+                        log::warn!("minimize-suspend: show webview '{}' failed: {e}", w.label());
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, event);
+    }
+}
+
 /// Managed application state holding the SQLite connection plus the widget
 /// layer's interactive-region cache (keyed by window label) and edit-mode flag.
 pub struct AppState {
     db: Mutex<Connection>,
-    /// C-1：只读命令（list_*/get_setting/export/create_backup 阶段一）用的第二
+    /// 只读命令（list_*/get_setting/export/create_backup 阶段一）用的第二
     /// 条连接。与写连接 = 独立 Mutex，重备份/导入持 `db` 锁期间读路径不阻塞。
-    /// R6：只读连接池（原单连接 + Mutex，备份导出期间全部只读命令串行）。
+    /// 只读连接池（原单连接 + Mutex，备份导出期间全部只读命令串行）。
     read_db: crate::db::ReadPool,
-    interactive_regions: Mutex<HashMap<String, Vec<InteractiveRect>>>,
-    edit_mode: Mutex<bool>,
+    /// 命中矩形表改 `RwLock<Arc<HashMap>>` 快照式——钩子热路径（每条
+    /// 鼠标事件，高刷下 1000Hz 的 move）读侧 clone Arc（O(1)）后无锁扫描，
+    /// 写侧（set_interactive_regions / 窗口销毁清理 / 几何刷新 retain）构建
+    /// 新 HashMap 换新 Arc，读者持旧快照自然走完，无锁竞争。
+    interactive_regions: RwLock<Arc<HashMap<String, Vec<InteractiveRect>>>>,
+    /// 编辑模式同样被钩子热路径逐事件读取，Mutex<bool> → AtomicBool。
+    edit_mode: AtomicBool,
     always_on_top: Mutex<bool>,
-    /// W-030 托盘倒计时：菜单顶部的禁用菜单项句柄，前端周期性刷新其文本。
+    /// 托盘倒计时：菜单顶部的禁用菜单项句柄，前端周期性刷新其文本。
     tray_countdown: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
-    /// C-16 托盘"显示器"子菜单句柄：显示器热插拔后重建其子项（原菜单只在
+    /// 托盘"显示器"子菜单句柄：显示器热插拔后重建其子项（原菜单只在
     /// 启动时按当时 monitors 构建一次，拔线后菜单项仍指向已销毁的 widget-N）。
     monitor_menu: Mutex<Option<tauri::menu::Submenu<tauri::Wry>>>,
 }
@@ -196,13 +282,22 @@ impl AppState {
     }
 }
 
-/// BentoDesk 借鉴 #13：数据目录统一解析——debug 构建加 `-dev` 后缀隔离
+/// 路径后缀拼接（OsString）：`format!("{}-wal", path.display())` 一类
+/// lossy 派生在路径含非 UTF-8 字节时产出的是「替换字符变体」，与真身路径
+/// 失配——rename 悄悄指向不存在的文件。OsString 原样追加则始终派生自真身。
+fn path_with_suffix(p: &std::path::Path, suffix: &str) -> PathBuf {
+    let mut s = p.as_os_str().to_os_string();
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
+/// 数据目录统一解析——debug 构建加 `-dev` 后缀隔离
 /// （dev 版建库/备份/剪贴画廊/日志都不污染正式数据；release 与既有目录
 /// 一致，无需迁移）。所有 `app_data_dir()` 调用点都应改走这里。
 pub fn vela_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, tauri::Error> {
     let dir = app.path().app_data_dir()?;
     if cfg!(debug_assertions) {
-        Ok(PathBuf::from(format!("{}-dev", dir.to_string_lossy())))
+        Ok(path_with_suffix(&dir, "-dev"))
     } else {
         Ok(dir)
     }
@@ -223,7 +318,7 @@ fn default_db_path(app: &tauri::AppHandle) -> PathBuf {
     }
 }
 
-/// 日志目录（S1）：`<app_data>/logs`。
+/// 日志目录：`<app_data>/logs`。
 ///
 /// 在 `run()` 早期 AppHandle 还不存在，因此按平台约定直接推导；
 /// identifier 必须与 `tauri.conf.json` 的 `identifier` 保持一致，否则
@@ -243,12 +338,14 @@ fn early_log_dir() -> Option<PathBuf> {
     base.map(|b| {
         let root = b.join(IDENTIFIER);
         // 与 vela_data_dir 同款：debug 构建落 `-dev` 目录，日志不混流。
-        if cfg!(debug_assertions) {
-            PathBuf::from(format!("{}-dev", root.to_string_lossy()))
+        // 后缀拼接同用 OsString 版：与 vela_data_dir 的派生保持
+        // 逐字节一致，非 UTF-8 路径下日志目录才不会与数据目录分叉。
+        let dir = if cfg!(debug_assertions) {
+            path_with_suffix(&root, "-dev")
         } else {
             root
-        }
-        .join("logs")
+        };
+        dir.join("logs")
     })
 }
 
@@ -269,6 +366,9 @@ async fn report_frontend_crash(
 ) -> Result<(), String> {
     require_trusted(&window)?;
     let label = window.label().to_string();
+    // 广播句柄随闭包进阻塞线程：落库成功后广播 crash:logged，设置窗诊断区
+    //（崩溃统计 / 崩溃日志）据此即时刷新——此前要等设置窗重新获得焦点。
+    let app = window.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = early_crash_file().ok_or_else(|| "无法定位崩溃记录文件".to_string())?;
         let summary = match detail.as_deref() {
@@ -281,7 +381,11 @@ async fn report_frontend_crash(
             source: logging::truncate_chars(&format!("{label}:{source}"), 120),
             summary: logging::truncate_chars(&summary, 600),
         };
-        logging::record_crash(&path, rec, logging::now_ms())
+        let res = logging::record_crash(&path, rec, logging::now_ms());
+        if res.is_ok() {
+            let _ = app.emit("crash:logged", ());
+        }
+        res
     })
     .await
     .map_err(|e| format!("崩溃记录任务失败: {e}"))?
@@ -300,9 +404,60 @@ async fn get_crash_stats(window: tauri::Window) -> Result<logging::CrashStats, S
     .map_err(|e| format!("崩溃统计任务失败: {e}"))?
 }
 
+/// §4.9 诊断区清空崩溃记录文件（统计面板的「清空」）。仅设置窗口。
+/// 成功后广播 crash:logged——统计与日志两个面板据此即时回到空态（与
+/// report_frontend_crash 落库后的广播同协议）。
+#[tauri::command]
+async fn clear_crash_stats(window: tauri::Window, app: tauri::AppHandle) -> Result<(), String> {
+    require_settings_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = early_crash_file().ok_or_else(|| "无法定位崩溃记录文件".to_string())?;
+        logging::clear_crashes(&path)?;
+        use tauri::Emitter;
+        let _ = app.emit("crash:logged", ());
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("清空崩溃记录任务失败: {e}"))?
+}
+
+/// 常规页「导入设置」的文件选择 + 读取（对话框与读取都在 Rust 侧完成，
+/// 路径不进 WebView——与 import_preset_package 同模式）。返回文件文本；
+/// None = 用户取消。仅设置窗口；5MB 上限防误选大文件全量读入。
+#[tauri::command]
+async fn import_settings_file(window: tauri::Window) -> Result<Option<String>, String> {
+    require_settings_window(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = files::parented_file_dialog(&window)
+            .set_title("导入设置")
+            .add_filter("Vela 设置", &["json"])
+            .pick_file()
+        else {
+            return Ok(None);
+        };
+        // 先按 metadata 预检大小再整读——此前先 read 后判 5MB，超大文件
+        // 会整块进内存后才被拒绝。
+        let meta = std::fs::metadata(&path).map_err(|e| format!("读取文件失败: {e}"))?;
+        if meta.len() > 5 * 1024 * 1024 {
+            return Err("文件过大".into());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))?;
+        if bytes.len() as u64 > 5 * 1024 * 1024 {
+            return Err("文件过大".into());
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "不是有效的文本文件".to_string())
+    })
+    .await
+    .map_err(|e| format!("导入任务失败: {e}"))?
+}
+
 /// 打开日志目录（供设置页"查看运行日志"按钮使用）。
 #[tauri::command]
-fn open_log_dir() -> Result<(), String> {
+fn open_log_dir(window: tauri::Window) -> Result<(), String> {
+    // 运行日志目录仅设置窗可打开（敏感面）。
+    crate::require_settings_window(&window)?;
     let dir = early_log_dir().ok_or_else(|| "无法定位日志目录".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建日志目录: {e}"))?;
     #[cfg(target_os = "windows")]
@@ -312,7 +467,7 @@ fn open_log_dir() -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     let r = std::process::Command::new("xdg-open").arg(&dir).spawn();
     // explorer.exe 成功打开时也可能返回非零退出码，只要 spawn 成功即视为成功。
-    // C-14：spawn 后交后台线程 wait() 回收子进程，避免长期运行累积僵尸句柄。
+    // spawn 后交后台线程 wait() 回收子进程，避免长期运行累积僵尸句柄。
     r.map(|mut child| {
         std::thread::spawn(move || {
             let _ = child.wait();
@@ -321,16 +476,46 @@ fn open_log_dir() -> Result<(), String> {
     .map_err(|e| format!("无法打开日志目录: {e}"))
 }
 
+/// 目录里文件名最新的 `vela-YYYYMMDD.log`（日志按天滚动，日期字典序即时间序）。
+fn latest_log_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut best: Option<(String, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("vela-") || !name.ends_with(".log") {
+            continue;
+        }
+        let stem = &name["vela-".len()..name.len() - ".log".len()];
+        if stem.len() != 8 || !stem.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(d, _)| stem > d.as_str()) {
+            best = Some((stem.to_string(), entry.path()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
 /// 读取最近的日志文本（尾部 N 行），供设置页内联查看。
-/// C-19：运行日志属敏感信息，仅设置窗口可读。
+/// 运行日志属敏感信息，仅设置窗口可读。
 #[tauri::command]
 async fn read_recent_log(window: tauri::Window, lines: Option<usize>) -> Result<String, String> {
     require_settings_window(&window)?;
     let want = lines.unwrap_or(200).min(2000);
     tauri::async_runtime::spawn_blocking(move || {
         let dir = early_log_dir().ok_or_else(|| "无法定位日志目录".to_string())?;
+        // 跨天边界（应用从昨天一直跑到今天凌晨、今天还没写过日志）优先读
+        // 今天，缺失时退到目录里最近的一份——昨天的崩溃不至于查无此日志。
         let today = chrono::Local::now().format("%Y%m%d").to_string();
-        let path = dir.join(format!("vela-{today}.log"));
+        let today_path = dir.join(format!("vela-{today}.log"));
+        let path = if today_path.is_file() {
+            today_path
+        } else {
+            match latest_log_file(&dir) {
+                Some(p) => p,
+                // 目录里一份日志都没有：与「文件为空」同口径，前端显示暂无记录。
+                None => return Ok(String::new()),
+            }
+        };
         let meta = std::fs::metadata(&path).map_err(|e| format!("读取日志失败: {e}"))?;
         if !meta.is_file() {
             return Ok(String::new());
@@ -347,15 +532,18 @@ async fn read_recent_log(window: tauri::Window, lines: Option<usize>) -> Result<
         file.seek(SeekFrom::Start(start))
             .map_err(|e| format!("读取日志失败: {e}"))?;
         let mut reader = BufReader::new(file);
-        let mut raw = String::new();
+        // 按字节读 + lossy 解码：中文日志下倒推起点极易落在多字节 UTF-8 序列
+        // 中间，read_to_string 会直接 InvalidData 让整条命令报错。
+        let mut bytes = Vec::new();
         reader
-            .read_to_string(&mut raw)
+            .read_to_end(&mut bytes)
             .map_err(|e| format!("读取日志失败: {e}"))?;
-        // 起点若落在行中间，首行是半截，丢弃。
+        let raw = String::from_utf8_lossy(&bytes);
+        // 起点若落在行中间，首行是半截（且可能带 lossy 替换符），丢弃。
         let body = if start > 0 && raw.contains('\n') {
             raw.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
         } else {
-            raw.as_str()
+            raw.as_ref()
         };
         let all: Vec<&str> = body.lines().collect();
         let begin = all.len().saturating_sub(want);
@@ -363,6 +551,24 @@ async fn read_recent_log(window: tauri::Window, lines: Option<usize>) -> Result<
     })
     .await
     .map_err(|e| format!("日志读取任务失败: {e}"))?
+}
+
+/// RunEvent::Exit 的清理动作（显式退出路径在 ExitRequested 内提前调用后
+/// process::exit，不会再到 Exit 分支，两处共用本函数保持口径一致）：
+/// 恢复线 1 任务栏还原 → 快捷键注销 → clean-exit 标记。
+fn run_exit_cleanup(app_handle: &tauri::AppHandle) {
+    taskbar::restore_all();
+    shortcuts::unregister_all(app_handle);
+    // 显式退出随后 process::exit 直接终结采样线程，先把当日未落库
+    // 增量（≤60s）冲账落库，兑现「只要进程活着账不丢」。
+    net_history::flush_for_exit(app_handle);
+    // [CRASH-DUMP] clean-exit 标记（下次启动据此区分正常/异常退出）。
+    if let Some(data_dir) = early_log_dir().and_then(|d| d.parent().map(PathBuf::from)) {
+        crash_dump::write_clean_marker(&data_dir);
+    }
+    // 文件日志走缓冲写：显式退出路径随后 process::exit，不 flush 会丢最后
+    // 几行（含退出原因本身）。
+    log::logger().flush();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -375,8 +581,27 @@ pub fn run() {
     // §4.9 崩溃计数第一步：panic 先记日志 + 崩溃文件，再交默认 hook 打印。
     // 自重启（第二步）待诊断区数据支撑后再决定，此处只计数。
     logging::install_panic_hook(early_crash_file());
-    // A-8：主线程 panic 的任务栏还原动作注入（logging 保持零业务依赖）。
+    // 主线程 panic 的任务栏还原动作注入（logging 保持零业务依赖）。
     logging::set_panic_restore(taskbar::restore_all);
+    // [CRASH-DUMP]：SEH 未处理异常 → minidump + 旁车。
+    // 数据目录与日志同源（logs 的父目录 = app data 根）。
+    if let Some(data_dir) = early_log_dir().and_then(|d| d.parent().map(PathBuf::from)) {
+        crash_dump::install_exception_filter(&data_dir);
+        // 崩溃转储目录按「最近 10 份 / 超 30 天」清理——此前全仓唯一
+        // 只增不减的目录，崩溃循环 + 常驻数月会持续累积 .dmp。
+        crash_dump::prune_crashlogs(&data_dir);
+        // 崩溃自恢复：上次异常退出（无 clean 标记 + 有崩溃记录）→ 系统通知。
+        if let Some(dir) = crash_dump::check_last_shutdown(&data_dir) {
+            let logs = dir.join("logs");
+            os_notify::notify_internal(
+                "Vela",
+                &format!(
+                    "检测到上次异常退出，可查看日志与崩溃转储：{}",
+                    logs.display()
+                ),
+            );
+        }
+    }
 
     tauri::Builder::default()
         // 单实例必须是第一个插件：其 setup 在其余插件与本 app setup（建窗/托盘/
@@ -389,14 +614,19 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(shortcuts::plugin())
+        // P-占用①：所有窗口的 Resized 事件都过一遍最小化挂起钩子（含设置
+        // 窗/速记窗等用户可最小化的窗），详见函数注释。
+        .on_window_event(|window, event| {
+            suspend_webview_when_minimized(window, event);
+        })
         .setup(|app| {
             let db_path = default_db_path(app.handle());
-            // E-9: a migration failure must not silently crash the app before any
+            // a migration failure must not silently crash the app before any
             // window exists. Preserve the offending DB (plus WAL sidecars) aside,
             // then rebuild a fresh one; the preserved file stays available for
             // manual recovery. Only if a fresh DB *also* fails do we surface the
             // error (the `.expect` below) — by then the log carries full context.
-            //
+
             // 审计修复：归档重建是"库损坏"的最后手段，不应把瞬时性错误
             // （SQLITE_BUSY / IO 占用）也误判为损坏——那会让应用以空库静默
             // 启动、用户看到全部数据"消失"，且当日自动备份会把空快照固化。
@@ -434,17 +664,18 @@ pub fn run() {
                         if let Err(re) = std::fs::rename(&db_path, &archive) {
                             log::error!("archiving corrupt DB failed: {re}");
                         }
-                        if let Err(re) = std::fs::rename(
-                            format!("{}-wal", db_path.display()),
-                            format!("{}-wal", archive.display()),
-                        ) {
-                            log::warn!("archiving WAL sidecar failed: {re}");
-                        }
-                        if let Err(re) = std::fs::rename(
-                            format!("{}-shm", db_path.display()),
-                            format!("{}-shm", archive.display()),
-                        ) {
-                            log::warn!("archiving SHM sidecar failed: {re}");
+                        // sidecar 后缀用 OsString 拼接（path_with_suffix）
+                        // 而非 `format!("{}-wal", …display())`——display() 的
+                        // lossy 输出在非 UTF-8 路径下与真身失配，rename 会
+                        // 静默指向不存在的文件，WAL/SHM 残件留在原地污染
+                        // 重建后的新库。
+                        for sidecar in ["-wal", "-shm"] {
+                            if let Err(re) = std::fs::rename(
+                                path_with_suffix(&db_path, sidecar),
+                                path_with_suffix(&archive, sidecar),
+                            ) {
+                                log::warn!("archiving {sidecar} sidecar failed: {re}");
+                            }
                         }
                         db::open_and_migrate(&db_path, MIGRATIONS).map_err(|e2| {
                             log::error!("fresh database rebuild also failed: {e2}");
@@ -458,8 +689,8 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 read_db: read_pool,
-                interactive_regions: Mutex::new(HashMap::new()),
-                edit_mode: Mutex::new(false),
+                interactive_regions: RwLock::new(Arc::new(HashMap::new())),
+                edit_mode: AtomicBool::new(false),
                 always_on_top: Mutex::new(false),
                 tray_countdown: Mutex::new(None),
                 monitor_menu: Mutex::new(None),
@@ -468,11 +699,11 @@ pub fn run() {
             app.manage(system::StatsBroadcaster::new());
             log::info!("opened database at {:?}", db_path);
 
-            // W-153 网络流量记录器：常驻线程 10s 采样 / 60s 增量落库
-            // （不受 presence 空闲降载影响——挂机期间的流量也进当日账），
-            // 并承载 W-170 网速/日流量阈值系统通知。
-            net_history::start_traffic_recorder(app.handle().clone());
-            // P2-8 任务栏网速条：按持久化开关恢复（贴靠 Shell_TrayWnd）。
+            // 网络流量记录器：按持久化开关恢复（默认关——常驻采样
+            // 线程属后台行为，opt-in；开启后 10s 采样 / 60s 增量落库并承载
+            // 网速/日流量阈值系统通知）。
+            net_history::init_traffic_recorder(app.handle());
+            // 任务栏网速条：按持久化开关恢复（贴靠 Shell_TrayWnd）。
             taskbar_net::restore(app.handle());
 
             // Widget layer: one transparent full-screen window per connected
@@ -482,15 +713,18 @@ pub fn run() {
             // can partition the widget store by screen. No window-level acrylic
             // — the wallpaper shows through and only the widget cards render
             // their own glass background.
-            //
+
             // D-审计修复：按持久化「物理名 → 槽位」映射建窗，widget-N 始终
             // 落在同一物理屏，重启/热插拔换序不再互换两屏布局。
-            //
-            // P1：建窗按各屏持久化内容过滤——widget-0 无条件建（番茄钟主
-            // 时钟/通知/便签提醒/命令面板等 D-1 全局职责挂它身上），副屏只有
+
+            // 建窗按各屏持久化内容过滤——widget-0 无条件建（番茄钟主
+            // 时钟/通知/便签提醒/命令面板等 全局职责挂它身上），副屏只有
             // 布局/灵动岛镜像有内容才建：空屏不再白养一个 WebView2 渲染进程
-            // （约 120–170MB/屏）。R3 容错（单屏建窗失败不拖垮启动）在
+            // （约 120–170MB/屏）。容错（单屏建窗失败不拖垮启动）在
             // reconcile_widget_windows_blocking 内。
+            // [ANTICAPTURE]：首批建窗前同步播种开关，
+            // 建窗点据此带出 display affinity；翻转由镜像监视线程全量重放。
+            anticapture::prime_from_mirror(app.handle());
             log::info!("reconciling initial widget windows");
             monitor::reconcile_widget_windows_blocking(app.handle());
             // Hot-plug: keep the widget-window set in sync when displays are
@@ -516,17 +750,22 @@ pub fn run() {
             push_server::start_push_server(app.handle().clone());
             // 二.9 全局左键监视：预埋 AppHandle（钩子在首次启用时惰性安装）。
             global_input::init(app.handle().clone());
-            // [SUPER-PANEL]（ZTools 借鉴 #11）长按右键取词面板（默认关；钩子
+            // [SUPER-PANEL]长按右键取词面板（默认关；钩子
             // 惰性安装在配置线程里，开关只翻 AtomicBool）。
             super_panel::init(app.handle().clone());
-            // [DOUBLE-TAP]（ZTools 借鉴 #13）双击修饰键呼出面板（默认关）。
+            // [DOUBLE-TAP]双击修饰键呼出面板（默认关）。
             double_tap::init(app.handle().clone());
+            // [ANTICAPTURE] 镜像变更监视线程（翻转时全量重放 / 解除）。
+            anticapture::start_anticapture_watcher(app.handle().clone());
+            // [PROC-WATCH]进程事件触发器（懒启停：
+            // 无进程规则的机器线程真挂起零开销）。
+            process_watch::start_process_watcher(app.handle().clone());
 
             // A-tick failover：番茄钟主时钟下沉 Rust。隐藏 WebView 的 1s 定时器
             // 会被 Chromium 节流到 ~1次/分（副屏倒计时分钟级跳动），widget-0
             // 建窗失败则整体停摆。原生线程每秒广播 app:heartbeat，事件派发
             // 不受 webview 节流；primary 前端据此驱动 tickPomodoro（幂等）。
-            //
+
             // failover 下沉（二期）：定向投递 widget-0，primary 每拍回
             // heartbeat_ack；失联超过 5s（WebView 崩溃/被杀/僵死）或 widget-0
             // 不存在（拔主屏）时切换为全 widget 窗口 + 设置窗广播——副屏不再
@@ -534,8 +773,8 @@ pub fn run() {
             // 原生线程内 5s 必达。primary 恢复应答的下一拍自动回到定向模式。
             // 副屏/设置窗的候补消费是事件驱动的：收不到心跳就天然不 tick，
             // 无需让位协议。tickPomodoro 幂等（墙钟锚点），短暂双主无副作用。
-            //
-            // P3：番茄钟没在跑时心跳是纯空转（tick 幂等 no-op）。前端 primary
+
+            // 番茄钟没在跑时心跳是纯空转（tick 幂等 no-op）。前端 primary
             // 在 isRunning 翻转时调 set_heartbeat_enabled；停用时线程在 Condvar
             // 上真挂起（零唤醒）。默认开启：前端尚未表态（旧包/挂载失败）时
             // 保持旧行为。
@@ -586,10 +825,15 @@ pub fn run() {
                 });
             }
 
-            // P0-b：仅首次运行弹设置窗（新用户需要落地页）；之后开机直接进
+            // -b：仅首次运行弹设置窗（新用户需要落地页）；之后开机直接进
             // 托盘 + 桌面挂件层——设置窗 renderer 不再开机常驻（约 110–185MB），
             // 需要时托盘左键 / Ctrl+Alt+S 唤起（销毁→重建语义，见 windows.rs）。
             windows::show_settings_on_first_boot(app.handle());
+
+            // 全屏窗前端 ready ack 监听挂接——
+            // windows.rs 的就绪看门狗据此判定 WebView 是否可用（假死时关窗
+            // 解困，正常路径无感）。
+            windows::listen_fullscreen_ready(app.handle());
 
             // Global shortcuts: registration failures are logged but non-fatal
             // (e.g. another app already owns the combo).
@@ -598,12 +842,12 @@ pub fn run() {
             // System tray (menu + click handlers + countdown item handle).
             tray::build_tray(app)?;
 
-            // P0：设置窗关闭即销毁（renderer 随之释放）；关闭策略与重建都
+            // 设置窗关闭即销毁（renderer 随之释放）；关闭策略与重建都
             // 在 windows::create_settings_window / show_settings_window 里，
             // 不再在此挂最小化拦截。应用仍常驻托盘。
-            // 任务栏自定义（TB-CORE 契约地基）：start 只缓存 AppHandle 供
+            // 任务栏自定义（契约地基）：start 只缓存 AppHandle 供
             // taskbar:* 事件 emit；探测/注入/监听在用户开启后由
-            // apply_taskbar_config 链路（TB-INJECT / TB-STATE）驱动。
+            // apply_taskbar_config 链路驱动。
             taskbar::start(app.handle().clone());
             Ok(())
         })
@@ -627,6 +871,8 @@ pub fn run() {
             commands::add_session,
             commands::aggregate_sessions,
             commands::hourly_focus_distribution,
+            commands::monthly_interruption_breakdown,
+            commands::task_focus_breakdown,
             commands::automation_toggle_layer,
             commands::list_interruptions,
             commands::add_interruption,
@@ -639,6 +885,10 @@ pub fn run() {
             commands::clear_notifications,
             commands::export_data,
             commands::import_data,
+            commands::import_core_data_keep_sessions,
+            commands::import_core_data_merge,
+            commands::merge_sessions,
+            commands::merge_interruptions,
             commands::create_backup,
             commands::list_backups,
             commands::get_backups_dir,
@@ -655,14 +905,27 @@ pub fn run() {
             sys_actions::sys_close_foreground,
             sys_actions::sys_close_all_stage1,
             sys_actions::sys_close_all_execute,
-            // [POWER]（ZTools 借鉴 #4）电源与会话动作。
+            // [POWER]电源与会话动作。
             sys_actions::sys_power_action,
-            // [CTX]（ZTools 借鉴 #2）窗口上下文探针。
+            // [WIN-ACTIONS]：虚拟桌面移动 / 系统
+            // 代理切换 / 高对比度切换。
+            sys_actions::sys_move_window_virtual_desktop,
+            sys_actions::sys_toggle_system_proxy,
+            sys_actions::sys_toggle_high_contrast,
+            // [WIN-OPS]前台窗口快捷操作。
+            window_ops::win_toggle_topmost,
+            window_ops::win_adjust_opacity,
+            window_ops::win_reset_opacity,
+            window_ops::win_center_foreground,
+            window_ops::win_snap_foreground,
+            // [PROC-WATCH]自动化规则的进程事件条件源。
+            process_watch::set_process_watch,
+            // [CTX]窗口上下文探针。
             win_context::read_explorer_path,
             win_context::read_browser_url,
             win_context::open_terminal_at,
             win_context::copy_text_to_clipboard,
-            // [SUPER-PANEL]（ZTools 借鉴 #11）面板窗就绪补拉。
+            // [SUPER-PANEL]面板窗就绪补拉。
             super_panel::get_super_panel_payload,
             windows::show_fullscreen,
             windows::open_web_preview,
@@ -687,6 +950,9 @@ pub fn run() {
             files::delete_to_recycle_bin,
             file_history::delete_with_undo,
             file_history::undo_delete,
+            file_history::delete_batch_with_undo,
+            file_history::cancel_delete_batch,
+            files::transfer_into_dir,
             files::rename_path,
             files::create_entry,
             auto_organize::apply_auto_organize,
@@ -713,6 +979,8 @@ pub fn run() {
             read_recent_log,
             report_frontend_crash,
             get_crash_stats,
+            clear_crash_stats,
+            import_settings_file,
             excel::read_excel_sheet,
             monitor::list_monitors,
             os_notify::send_os_notification,
@@ -733,15 +1001,21 @@ pub fn run() {
             net_history::get_traffic_summary,
             net_history::get_traffic_daily,
             net_history::set_net_alerts,
+            net_history::get_traffic_stats_enabled,
+            net_history::set_traffic_stats_enabled,
             taskbar_net::set_taskbar_net_enabled,
             taskbar_net::get_taskbar_net_enabled,
+            taskbar_net::taskbar_net_heartbeat,
+            taskbar_net::set_taskbar_net_width,
             bluetooth::get_bluetooth_devices,
             bluetooth::open_bluetooth_settings,
             bluetooth::bluetooth_toggle_connection,
             clipboard::read_clipboard_text,
             clipboard::copy_image_to_clipboard,
             clipboard::list_clipboard_history,
+            clipboard::get_clipboard_entry,
             clipboard::restore_clipboard_entry,
+            clipboard::undo_delete_clipboard_entry,
             clipboard::toggle_clipboard_pin,
             clipboard::delete_clipboard_entry,
             clipboard::clear_clipboard_history,
@@ -756,6 +1030,8 @@ pub fn run() {
             audio::start_audio_spectrum,
             audio::stop_audio_spectrum,
             audio::toggle_system_mute,
+            audio::get_system_mute,
+            audio::get_audio_status,
             widget::set_interactive_regions,
             widget::set_edit_mode,
             widget::set_desktop_double_click,
@@ -763,7 +1039,8 @@ pub fn run() {
             widget::get_widget_state,
             system_integration::set_autostart,
             system_integration::get_autostart,
-            system_integration::check_updates,
+            system_integration::get_update_info,
+            system_integration::get_velatap_digest,
             system_integration::resolve_latest_tag,
             system_integration::download_update,
             system_integration::install_update,
@@ -772,11 +1049,13 @@ pub fn run() {
             system_integration::fetch_url_text,
             system_integration::fetch_lyric_page,
             system_integration::net_speed_probe,
+            system_integration::net_upload_probe,
             game::get_foreground_app,
             game::get_summon_foreground,
             presence::get_presence_state,
             shortcuts::apply_shortcut_config,
             shortcuts::get_shortcut_config,
+            shortcuts::get_shortcut_register_failures,
             taskbar::get_taskbar_config,
             taskbar::apply_taskbar_config,
             taskbar::get_taskbar_status,
@@ -802,6 +1081,7 @@ pub fn run() {
             email::delete_email,
             email::save_email_accounts,
             email::load_email_accounts,
+            email::test_email_account,
             update_sig::verify_update_manifest,
         ])
         .build(tauri::generate_context!())
@@ -813,7 +1093,16 @@ pub fn run() {
                 tauri::RunEvent::ExitRequested { api, code, .. } => {
                     if ALLOW_EXIT.load(Ordering::SeqCst) {
                         log::info!("RunEvent::ExitRequested (code={code:?}) — explicit quit, allowing exit");
-                        return;
+                        // （2026-10-03 案例）：显式退出不能只交回 tao 事件循环等它
+                        // 自行 break——RequestExit 是用户事件，tao 的 runner 在派发后
+                        // 停在 HandlingMainEvents，只有后续某窗口的 WM_PAINT 触发
+                        // redraw_events_cleared 才会回到 Idle、循环才检查 Exit 位。
+                        // 全部窗口隐藏/空闲（设置窗已隐藏、widget 层无绘制）时这一拍
+                        // 永远不来：循环继续泵消息（托盘仍响应、再次退出只重复本日志）
+                        // 但永不终止，用户只能任务管理器杀进程。这里主动做完
+                        // RunEvent::Exit 的清理后直接终止进程，退出变成确定性动作。
+                        run_exit_cleanup(app_handle);
+                        std::process::exit(0);
                     }
                     // code == None：不是 app.exit() 发起的退出。本应用的常驻
                     // 窗口（settings 拦截关闭、widget 层常驻）在运行期不会
@@ -829,9 +1118,7 @@ pub fn run() {
                 }
                 tauri::RunEvent::Exit => {
                     log::warn!("RunEvent::Exit — app exiting");
-                    // F-9 恢复线 1：先把任务栏还原成系统默认，再注销其余资源。
-                    taskbar::restore_all();
-                    shortcuts::unregister_all(app_handle);
+                    run_exit_cleanup(app_handle);
                 }
                 tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
                     // 集中清理窗口级资源：被销毁的 webview 不会再执行
@@ -852,12 +1139,22 @@ pub fn run() {
                     }
                     audio::drop_window(label);
                     global_input::drop_window(label);
+                    // 实时文件夹 watcher 按实例 id 登记，但注册来源是窗口——
+                    // 窗口崩溃/强销时前端 cleanup 不会跑，集中回收防句柄与
+                    // 接收线程残留。
+                    live_folder::drop_window(label);
                     if let Some(state) = app_handle.try_state::<AppState>() {
-                        state
+                        // 快照式写侧——clone 出新 HashMap 删键后换新 Arc
+                        //（读侧钩子线程持旧快照自然走完）；无该窗口的键时零分配。
+                        let mut guard = state
                             .interactive_regions
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .remove(label);
+                            .write()
+                            .unwrap_or_else(|p| p.into_inner());
+                        if guard.contains_key(label) {
+                            let mut next = (**guard).clone();
+                            next.remove(label);
+                            *guard = Arc::new(next);
+                        }
                     }
                 }
                 _ => {}
@@ -899,5 +1196,55 @@ mod heartbeat_tests {
         // ack 时间戳来自 SystemTime，NTP 回拨不应产生巨大差值导致误广播；
         // saturating_sub 保证最坏差 0（不 failover）。
         assert!(!heartbeat_should_failover(500, 100_000));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod minimize_suspend_tests {
+    use super::is_minimize_resize;
+
+    #[test]
+    fn zero_client_area_is_minimize() {
+        // WM_SIZE SIZE_MINIMIZED 的 lparam 两段均为 0（tao 原样转发）。
+        assert!(is_minimize_resize(0, 0));
+    }
+
+    #[test]
+    fn any_real_size_is_not_minimize() {
+        // 拖拽调尺寸/DPI 变化/建窗首拍都不会出现 0x0；即使极端窄窗，宽或高
+        // 之一非 0 就不是最小化。
+        assert!(!is_minimize_resize(1, 0));
+        assert!(!is_minimize_resize(0, 1));
+        assert!(!is_minimize_resize(320, 240));
+    }
+}
+
+#[cfg(test)]
+mod latest_log_tests {
+    use super::latest_log_file;
+
+    #[test]
+    fn picks_newest_dated_log_and_ignores_odd_names() {
+        let dir = std::env::temp_dir().join(format!("vela-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let touch = |name: &str| std::fs::write(dir.join(name), b"x").unwrap();
+        // 创建顺序故意打乱：新旧与干扰项混排（velatap.dll.log 等非日期名）。
+        touch("vela-20260929.log");
+        touch("vela-20261001.log");
+        touch("vela-20260930.log");
+        touch("velatap-helper.log");
+        touch("vela-notadate.log");
+        touch("notes.txt");
+        let got = latest_log_file(&dir).expect("应命中最新一份");
+        assert!(got.ends_with("vela-20261001.log"), "got {:?}", got);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn empty_dir_yields_none() {
+        let dir = std::env::temp_dir().join(format!("vela-log-test-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(latest_log_file(&dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

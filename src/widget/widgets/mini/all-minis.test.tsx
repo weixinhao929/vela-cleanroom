@@ -6,7 +6,7 @@ import { getWidgetMeta } from "../../registry";
 import { createDockTile, useWidgetStore } from "../../widget-store";
 
 /**
- * F-1 集成验收（ISLAND-MINI）：把全部登记了 MiniComponent 的类型经 CORE 的
+ * 集成验收（ISLAND-MINI）：把全部登记了 MiniComponent 的类型经 CORE 的
  * addDockTile 加入岛，DockTiles 渲染后每枚都以富形态落地（懒 chunk 解析完，
  * 无 .is-generic 兜底、无加载占位），根元素带 .dock-mini.dock-mini-<type>
  * （music / nowplaying 共用 dock-mini-music）。浏览器模式（isTauri=false）下

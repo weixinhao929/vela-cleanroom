@@ -13,11 +13,11 @@ export type PomodoroDailyGoalMode = "sessions" | "minutes";
 /** How the timer advances: countdown (remaining) or countup (elapsed). */
 export type PomodoroTimerMode = "countdown" | "countup";
 
-/** 表盘配色皮肤（W-054）。 */
+/** 表盘配色皮肤。 */
 export type PomodoroDialTheme = "accent" | "mint" | "sunset" | "ocean" | "violet";
 
 /**
- * 阶段推进门（借鉴 FocusTimer）：auto=按 autoStartNext 自动衔接；
+ * 阶段推进门：auto=按 autoStartNext 自动衔接；
  * confirm=每段结束后等手动确认才开始下一段；wait-activity=休息照常自动
  * 开始、但休息结束后的下一段专注等 presence 检测到用户回座才启动
  * （state.awaitingActivity 置位，App 层 presence 监听负责真正启动）。
@@ -38,13 +38,13 @@ export interface PomodoroConfig {
   dailyGoalMode: PomodoroDailyGoalMode;
   /** 每日专注目标（分钟，dailyGoalMode="minutes" 时生效）。0 = 不设目标。 */
   dailyGoalMinutes: number;
-  /** W-050 完整自动循环链：专注结束自动进入休息，休息结束回到专注。 */
+  /** 完整自动循环链：专注结束自动进入休息，休息结束回到专注。 */
   autoCycle: boolean;
-  /** W-053 正计时目标提醒（分钟）。0 = 跟随专注时长。 */
+  /** 正计时目标提醒（分钟）。0 = 跟随专注时长。 */
   countupGoalMinutes: number;
-  /** W-054 表盘配色。 */
+  /** 表盘配色。 */
   dialTheme: PomodoroDialTheme;
-  /** FocusTimer 借鉴：阶段推进门（默认 auto，完全沿用既有自动衔接）。 */
+  /** 阶段推进门（默认 auto，完全沿用既有自动衔接）。 */
   advanceGate: PomodoroAdvanceGate;
 }
 
@@ -61,7 +61,7 @@ export interface PomodoroState {
   currentTaskId: string | null;
   /** Custom event label set when the user picks a non-task event. */
   currentEventLabel: string | null;
-  /** FocusTimer 借鉴：休息结束后的下一段专注已就位，等 presence 检测到
+  /** 休息结束后的下一段专注已就位，等 presence 检测到
    *  用户回座再自动开始（advanceGate="wait-activity" 专用；其余动作清零）。 */
   awaitingActivity: boolean;
 }
@@ -76,7 +76,7 @@ export type PomodoroAction =
   | { type: "interrupt" }
   | { type: "adjust"; delta: number };
 
-/** FocusTimer 借鉴：净专注时长达到计划时长的该比例即视为「完成」——
+/** 净专注时长达到计划时长的该比例即视为「完成」——
  *  中断放弃的段若已专注够久，同样计入轮数并触发长休判定。 */
 export const FOCUS_COMPLETION_THRESHOLD = 0.75;
 
@@ -106,8 +106,8 @@ export const DEFAULT_CONFIG: PomodoroConfig = {
   advanceGate: "auto"
 };
 
-/** W-054 表盘皮肤白名单（normalize 用）。 */
-const DIAL_THEMES: PomodoroDialTheme[] = ["accent", "mint", "sunset", "ocean", "violet"];
+/** 表盘皮肤白名单（normalize 用）。导出供设置页的配色选择器复用。 */
+export const DIAL_THEMES: PomodoroDialTheme[] = ["accent", "mint", "sunset", "ocean", "violet"];
 const GOAL_MODES: PomodoroDailyGoalMode[] = ["sessions", "minutes"];
 
 /**
@@ -200,6 +200,17 @@ function resetSeconds(mode: PomodoroMode, timerMode: PomodoroTimerMode, config: 
  */
 export function plannedSecondsFor(mode: PomodoroMode, config: PomodoroConfig = DEFAULT_CONFIG): number {
   return durationSeconds(mode, config);
+}
+
+/**
+ * 正计时（countup）的目标秒数：可配目标为 0 时跟随专注时长。
+ * （分母统一）：主面板进度环 / 目标文案 / 迷你环此前各用各的分母
+ * （focusMinutes、countupGoalMinutes、恒 0），同一计时器三处呈现不一致；
+ * 统一为本函数，下限 60s 防除零。
+ */
+export function countupGoalSeconds(config: PomodoroConfig): number {
+  const minutes = config.countupGoalMinutes > 0 ? config.countupGoalMinutes : config.focusMinutes;
+  return Math.max(60, minutes * 60);
 }
 
 /**
@@ -306,7 +317,7 @@ export function pomodoroReducer(
     }
 
     case "adjust": {
-      // FocusTimer 借鉴（extend / rewind）：运行中 ±N 秒。倒计时剩余保底
+      // （extend / rewind）：运行中 ±N 秒。倒计时剩余保底
       // 10s（MIN_REMAINING 同款语义，避免拨到 0 立即完成）；正计时已过
       // 秒数保底 0。只在运行中有意义。
       if (!state.isRunning) return state;
@@ -330,14 +341,14 @@ export function pomodoroReducer(
       // Only a completed FOCUS counts toward the cycle counter — a finished
       // break must never inflate completedFocusSessions.
       const completed = state.mode === "focus" ? state.completedFocusSessions + 1 : state.completedFocusSessions;
-      // FocusTimer 借鉴：推进门。confirm=下一段等手动开始；wait-activity=仅
+      // 推进门。confirm=下一段等手动开始；wait-activity=仅
       // 对「下一段是专注」生效——下一段就位（isRunning=false）并置
       // awaitingActivity，由 App 层 presence 监听在用户回座时真正启动。
       const gate = config.advanceGate ?? "auto";
       const holdConfirm = config.autoStartNext && gate === "confirm";
       const holdActivity = config.autoStartNext && gate === "wait-activity";
 
-      // W-050 完整自动循环链：专注结束按 longBreakInterval 轮换长短休，
+      // 完整自动循环链：专注结束按 longBreakInterval 轮换长短休，
       // 休息结束回到专注（沿用用户偏好的专注计时方式）。autoStartNext
       // 同时控制休息与下一轮专注是否自动开始。
       if (config.autoCycle) {
@@ -418,7 +429,7 @@ export interface PomodoroSessionRecord {
   endedAt: string;
   plannedSeconds: number;
   completed: boolean;
-  /** W-051 任务用时归集：该段专注关联的待办 / 自定义事件。 */
+  /** 任务用时归集：该段专注关联的待办 / 自定义事件。 */
   taskId?: string | null;
   eventLabel?: string | null;
 }

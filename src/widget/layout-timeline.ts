@@ -1,15 +1,14 @@
 /**
- * 布局时间线（BentoDesk 借鉴 #1，v1）：布局结构变更的自动快照 + 撤销/重做。
+ * 布局时间线：布局结构变更的自动快照 + 撤销/重做。
  *
  * - 挂接方式：订阅 widget-store（零侵入——store 动作不用逐个埋点），实例/
  *   编组引用变化即标脏；500ms 尾沿防抖 + 2s 强制冲刷窗，连续编辑只落一份。
- * - 显著性阈值：与游标处的上一份快照相比只有实例/组的**增删**才落盘
- *   （BentoDesk「item ≥3 或 zone ≥1」同哲学）——移动/缩放/改配置不产生
- *   历史噪音。
+ * - 显著性阈值：与游标处的上一份快照相比只有实例/组的**增删**或**编组成员表
+ *   变化**（并入/摘出/重排）才落盘
+ *   ——移动/缩放/改配置不产生历史噪音。
  * - 有界历史：每 (screen, view) 键独立，auto 上限 20 条，满逐最旧；快照是
  *   全量 JSON（布局数据小、损坏条目直接跳过不炸列表）。
- * - 恢复语义：undo/redo 前先冲刷 pending 快照（等价 BentoDesk 的
- *   pre_restore——未落盘的现状先补一份，任何恢复本身可再撤销）；恢复期间
+ * - 恢复语义：undo/redo 前先冲刷 pending 快照；恢复期间
  *   挂起自动捕获，防止把恢复动作又记成新历史、冲掉 redo 分支。
  * - 入口：Ctrl+Z 撤销 / Ctrl+Shift+Z（Ctrl+Y）重做，文本输入焦点时不接管。
  *   恢复入口是 widget-store.applyTimelineState（清同 id 回收站条目防复活）。
@@ -29,6 +28,7 @@ import {
 import type { WidgetGroup, WidgetInstance } from "./widget-store";
 import { sqliteRepo } from "../lib/persistence/sqlite";
 import { isTauri } from "../lib/tauri";
+import { isPersistSuspended } from "../lib/persist-gate";
 import { pushAppToast } from "../components/ToastHost";
 import { t } from "../i18n-lite";
 
@@ -36,7 +36,7 @@ import { t } from "../i18n-lite";
 const DEBOUNCE_MS = 500;
 /** 强制冲刷窗：即使变更持续到来也必须落盘的上限（防永不落盘）。 */
 const COALESCE_MAX_MS = 2000;
-/** 每键 auto 快照上限（BentoDesk 同款容量 20）。 */
+/** 每键 auto 快照上限。 */
 const CAP = 20;
 
 export type LayoutSnapshot = {
@@ -45,23 +45,34 @@ export type LayoutSnapshot = {
   capturedAt: number;
   instances: WidgetInstance[];
   groups: WidgetGroup[];
-  /** v2：手动固定（pin）的快照不参与容量淘汰、永不驱逐（BentoDesk 双队列语义）。 */
+  /** v2：手动固定（pin）的快照不参与容量淘汰、永不驱逐。 */
   pinned?: boolean;
 };
 
-/** 两份快照的结构差（纯函数）：时间轴列表的 "+2 组件 −1 组" 摘要用。 */
+/** 两份快照的结构差（纯函数）：时间轴列表的 "+2 组件 −1 组" 摘要用。
+ *  membersMoved = 两份快照里都存在、但成员表有变化的组数（并入/摘出/重排）——
+ *  这些条目不改组 id 集合，摘要里以「编组调整」一行呈现。 */
 export function deltaOf(
   prev: LayoutSnapshot | null,
   next: LayoutSnapshot
-): { added: number; removed: number; groupsAdded: number; groupsRemoved: number } {
+): { added: number; removed: number; groupsAdded: number; groupsRemoved: number; membersMoved: number } {
   const idsOf = (xs: { id: string }[]) => new Set(xs.map((x) => x.id));
+  let membersMoved = 0;
+  if (prev) {
+    const prevGroups = new Map(prev.groups.map((g) => [g.id, g.memberIds.join("\u0001")]));
+    for (const g of next.groups) {
+      const before = prevGroups.get(g.id);
+      if (before !== undefined && before !== g.memberIds.join("\u0001")) membersMoved++;
+    }
+  }
   return {
     added: prev
       ? [...idsOf(next.instances)].filter((x) => !idsOf(prev.instances).has(x)).length
       : next.instances.length,
     removed: prev ? [...idsOf(prev.instances)].filter((x) => !idsOf(next.instances).has(x)).length : 0,
     groupsAdded: prev ? [...idsOf(next.groups)].filter((x) => !idsOf(prev.groups).has(x)).length : next.groups.length,
-    groupsRemoved: prev ? [...idsOf(prev.groups)].filter((x) => !idsOf(next.groups).has(x)).length : 0
+    groupsRemoved: prev ? [...idsOf(prev.groups)].filter((x) => !idsOf(next.groups).has(x)).length : 0,
+    membersMoved
   };
 }
 
@@ -73,7 +84,10 @@ function dbTimelineKey(view: string): string {
 }
 
 /**
- * 显著性判定（纯函数）：实例或组的 id 集合有增删才算结构变化。
+ * 显著性判定（纯函数）：实例或组的 id 集合有增删、或**编组成员表**有变化
+ * 才算结构变化。成员表纳入的动机：并入/摘出/重排都不改 id 集合，此前不落
+ * 快照——「拖卡进组后 Ctrl+Z 无反应」的撤销盲区。组几何 / activeId / 实例
+ * 移动缩放仍不进历史（结构变化哲学不变）。
  * prev 为空且当前也为空 → 不落（空→空的初始化噪音）。
  */
 export function isSignificant(
@@ -88,7 +102,16 @@ export function isSignificant(
     return false;
   };
   if (!prev) return instances.length > 0 || groups.length > 0;
-  return diff(idsOf(prev.instances), idsOf(instances)) || diff(idsOf(prev.groups), idsOf(groups));
+  if (diff(idsOf(prev.instances), idsOf(instances))) return true;
+  if (diff(idsOf(prev.groups), idsOf(groups))) return true;
+  /* 成员结构键（组 id + 有序成员表）：顺序敏感（标签重排也是历史事件），
+     与 deltaOf 的 membersMoved 同一比较口径。 */
+  const membersKey = (gs: WidgetGroup[]) =>
+    gs
+      .map((g) => `${g.id}:${g.memberIds.join("\u0001")}`)
+      .sort()
+      .join("\u0002");
+  return membersKey(prev.groups) !== membersKey(groups);
 }
 
 /** 有界追加（纯函数）：非 pinned 条目超上限逐最旧；pinned 永不驱逐。 */
@@ -145,6 +168,14 @@ function stateFor(view: string): TimelineState {
 }
 
 function persist(view: string, entries: LayoutSnapshot[]) {
+  /* 整表写挂闸门（口径）——恢复备份进行中，
+     迟到的时间线快照不得把恢复前的旧历史盖回共享 LS 与 SQLite 镜像。时间线
+     是派生历史（非权威数据），跳过的写由恢复后的新布局重新积累；
+     notifyTimeline 照常（内存 entries 已变更，面板要立即反映）。 */
+  if (isPersistSuspended()) {
+    notifyTimeline();
+    return;
+  }
   const json = JSON.stringify(entries);
   try {
     localStorage.setItem(timelineKey(view), json);
@@ -210,7 +241,11 @@ export function restoreSnapshot(view: string, id: string): boolean {
     restoring = false;
   }
   st.cursor = idx;
-  pushAppToast(t("已恢复布局快照"), "");
+  /* 恢复可再撤销（恢复前的现状已由 flushPendingTimeline 补成快照）：与
+     「套用布局模板」同款带撤销动作的 toast，误恢复一键回到恢复前。 */
+  pushAppToast(t("已恢复布局快照"), t("原布局已存入时间线"), "info", {
+    action: { label: t("撤销"), run: () => void undoLayout() }
+  });
   return true;
 }
 
@@ -232,6 +267,14 @@ let restoring = false;
 
 function touch(view: string) {
   if (restoring) return;
+  /* 跨视图背靠背标脏——原实现只在首笔标脏时记录
+     dirtyView，此后不更新；切换视图后 500ms 窗口内新视图的首笔结构变更
+     会随旧视图一起冲刷（旧视图通常 isSignificant 判否丢弃），新视图的
+     变更从未进历史，Ctrl+Z 无反应一次。视图变化时先把旧视图就地冲刷
+     （各自完成历史捕获），再以新视图重新起算防抖窗口。 */
+  if (dirty && dirtyView !== null && dirtyView !== view) {
+    flushPendingTimeline();
+  }
   dirty = true;
   if (!dirtySince) {
     dirtySince = Date.now();
@@ -355,6 +398,9 @@ export function initLayoutTimeline(): void {
   window.addEventListener("keydown", (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     if (isEditableTarget(e.target)) return;
+    // 快捷方式小组件的撤销监听（capture，只 preventDefault 不停传播）
+    // 已消费同一次 Ctrl+Z 时不得再弹布局时间线——一次按键跨域双重撤销。
+    if (e.defaultPrevented) return;
     const key = e.key.toLowerCase();
     if (key === "z" && !e.shiftKey) {
       if (undoLayout()) e.preventDefault();

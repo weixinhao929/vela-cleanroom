@@ -1,5 +1,5 @@
 /**
- * 全局命令面板（I1）→ Spotlight（SPOT）。
+ * 全局命令面板→ Spotlight（SPOT）。
  *
  * 桌面层按 Ctrl+K 弹出：搜索并执行跨功能动作 —— 切换视图、进入编辑模式、
  * 开关番茄钟、打开设置指定页、添加小组件等。命令列表在打开时快照当前
@@ -10,10 +10,10 @@
  *    排序），Enter 启动；应用组排在命令/设置结果之前合流显示。
  *  - 网页兜底：无本地结果时唯一结果行 = 用默认搜索引擎打开，Tab / 点击芯片
  *    循环切换引擎（Bing/Google/百度/DuckDuckGo，配置暂存 localStorage）。
- *  - G11 文件模式：查询带路径痕迹（\、/ 或盘符）时防抖搜索用户常用目录，
+ *  - 文件模式：查询带路径痕迹（\、/ 或盘符）时防抖搜索用户常用目录，
  *    文件组排在应用之后，Enter 经系统默认处理器打开并累计频率。
  *
- * ZTools 借鉴批次：
+ * 批次：
  *  - #1 [PASTE] 粘贴态路由：粘贴/拖入文本·文件·图片 → 载荷芯片 + 按类型
  *    匹配动作（存便签/建任务/入快捷方式/复制路径/入图库…，见
  *    lib/palette-payload）。Esc 先清载荷再收面板。
@@ -37,9 +37,10 @@ import { useT } from "../i18n-lite";
 import { prefersReducedMotion, useDelayedUnmount } from "../lib/anim";
 import { animDurations } from "../lib/durations";
 import { buildCommands, type Command } from "../lib/commands";
-/* A-1：设置索引搜索经注入进入命令目录（lib 不得反向 import features）；
-   组件层是合法的 features 消费方。 */
+/* 设置索引搜索经注入进入命令目录（lib 不得反向 import features）；
+   组件层是合法的 features 消费方。行级跳转信道（settings-jump）同款注入。 */
 import { searchSettings } from "../features/settings/settings-search";
+import { requestSettingsJump } from "../features/settings/settings-jump";
 import {
   buildPayloadCommands,
   isAbsolutePath,
@@ -79,13 +80,13 @@ import "../styles/command-palette.css";
 
 /** 面板内应用结果上限：避免淹没命令/设置结果。 */
 const APP_RESULT_LIMIT = 8;
-/** G11 文件结果上限（path-like 查询才触发，文件组排在应用之后）。 */
+/** 文件结果上限（path-like 查询才触发，文件组排在应用之后）。 */
 const FILE_RESULT_LIMIT = 8;
 /** 文件搜索防抖：逐键扫盘太吵，停顿 250ms 再发起（Rust 侧另有 300ms 预算）。 */
 const FILE_SEARCH_DEBOUNCE_MS = 250;
 /**
  * [PASTE] 短单行文本粘贴仍落入输入框（搜索意图常见）；多行或超长文本转
- * 载荷芯片（内容意图）。文件 / 图片粘贴恒为载荷（ZTools 语义）。
+ * 载荷芯片（内容意图）。文件 / 图片粘贴恒为载荷。
  */
 const PASTE_TEXT_PAYLOAD_MIN = 200;
 
@@ -143,7 +144,7 @@ export function CommandPaletteHost() {
   const [openState, setOpenState] = useState(paletteOpen);
   const [query, setQuery] = useState(pendingQuery);
   const [hi, setHi] = useState(0);
-  /* 指针扫过高亮合帧（P2 三轮）：onPointerEnter 逐行触发整面板重渲 + 指示条
+  /* 指针扫过高亮合帧（三轮）：onPointerEnter 逐行触发整面板重渲 + 指示条
      layoutEffect（读 offsetTop 强制 layout）。rAF 合帧让快速扫过 N 行至多
      每帧一次 setHi，视觉无差别。 */
   const hiRaf = useRef(0);
@@ -158,11 +159,11 @@ export function CommandPaletteHost() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  /* [PASTE]（ZTools #1）粘贴态：模块级单值 + 订阅（与 open 态同款）。
+  /* [PASTE]粘贴态：模块级单值 + 订阅（与 open 态同款）。
      载荷清理挂在 closeCommandPalette（不在此处用「面板关闭即清」effect——
      桌面层每个窗口都挂了本组件，effect 会把超级面板刚设置的载荷清掉）。 */
   const [payloadState, setPayloadState] = useState<PalettePayload | null>(palettePayload());
-  /* 载荷芯片退场窗口 + 最后快照（P2 三轮）：清除后保留一拍播淡出再卸载，
+  /* 载荷芯片退场窗口 + 最后快照（三轮）：清除后保留一拍播淡出再卸载，
      期间以最后一份载荷渲染（与 ContextMenu 的 lastMenu 同范式）。 */
   const payloadVisible = useDelayedUnmount(payloadState != null, animDurations().fxXfastMs);
   const lastPayload = useRef<PalettePayload | null>(null);
@@ -177,7 +178,7 @@ export function CommandPaletteHost() {
     []
   );
 
-  /* [CTX]（ZTools #2）窗口上下文：打开时探一次「呼出前前台」；关闭即清。 */
+  /* [CTX]窗口上下文：打开时探一次「呼出前前台」；关闭即清。 */
   const [ctxState, setCtxState] = useState<ForegroundContext | null>(null);
   useEffect(() => {
     if (!openState) {
@@ -248,12 +249,12 @@ export function CommandPaletteHost() {
     loadAppIndex(setAppList);
   }, [openState]);
 
-  /* C7（性能）：检索用 useDeferredValue——每键全量重建设置索引段是重活，
+  /* （性能）：检索用 useDeferredValue——每键全量重建设置索引段是重活，
      输入框保持同步，结果列表延迟一帧跟进；文件搜索的防抖同样以 deferred
      值为触发源；results/hi 用 ref 进键盘 effect，避免逐键拆挂监听。 */
   const deferredQuery = useDeferredValue(query);
 
-  /* SPOT-G11 文件模式：path-like 查询（含 \ / 或盘符）停顿 250ms 后发起
+  /* SPOT-文件模式：path-like 查询（含 \ / 或盘符）停顿 250ms 后发起
      异步搜索；晚到的旧结果经序号丢弃（alive 标记）。非文件意图 / 关闭时清空。
      搜索期间保留上一批命中（避免逐键闪空）。 */
   const [fileHits, setFileHits] = useState<FileHit[]>([]);
@@ -284,10 +285,13 @@ export function CommandPaletteHost() {
   }, []);
 
   const commands = useMemo(
-    () => (openState ? buildCommands(tr, { close: closeCommandPalette, settingsSearch: searchSettings }) : []),
+    () =>
+      openState
+        ? buildCommands(tr, { close: closeCommandPalette, settingsSearch: searchSettings, requestSettingsJump })
+        : [],
     [openState, tr]
   );
-  // P2（审计修复）：设置搜索项此前只在 openState 变化时用 pendingQuery（恒为
+  // 设置搜索项此前只在 openState 变化时用 pendingQuery（恒为
   // 空串）构建一次，之后输入 query 只对这批固定命令做过滤——绝大多数设置项
   // 永远搜不到。改为 query 变化时用实时 query 重建设置索引段，与已匹配的
   // 基础命令合并。
@@ -297,12 +301,13 @@ export function CommandPaletteHost() {
     const base = commands
       .filter((c) => !c.id.startsWith("set-") && !c.id.startsWith("content-") && !c.id.startsWith("mset-"))
       .filter((c) => matchCommand(c, deferredQuery));
-    // 内容级搜索段（便签/待办/DDL/书签）+ [MSET]（ZTools #3）设置深链段：与
+    // 内容级搜索段（便签/待办/DDL/书签）+ [MSET]设置深链段：与
     // 设置段同款「带实时 query 重建 + 段内预匹配」，仅在有查询词时产生条目。
     const queried = buildCommands(tr, {
       settingsQuery: deferredQuery,
       fallbackQuery: pendingQuery,
       settingsSearch: searchSettings,
+      requestSettingsJump,
       close: closeCommandPalette
     });
     const settingCmds = queried.filter((c) => c.id.startsWith("set-"));
@@ -324,7 +329,7 @@ export function CommandPaletteHost() {
           };
         })
       : [];
-    // G11 文件组：path-like 查询的异步命中（搜索期间可能滞后于输入）。
+    // 文件组：path-like 查询的异步命中（搜索期间可能滞后于输入）。
     const fileCmds: Command[] = fileHits.map((hit) => {
       const [c1, c2] = appAvatarColors(hit.name);
       return {
@@ -339,11 +344,11 @@ export function CommandPaletteHost() {
         }
       };
     });
-    // [PASTE]（ZTools #1）粘贴态动作段：载荷存在时置顶。
+    // [PASTE]粘贴态动作段：载荷存在时置顶。
     const payloadCmds = payloadState
       ? buildPayloadCommands(tr, { engine, openWeb: openWebSearch, close: closeCommandPalette })
       : [];
-    // [DIRECT]（ZTools #5）直达项：无载荷时，纯 URL / 绝对路径各给一条直达。
+    // [DIRECT]直达项：无载荷时，纯 URL / 绝对路径各给一条直达。
     const directCmds: Command[] = [];
     if (!payloadState && q) {
       const target = q.replace(/^["']|["']$/g, "");
@@ -373,7 +378,7 @@ export function CommandPaletteHost() {
         });
       }
     }
-    // [CTX]（ZTools #2）窗口上下文段（呼出前是 Explorer / 浏览器时）。
+    // [CTX]窗口上下文段（呼出前是 Explorer / 浏览器时）。
     const ctxCmds = ctxState ? buildContextCommands(ctxState, tr, closeCommandPalette) : [];
     const mergedAll = [
       ...payloadCmds,
@@ -386,7 +391,7 @@ export function CommandPaletteHost() {
       ...msetCmds,
       ...contentCmds
     ];
-    // [PREF]（ZTools #6）搜索偏好：同词上次选中的条目稳定置顶，再截 40。
+    // [PREF]搜索偏好：同词上次选中的条目稳定置顶，再截 40。
     const merged = boostPreferred(mergedAll, q).slice(0, 40);
     // SPOT 网页兜底：无本地结果时唯一结果行 = 用当前引擎搜索，回车即开。
     if (merged.length === 0 && q) {
@@ -414,7 +419,13 @@ export function CommandPaletteHost() {
   const queryRef = useRef(query);
   queryRef.current = query;
 
-  /** [PREF]（ZTools #6）执行前记录「当前查询词 → 条目 id」，下次同词置顶。 */
+  /* 结果集收缩时钳制键盘高亮（空集归 0）——此前 hi 残留越界值，
+     aria-activedescendant 指向已不存在的选项、滑移指示条空挂。 */
+  useEffect(() => {
+    setHi((h) => Math.max(0, Math.min(h, results.length - 1)));
+  }, [results]);
+
+  /** [PREF]执行前记录「当前查询词 → 条目 id」，下次同词置顶。 */
   const runWithPreference = useCallback((c: Command) => {
     const q = queryRef.current.trim();
     if (q) recordSelection(q, c.id);
@@ -445,10 +456,10 @@ export function CommandPaletteHost() {
     else openCommandPalette();
   });
 
-  // 打开时：Escape 分步退出（[PASTE] 先清载荷再收面板，ZTools 同款）、方向键
+  // 打开时：Escape 分步退出、方向键
   // 移动选择、Enter 执行（[PREF] 记录偏好）；Tab 在网页兜底行为唯一结果时循环
   // 切换搜索引擎（其余场景保留焦点导航）。
-  // C7：results/hi 经 ref 读取，effect 只依赖开关状态，不再反复重挂监听。
+  // results/hi 经 ref 读取，effect 只依赖开关状态，不再反复重挂监听。
   useEffect(() => {
     if (!openState || isSettingsWin) return;
     const onKey = (e: KeyboardEvent) => {
@@ -466,7 +477,10 @@ export function CommandPaletteHost() {
         e.preventDefault();
         if (cur.length === 0) return;
         setHi((h) => Math.max(h - 1, 0));
-      } else if (e.key === "Enter") {
+      } else if (e.key === "Enter" && !e.isComposing) {
+        /* IME 组合期回车选词的 keydown 仍以
+           key==="Enter" 派发（isComposing===true），裸判断会把「回车选字」
+           误当作执行高亮命令（原生 KeyboardEvent 直接读 isComposing）。 */
         e.preventDefault();
         if (cur.length === 0) return;
         const c = cur[Math.max(0, Math.min(hiRef.current, cur.length - 1))];
@@ -536,7 +550,7 @@ export function CommandPaletteHost() {
     return () => window.clearTimeout(t);
   }, [shownResults, payloadState, visible]);
 
-  /* #110 键盘导航滑移指示条：绝对定位滑块随 hi 平移，消除逐项背景切换的「瞬移感」 */
+  /* 键盘导航滑移指示条：绝对定位滑块随 hi 平移，消除逐项背景切换的「瞬移感」 */
   const indicatorRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -615,7 +629,7 @@ export function CommandPaletteHost() {
         </div>
         {payloadVisible && shownPayload && (
           /* [PASTE] 载荷芯片：显示当前粘贴态 + 一键清除（Esc 第一步同义）。
-             P2 三轮补退场：清除后保留一拍播淡出（快照渲染）再卸载。 */
+             三轮补退场：清除后保留一拍播淡出（快照渲染）再卸载。 */
           <div className={`cmd-palette-payload${payloadState ? "" : " is-closing"}`} data-interactive>
             <span
               className="cmd-palette-payload-chip"
@@ -647,7 +661,7 @@ export function CommandPaletteHost() {
             id="cmd-palette-listbox"
             aria-label={tr("命令面板")}
           >
-            {/* #110 键盘导航滑移指示条：随选中项平滑滑移 */}
+            {/* 键盘导航滑移指示条：随选中项平滑滑移 */}
             <div className="cmd-palette-indicator" ref={indicatorRef} aria-hidden="true" />
             {shownResults.map((c, i) => (
               <button
@@ -658,7 +672,7 @@ export function CommandPaletteHost() {
                 role="option"
                 id={`cmd-opt-${i}`}
                 aria-selected={i === hi}
-                /* #56 过滤新增项错落入场：延迟随序号递增、7 项封顶 */
+                /* 过滤新增项错落入场：延迟随序号递增、7 项封顶 */
                 style={{ animationDelay: `${Math.min(i, 7) * 0.03}s` }}
                 data-interactive
                 onPointerEnter={() => hoverHi(i)}

@@ -5,5 +5,11 @@ src-tauri/gen
 *.tsbuildinfo
 package-lock.json
 src/types/bindings
+# Q-37（第四轮审查修复）：不带斜杠的 .mimosa 匹配任意层级的同名目录，
+# 已覆盖 src/.mimosa 扫描快照（25MB/1938 文件，其中 25 个 .json 会被
+# prettier 识别——不忽略的话 format:check 每次都要解析它们）。
 .mimosa
 e2e/node_modules
+
+# N-30：vitest 覆盖率产物（lcov 报告 HTML）
+coverage/

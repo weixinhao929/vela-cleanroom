@@ -2,14 +2,68 @@
  * 便签类小组件的设置页配置表单（便签、习惯、回收站等）：
  * 排序方式、显示开关与提醒选项。
  */
-import { useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ChangeEvent, type KeyboardEvent } from "react";
 import { useSettingsStore } from "../../../store/settings-store";
-import { emptyTrash, loadTrash, purgeTrash, restoreFromTrash, type TrashNote } from "../../../widget/notes-store";
+import {
+  emptyTrash,
+  loadTrash,
+  purgeTrash,
+  restoreFromTrash,
+  subscribeNotes,
+  type TrashNote
+} from "../../../widget/notes-store";
+import { useTauriEvent } from "../../../lib/use-tauri-event";
+import { useSliderDraft } from "../../../lib/use-slider-draft";
 import { useT } from "../../../i18n-lite";
 import { confirmDialog } from "../../../components/PromptDialog";
 import type { WidgetConfig } from "../../../widget/widget-config";
 import { Segmented, SettingToggleRow } from "../shared";
 import { M3Slider as Slider } from "../../../components/ui/M3Slider";
+
+/** 逐键全量落盘的文本输入改本地草稿——输入期只进草稿，blur / Enter
+ *  提交、Esc 还原；外部持久值变化且不在编辑态时自动重同步草稿。
+ *  committedRef 防重：Enter 提交后随即 blur，不重复提交同一草稿。 */
+function useTextDraft(persisted: string, commit: (v: string) => void) {
+  const [draft, setDraft] = useState(persisted);
+  const editingRef = useRef(false);
+  const committedRef = useRef(persisted);
+  useEffect(() => {
+    committedRef.current = persisted;
+    if (!editingRef.current) setDraft(persisted);
+  }, [persisted]);
+  const settle = (revert: boolean) => {
+    editingRef.current = false;
+    if (revert) {
+      committedRef.current = persisted;
+      setDraft(persisted);
+    } else if (draft !== committedRef.current) {
+      committedRef.current = draft;
+      commit(draft);
+    }
+  };
+  return {
+    draft,
+    inputProps: {
+      value: draft,
+      onChange: (e: ChangeEvent<HTMLInputElement>) => {
+        editingRef.current = true;
+        setDraft(e.target.value);
+      },
+      onBlur: () => settle(false),
+      onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          settle(false);
+          e.currentTarget.blur();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          settle(true);
+          e.currentTarget.blur();
+        }
+      }
+    }
+  };
+}
 
 export function NotesConfig({
   config,
@@ -23,6 +77,12 @@ export function NotesConfig({
   const tr = useT();
   const [trash, setTrash] = useState<TrashNote[]>(() => loadTrash(instanceId));
   const refresh = () => setTrash(loadTrash(instanceId));
+  /* 回收站跟随外部写入刷新（速记删除/小组件侧删除/恢复走
+     notes-store 的 notifyNotesChanged；跨窗口写入经 sync:notes 落地），
+     仿 NotesWidget 的对账订阅——此前设置页只在自己操作后 refresh，
+     其它入口删掉的便签在这里点「恢复/清空」会踩到陈旧列表。卸载退订。 */
+  useEffect(() => subscribeNotes(() => setTrash(loadTrash(instanceId))), [instanceId]);
+  useTauriEvent<unknown>("sync:notes", () => setTrash(loadTrash(instanceId)));
   return (
     <>
       <div className="tm-setting-row">
@@ -114,7 +174,7 @@ export function NotesConfig({
               <button
                 className="tm-notes-trash-btn danger"
                 onClick={async () => {
-                  /* B1：彻底删除不可恢复，补确认（对齐小组件回收站标准）。 */
+                  /* 彻底删除不可恢复，补确认（对齐小组件回收站标准）。 */
                   if (
                     await confirmDialog({
                       title: tr("彻底删除"),
@@ -216,13 +276,17 @@ export function BookmarksConfig({
 }
 
 export function FilesConfig({ config, update }: { config: WidgetConfig; update: (p: Partial<WidgetConfig>) => void }) {
-  /* C8：标量 selector 替代整店订阅（fileBrowserRoot 每键 setExtra 时不再
+  /* 标量 selector 替代整店订阅（fileBrowserRoot 每键 setExtra 时不再
      重渲其它整店订阅者）。 */
   const fileBrowserRoot = useSettingsStore((s) => s.extra.fileBrowserRoot);
   const setExtra = useSettingsStore((s) => s.setExtra);
   const tr = useT();
   const sortBy = (config.sortBy as string) || "name";
   const sortOrder = (config.sortOrder as string) || "asc";
+  /* 两个路径输入改本地草稿，blur / Enter 提交、Esc 还原——此前逐键
+     全量落盘（root 走组件配置整键链、全局根走 setExtra 落盘链）。 */
+  const root = useTextDraft(typeof config.root === "string" ? config.root : "", (v) => update({ root: v }));
+  const globalRoot = useTextDraft(fileBrowserRoot, (v) => setExtra({ fileBrowserRoot: v }));
   return (
     <>
       <SettingToggleRow
@@ -253,7 +317,8 @@ export function FilesConfig({ config, update }: { config: WidgetConfig; update: 
           {[
             ["name", tr("名称")],
             ["size", tr("大小")],
-            ["modified", tr("修改时间")]
+            ["modified", tr("修改时间")],
+            ["type", tr("类型")]
           ].map(([v, label]) => (
             <button
               key={v}
@@ -289,6 +354,53 @@ export function FilesConfig({ config, update }: { config: WidgetConfig; update: 
           ))}
         </div>
       </div>
+      {/* 名称显示三态（与快捷配置弹层对齐——完整编辑器此前反而缺这项）。 */}
+      <div className="tm-setting-row">
+        <div className="tm-setting-text">
+          <span className="tm-setting-title">{tr("名称显示")}</span>
+          <span className="tm-setting-desc">{tr("完整、去扩展名或仅图标")}</span>
+        </div>
+        <div className="tm-segmented">
+          {[
+            ["full", tr("完整")],
+            ["noext", tr("无扩展名")],
+            ["noname", tr("仅图标")]
+          ].map(([v, label]) => (
+            <button
+              key={v}
+              className={(config.nameDisplay as string) === v ? "on" : ""}
+              aria-pressed={(config.nameDisplay as string) === v}
+              onClick={() => update({ nameDisplay: v })}
+              data-interactive
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* 视图模式（列表 / 内容预览）。 */}
+      <div className="tm-setting-row">
+        <div className="tm-setting-text">
+          <span className="tm-setting-title">{tr("视图")}</span>
+          <span className="tm-setting-desc">{tr("列表或内容预览（缩略图与文本摘要）")}</span>
+        </div>
+        <div className="tm-segmented">
+          {[
+            ["list", tr("列表")],
+            ["preview", tr("预览")]
+          ].map(([v, label]) => (
+            <button
+              key={v}
+              className={(config.viewMode as string) === v ? "on" : ""}
+              aria-pressed={(config.viewMode as string) === v}
+              onClick={() => update({ viewMode: v })}
+              data-interactive
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       {/* 快捷 chips。 */}
       <SettingToggleRow
         title={tr("显示快捷目录")}
@@ -304,10 +416,9 @@ export function FilesConfig({ config, update }: { config: WidgetConfig; update: 
         </div>
         <input
           className="tm-text-input"
-          value={typeof config.root === "string" ? config.root : ""}
+          {...root.inputProps}
           placeholder={tr("跟随默认")}
           aria-label={tr("本组件根目录")}
-          onChange={(e) => update({ root: e.target.value })}
           style={{ width: 200 }}
         />
       </div>
@@ -317,7 +428,13 @@ export function FilesConfig({ config, update }: { config: WidgetConfig; update: 
         on={config.rememberPath !== false}
         onChange={(v) => update({ rememberPath: v })}
       />
-      {/* BentoDesk 借鉴 #4：实时同步（目录变化即时静默刷新；绑定失败自动
+      <SettingToggleRow
+        title={tr("锁定在根目录内")}
+        desc={tr("向上与快捷目录不得跳出本组件根目录")}
+        on={config.lockToRoot === true}
+        onChange={(v) => update({ lockToRoot: v })}
+      />
+      {/* 实时同步（目录变化即时静默刷新；绑定失败自动
           回退 20s 轮询）。放完整编辑器而非快捷配置（quick ≤5 项守卫）。 */}
       <SettingToggleRow
         title={tr("实时同步目录")}
@@ -332,10 +449,9 @@ export function FilesConfig({ config, update }: { config: WidgetConfig; update: 
         </div>
         <input
           className="tm-text-input"
-          value={fileBrowserRoot}
+          {...globalRoot.inputProps}
           placeholder={tr("桌面")}
           aria-label={tr("默认文件夹")}
-          onChange={(e) => setExtra({ fileBrowserRoot: e.target.value })}
           style={{ width: 200 }}
         />
       </div>
@@ -345,7 +461,7 @@ export function FilesConfig({ config, update }: { config: WidgetConfig; update: 
 
 /** 回收站保留期（全局设置，作用于所有屏幕分区）。 */
 export function RecycleConfig() {
-  /* C8：标量 selector。 */
+  /* 标量 selector。 */
   const days = useSettingsStore((s) => s.extra.recycleRetentionDays) || 30;
   const setExtra = useSettingsStore((s) => s.setExtra);
   const tr = useT();
@@ -407,6 +523,12 @@ export function TodayOverviewConfig({
   const tr = useT();
   const maxOf = (key: string, fallback: number) =>
     typeof config[key] === "number" && (config[key] as number) > 0 ? (config[key] as number) : fallback;
+  /* 四个条数上限滑杆拖动期只进草稿、松手（onCommitEnd）一次
+     update()——此前逐 input 事件全量走配置写回链。 */
+  const maxTasks = useSliderDraft((v) => update({ maxTasks: v }));
+  const maxCourses = useSliderDraft((v) => update({ maxCourses: v }));
+  const maxDeadlines = useSliderDraft((v) => update({ maxDeadlines: v }));
+  const maxEvents = useSliderDraft((v) => update({ maxEvents: v }));
   return (
     <>
       <SettingToggleRow
@@ -472,11 +594,12 @@ export function TodayOverviewConfig({
         </div>
         <Slider
           label="待办条数上限"
-          value={maxOf("maxTasks", 5)}
+          value={maxTasks.draft ?? maxOf("maxTasks", 5)}
           min={1}
           max={12}
           step={1}
-          onChange={(v) => update({ maxTasks: v })}
+          onChange={maxTasks.slide}
+          onCommitEnd={maxTasks.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -486,11 +609,12 @@ export function TodayOverviewConfig({
         </div>
         <Slider
           label="课程条数上限"
-          value={maxOf("maxCourses", 6)}
+          value={maxCourses.draft ?? maxOf("maxCourses", 6)}
           min={1}
           max={12}
           step={1}
-          onChange={(v) => update({ maxCourses: v })}
+          onChange={maxCourses.slide}
+          onCommitEnd={maxCourses.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -500,11 +624,12 @@ export function TodayOverviewConfig({
         </div>
         <Slider
           label="截止条数上限"
-          value={maxOf("maxDeadlines", 5)}
+          value={maxDeadlines.draft ?? maxOf("maxDeadlines", 5)}
           min={1}
           max={12}
           step={1}
-          onChange={(v) => update({ maxDeadlines: v })}
+          onChange={maxDeadlines.slide}
+          onCommitEnd={maxDeadlines.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -514,11 +639,12 @@ export function TodayOverviewConfig({
         </div>
         <Slider
           label="日程条数上限"
-          value={maxOf("maxEvents", 5)}
+          value={maxEvents.draft ?? maxOf("maxEvents", 5)}
           min={1}
           max={12}
           step={1}
-          onChange={(v) => update({ maxEvents: v })}
+          onChange={maxEvents.slide}
+          onCommitEnd={maxEvents.commitEnd}
         />
       </div>
     </>
@@ -533,6 +659,8 @@ export function CountdownConfig({
   update: (p: Partial<WidgetConfig>) => void;
 }) {
   const tr = useT();
+  /* 默认预设滑杆走草稿、松手一次 update()。 */
+  const defaultPreset = useSliderDraft((v) => update({ defaultPreset: v }));
   return (
     <>
       <div className="tm-setting-row">
@@ -542,12 +670,13 @@ export function CountdownConfig({
         </div>
         <Slider
           label="默认预设"
-          value={(config.defaultPreset as number) || 25}
+          value={defaultPreset.draft ?? ((config.defaultPreset as number) || 25)}
           min={1}
           max={120}
           step={1}
           suffix="分钟"
-          onChange={(v) => update({ defaultPreset: v })}
+          onChange={defaultPreset.slide}
+          onCommitEnd={defaultPreset.commitEnd}
         />
       </div>
       <SettingToggleRow

@@ -1,5 +1,5 @@
 /**
- * [TB-MONITOR] 设置页「任务栏」HEADER 显示器选择器（F-6）组件测试：
+ * [TB-MONITOR] 设置页「任务栏」HEADER 显示器选择器组件测试：
  * - 浏览器模式：只有「所有显示器统一」，不发 list_monitors；
  * - Tauri 模式：list_monitors 动态分组（名称 · #槽位 · 主显示器标记），monitors-changed 刷新；
  * - 选中某屏后编辑桌面外观：只写 monitorOverrides[slot]（整套 states）+ perMonitor=true，
@@ -221,5 +221,27 @@ describe("TaskbarPage · HEADER 显示器选择器（F-6）", () => {
     await user.click(screen.getByRole("button", { name: "恢复默认" }));
     expect(taskbar()).toEqual(defaultTaskbarSettings());
     expect(selector()).toHaveTextContent("所有显示器统一");
+  });
+
+  it("D4（审计修复）：monitors 瞬时空（枚举失败/热插拔刷新窗口）不把「选中且无覆盖」的屏误弹回统一", async () => {
+    const user = userEvent.setup();
+    render(<TaskbarPage />);
+    await waitFor(() => expect(invokeMock.mock.calls.some(([cmd]) => cmd === "list_monitors")).toBe(true));
+    await pick(user, "\\\\.\\DISPLAY2 · #1");
+
+    // 统一配置的桌面外观基线（断言编辑没有误写进统一切片用）。
+    const unifiedDesktopBefore = { ...taskbar().states.desktop };
+
+    // 枚举瞬时空：monitors-changed → list_monitors 返回 []。守卫生效时 editSlot
+    // 不回退；随后的编辑仍写 #1 的覆盖（若被误弹回统一，这里会写进统一配置）。
+    // 注：空列表下下拉显示退化为裸槽位号属瞬态外观，断言只看写入目标。
+    invokeMock.mockImplementation(async (cmd: string) => (cmd === "list_monitors" ? [] : null));
+    emit("monitors-changed", 1);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    await setDesktopAcrylic(user);
+    expect(taskbar().monitorOverrides["1"]).toBeDefined();
+    expect(taskbar().states.desktop).toEqual(unifiedDesktopBefore);
   });
 });

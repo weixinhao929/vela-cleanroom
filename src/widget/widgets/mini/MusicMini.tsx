@@ -15,21 +15,34 @@ import type { MiniComponentProps } from "../../registry";
 
 export function MusicMini({ active }: MiniComponentProps) {
   const tr = useT();
-  const { media } = useNowPlaying();
+  /* （4Hz 重渲）：本磁贴只用 title/palette/playing，不用逐秒 position——
+     useNowPlaying(false) 冻结 position 推进（250ms tick 不再 setState），
+    曲目/播放态变化仍经事件到达；跑马灯另用 active 门控（下方 CSS 层）。 */
+  const { media } = useNowPlaying(false);
   const clipRef = useRef<HTMLSpanElement>(null);
   const [overflow, setOverflow] = useState(0);
   const text = media ? media.title || tr("未知曲目") : tr("暂无播放信息");
 
   useLayoutEffect(() => {
     const el = clipRef.current;
-    setOverflow(el ? Math.max(0, el.scrollWidth - el.clientWidth) : 0);
+    if (!el) return;
+    const measure = () => setOverflow(Math.max(0, el.scrollWidth - el.clientWidth));
+    measure();
+    /* 容器宽度变化（dock 缩放/换槽）也重测——此前只依赖 [text]，宽度变了
+       跑马距离陈旧（溢出判定与 --mini-scroll 位移都错）。jsdom 等无
+       ResizeObserver 的环境退化为仅文本变化时重测。 */
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
   }, [text]);
 
   const marquee = active && overflow > 0;
   const toggle = (e: SyntheticEvent) => {
     e.stopPropagation();
     if (!media) return;
-    void invoke("control_system_media", { action: media.playing ? "pause" : "play" }).catch(() => {});
+    /* 与卡片/沉浸页同口径走 toggle（SMTC 侧按当前态自翻转）——此前用
+       play/pause 组合依赖可能过期的 playing 快照，快速连点会发反方向指令。 */
+    void invoke("control_system_media", { action: "toggle" }).catch(() => {});
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== "Enter" && e.key !== " ") return;

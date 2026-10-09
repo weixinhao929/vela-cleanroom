@@ -1,5 +1,5 @@
 /**
- * 全屏展示窗样式（借鉴 ClassSoftwareHub #5）：投影场景固定深色底（不跟随
+ * 全屏展示窗样式：投影场景固定深色底（不跟随
  * 桌面层透明语义），字号按视口百分比自适应（无秒 min(30vw,46vh) 量级）。
  *
  * 动画：窗体入场淡入 + 内容上浮（show 握手后首帧即播）；Esc/双击先播
@@ -16,11 +16,18 @@
   color: #f2f3f5;
   overflow: hidden;
   user-select: none;
-  animation: fs-root-in var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
+  animation: fs-root-in var(--dur-fx-slow, 0.3s) var(--ease-out, ease-out) backwards;
+  /* [HUD-GIVEWAY]：悬停淡出避让的状态类基底过渡。 */
+  transition: opacity var(--dur-fx, 0.2s) var(--ease-fx, ease-out);
 }
 .fs-root.is-closing {
   pointer-events: none;
-  animation: fs-root-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
+  animation: fs-root-out var(--dur-fx, 0.2s) var(--ease-in, ease-in) forwards;
+}
+/* 悬停避让（默认关，extra.hudGiveWay 开启时由视图挂类）：降到 20% 不透明，
+   演示者可临时看清被全屏钟挡住的内容。 */
+.fs-root.hud-giveway {
+  opacity: 0.2;
 }
 @keyframes fs-root-in {
   from {
@@ -43,7 +50,7 @@
   font-variant-numeric: tabular-nums;
   /* 内容层比窗体略延迟上浮：表面先亮、内容后现（沉浸层同配方）。
      key=数据态 切换（占位 ↔ 数据）时重挂重播，替代硬切。 */
-  animation: fs-body-in var(--dur-fx-slow, 0.3s) var(--ease-out) calc(var(--dur-fx-fast, 0.15s)) backwards;
+  animation: fs-body-in var(--dur-fx-slow, 0.3s) var(--ease-out, ease-out) calc(var(--dur-fx-fast, 0.15s)) backwards;
 }
 @keyframes fs-body-in {
   from {
@@ -60,7 +67,7 @@
   letter-spacing: 0.02em;
   color: #f2f3f5;
   /* 番茄钟专注/休息/暂停与倒计时归零的颜色状态切换走过渡。 */
-  transition: color var(--dur-fx, 0.2s) var(--ease-out);
+  transition: color var(--dur-fx, 0.2s) var(--ease-out, ease-out);
 }
 .fs-colon {
   animation: fs-blink 2s steps(1) infinite;
@@ -91,7 +98,7 @@
    此前 is-done 只有颜色，归零毫无仪式感（对比 CountdownWidget 的满环 burst）。 */
 .fs-clock.is-done {
   color: #f5a524;
-  animation: fs-done-burst calc(0.8s * var(--fx-scale, 1)) var(--ease-spring);
+  animation: fs-done-burst calc(0.8s * var(--fx-scale, 1)) var(--ease-spring, ease-out);
 }
 @keyframes fs-done-burst {
   0% {
@@ -114,7 +121,8 @@
   right: 24px;
   bottom: 18px;
   font-size: var(--fs-13);
-  color: rgba(242, 243, 245, 0.35);
+  /* alpha .35 → .45（≈3.8:1）——投影暗底上的退出提示此前对比度不足。 */
+  color: rgba(242, 243, 245, 0.45);
 }
 @keyframes fs-blink {
   0%,

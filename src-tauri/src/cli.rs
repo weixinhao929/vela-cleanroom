@@ -5,7 +5,7 @@
 //! 首实例后直接退出——不会出现双托盘、双心跳、双桌面层。
 //!
 //! 本模块在**首实例**内解析第二实例的 argv，提供轻量命令面供
-//! 快捷方式 / 脚本 / E2E 驱动应用：
+//! 自动化工具 / 快捷方式 / 脚本 / E2E 驱动应用：
 //!   vela.exe --toggle-layer       显示/隐藏小组件层（同 Ctrl+Alt+D）
 //!   vela.exe --show-settings      呼出设置窗口
 //!   vela.exe --toggle-pomodoro    开始/暂停专注（同 Ctrl+Alt+Space）

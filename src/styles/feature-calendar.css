@@ -20,7 +20,9 @@
     sans-serif;
   letter-spacing: 0.2px;
 }
-.widget-cal-header button {
+.widget-cal-header :where(button) {
+  /* where 降特异度（0,1,0）——.widget-cal-title/.widget-cal-io
+  （0,1,0、位序在后）不再需要整族 !important 救济 0,1,1 劣势。 */
   width: 26px;
   height: 26px;
   border: 0;
@@ -35,7 +37,6 @@
     color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     transform var(--dur-fx-fast, 0.15s) var(--ease-out);
 }
-/* D9 */
 .widget-cal-header button:hover {
   color: var(--ink);
   background: var(--surface-hover);
@@ -43,21 +44,21 @@
 
 /* 标题（可点击打开年月选择器） */
 .widget-cal-title {
-  width: auto !important;
+  width: auto;
   min-width: 96px;
   padding: 0 10px;
   font:
     600 var(--fs-14)/1 Outfit,
-    sans-serif !important;
+    sans-serif;
   letter-spacing: 0.2px;
-  border-radius: var(--rad-8) !important;
+  border-radius: var(--rad-8);
   white-space: nowrap;
   transition:
     background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
 }
 .widget-cal-title:hover {
-  background: var(--surface-hover) !important;
+  background: var(--surface-hover);
 }
 
 /* 二级目录：年份 / 月份选择器 */
@@ -72,7 +73,7 @@
   animation: cal-detail-in var(--dur-fx, 0.2s) var(--ease-out) both;
   z-index: 5;
 }
-/* #57 统一退场：关闭播淡出（useDelayedUnmount 延迟卸载），不再瞬消。 */
+/* 统一退场：关闭播淡出（useDelayedUnmount 延迟卸载），不再瞬消。 */
 .widget-cal-picker.is-closing {
   animation: w-fade-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
   pointer-events: none;
@@ -364,165 +365,10 @@
   background: var(--success);
 }
 
-/* 详情面板中的 DDL 待办列表 */
-.widget-cal-detail-deadlines {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.widget-cal-deadline {
-  display: flex;
-  align-items: center;
-  padding: 5px 8px;
-  border-radius: var(--radius-ctl);
-  background: color-mix(in srgb, var(--amber) 11%, transparent);
-  border-left: 2px solid var(--amber);
-  font-size: var(--fs-12);
-  color: var(--ink);
-}
-.widget-cal-deadline span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.widget-cal-deadline.done {
-  opacity: 0.55;
-  text-decoration: line-through;
-}
-
-/* 当天习惯打卡（详情面板，只读列出已完成习惯） */
-.widget-cal-detail-habits {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.widget-cal-habit {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: var(--radius-ctl);
-  background: color-mix(in srgb, var(--success) 10%, transparent);
-  border-left: 2px solid var(--success);
-  font-size: var(--fs-12);
-  color: var(--ink);
-}
-.widget-cal-habit svg {
-  color: var(--success);
-  flex: none;
-}
-.widget-cal-habit span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* === 同步课程（来自课程表小组件）：按实际上课时间排序，只读 === */
-.widget-cal-courses {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.widget-cal-courses-head {
-  font-size: var(--fs-10);
-  font-weight: 700;
-  color: var(--muted);
-  letter-spacing: 0.02em;
-  padding: 0 2px;
-}
-.widget-cal-course {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 8px 5px 6px;
-  border-radius: var(--radius-ctl);
-  background: var(--surface-soft);
-  border: 1px solid transparent;
-  transition:
-    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
-  animation: cal-course-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
-}
-.widget-cal-course:nth-child(2) {
-  animation-delay: 0.03s;
-}
-.widget-cal-course:nth-child(3) {
-  animation-delay: 0.06s;
-}
-.widget-cal-course:nth-child(4) {
-  animation-delay: 0.09s;
-}
-.widget-cal-course:nth-child(5) {
-  animation-delay: 0.12s;
-}
-@keyframes cal-course-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.widget-cal-course:hover {
-  border-color: var(--line-soft);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
-}
-.widget-cal-course-bar {
-  flex: none;
-  width: 3px;
-  align-self: stretch;
-  border-radius: var(--rad-2);
-}
-.widget-cal-course-time {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  font-size: var(--fs-11);
-  font-weight: 700;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.25;
-}
-.widget-cal-course-time em {
-  font-style: normal;
-  font-size: var(--fs-9-5);
-  font-weight: 500;
-  color: var(--muted);
-}
-.widget-cal-course-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.widget-cal-course-name {
-  font-size: var(--fs-12);
-  font-weight: 600;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.widget-cal-course-loc {
-  font-size: var(--fs-10);
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-@media (prefers-reduced-motion: reduce) {
-  .widget-cal-course {
-    animation: none;
-  }
-}
+/* 详情面板旧版死样式三族已删——
+   .widget-cal-detail-deadlines / .widget-cal-deadline（含 span/.done）、
+   .widget-cal-detail-habits / .widget-cal-habit（含 svg/span）——裸类名全语料
+   0 引用（现役仅 -deadline-dot / -habit-dot 圆点，见上方 cell 规则）。 */
 
 /* === 二级目录：选中日期的详情面板 === */
 .widget-cal-detail {
@@ -628,74 +474,11 @@
   color: var(--accent);
 }
 
-.widget-cal-pop-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 120px;
-  overflow: auto;
-}
-.widget-cal-pop-empty {
-  font-size: var(--fs-11);
-  color: var(--muted);
-  text-align: center;
-  padding: 6px 0;
-}
-.widget-cal-pop-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: var(--radius-ctl);
-  background: var(--surface-soft);
-  font-size: var(--fs-12);
-  color: var(--ink);
-  border: 1px solid transparent;
-  transition:
-    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
-}
-/* 事件删除收拢退场（对齐便签/书签 w-item-out 语言）。 */
-.widget-cal-pop-item.is-closing {
-  animation: w-item-out var(--dur-fx, 0.2s) var(--ease-out) forwards;
-  pointer-events: none;
-  overflow: hidden;
-}
-.widget-cal-pop-item:hover {
-  border-color: var(--line-soft);
-  transform: translateX(2px);
-}
-.widget-cal-pop-item span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.widget-cal-pop-item button {
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: var(--rad-6);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  transition:
-    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
-}
-.widget-cal-pop-item button:hover {
-  color: var(--danger);
-  background: var(--danger-soft);
-}
-.widget-cal-pop-item button:active {
-  transform: scale(0.9);
-}
+/* .widget-cal-pop-list / .widget-cal-pop-empty 已删
+   （弹层列表改 .widget-cal-pop-item 单层滚动，两者全语料 0 引用）。
+   复核追加：.widget-cal-pop-item 全族（含 .is-closing / :hover / span /
+   button 6 条）同为 0 引用——事件条目改由 calendar-event-editor 渲染
+   （-pop-add 族存活），一并删除。 */
 
 .widget-cal-pop-add {
   display: flex;
@@ -741,7 +524,7 @@
 }
 
 /* 高级选项区（颜色/重复/提醒）：此前 TSX 挂了类名但全库无任何样式、双向硬切，
-   这里补齐样式并按 W-151 grid-rows 范式做折叠动画（caret 旋转已暗示会动）。 */
+   这里补齐样式并按 grid-rows 范式做折叠动画（caret 旋转已暗示会动）。 */
 .widget-cal-pop-adv-wrap {
   display: grid;
   grid-template-rows: 0fr;
@@ -854,4 +637,727 @@
 .widget-week-ev.sub,
 .widget-cal-detail .sub {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+
+/* === 时间线日视图（选中日详情核心） === */
+
+/* 置顶：全天事件 / DDL / 全天订阅 / 习惯打卡（横向 chip 流）。 */
+.widget-cal-tl-allday {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.widget-cal-allday-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--rad-8);
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  font-size: var(--fs-11);
+  color: var(--ink);
+  font-weight: 500;
+  cursor: default;
+  position: relative;
+}
+.widget-cal-allday-chip.event {
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-allday-chip.event:hover,
+.widget-cal-allday-chip.event.editing {
+  background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.widget-cal-allday-chip.ddl {
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--danger);
+}
+.widget-cal-allday-chip.ddl.done {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.widget-cal-allday-chip.sub {
+  border-style: dashed;
+}
+.widget-cal-allday-chip.habit {
+  color: var(--accent);
+}
+.widget-cal-allday-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 时间线滚动容器：限制高度，选中今天时组件自动定位到当前时刻。 */
+.widget-cal-tl-scroll {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--rad-10);
+  background: var(--paper);
+}
+.widget-cal-tl-body {
+  display: flex;
+  position: relative;
+  min-height: calc(var(--tl-hours, 15) * var(--tl-hour-px, 52px));
+  height: calc(var(--tl-hours, 15) * var(--tl-hour-px, 52px));
+}
+.widget-calendar.compact .widget-cal-tl-body {
+  --tl-hour-px: 42px;
+}
+
+/* 左侧刻度列：每小时一格，右对齐小时标签。 */
+.widget-cal-tl-hours {
+  flex: 0 0 42px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line-soft);
+  background: var(--surface-soft);
+}
+.widget-cal-tl-hours span {
+  height: var(--tl-hour-px, 52px);
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 1px 5px 0 0;
+  font-size: var(--fs-10);
+  color: var(--muted-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 事件画布：块按 top/height（px）+ left/width（列百分比）绝对定位。 */
+.widget-cal-tl-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.widget-cal-tl-canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--tl-hour-px, 52px) - 1px),
+    var(--line-soft) calc(var(--tl-hour-px, 52px) - 1px),
+    var(--line-soft) var(--tl-hour-px, 52px)
+  );
+  pointer-events: none;
+}
+
+/* 当前时刻红线（仅选中今天时渲染）。 */
+.widget-cal-tl-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1.5px solid var(--danger);
+  z-index: 3;
+  pointer-events: none;
+}
+.widget-cal-tl-now::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: -3.5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+.widget-cal-tl-now-time {
+  position: absolute;
+  right: 4px;
+  top: -14px;
+  font-size: var(--fs-10);
+  line-height: 1;
+  font-weight: 700;
+  color: var(--danger);
+  background: var(--paper-solid);
+  padding: 1px 4px;
+  border-radius: var(--rad-6);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+/* 事件块：左侧色条 + 时间/标题/地点；重叠并排由列宽控制。 */
+.widget-cal-tl-ev {
+  position: absolute;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: var(--rad-8);
+  background: var(--paper-solid);
+  overflow: hidden;
+  z-index: 2;
+  transition:
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    transform var(--dur-fx-xfast, 0.12s) var(--ease-out);
+}
+.widget-cal-tl-ev.event {
+  cursor: pointer;
+}
+.widget-cal-tl-ev:hover {
+  box-shadow: var(--shadow);
+  z-index: 4;
+}
+.widget-cal-tl-ev.event:active {
+  transform: scale(0.99);
+}
+.widget-cal-tl-ev.editing {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.widget-cal-tl-ev.course {
+  background: color-mix(in srgb, var(--accent) 8%, var(--paper-solid));
+}
+.widget-cal-tl-ev.sub {
+  border-style: dashed;
+  opacity: 0.9;
+}
+.widget-cal-tl-ev-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  flex: none;
+}
+.widget-cal-tl-ev-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 6px 3px 8px;
+  min-width: 0;
+  flex: 1;
+}
+.widget-cal-tl-ev-time {
+  font-size: var(--fs-10);
+  line-height: 1.2;
+  color: inherit;
+  opacity: 0.75;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.widget-cal-tl-ev-title {
+  font-size: var(--fs-12);
+  line-height: 1.25;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.widget-cal-tl-ev-loc {
+  font-size: var(--fs-10);
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.widget-cal-tl-ev-repeat {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  color: var(--muted-2);
+  pointer-events: none;
+}
+/* 块 hover 时的删除按钮（自有事件）。 */
+.widget-cal-tl-ev-del {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: var(--rad-6);
+  background: var(--surface-soft);
+  color: var(--muted);
+  cursor: pointer;
+  display: none;
+  place-items: center;
+  z-index: 5;
+  padding: 0;
+  /* color-hop 契约：hover 换 danger 底/字色，基类补颜色过渡防瞬跳。 */
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-tl-ev:hover .widget-cal-tl-ev-del,
+.widget-cal-allday-chip:hover .widget-cal-tl-ev-del {
+  display: grid;
+}
+.widget-cal-tl-ev-del:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+/* hover 显示删除按钮时给标题让位。 */
+.widget-cal-tl-ev:hover .widget-cal-tl-ev-repeat {
+  display: none;
+}
+
+/* === 重复事件删除三选一 === */
+.widget-cal-delmenu {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--rad-10);
+  background: color-mix(in srgb, var(--danger) 6%, var(--paper-solid));
+  animation: cal-detail-in var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+.widget-cal-delmenu-label {
+  font-size: var(--fs-11);
+  color: var(--danger);
+  font-weight: 600;
+  margin-right: 2px;
+}
+.widget-cal-delmenu button {
+  border: 1px solid var(--line);
+  border-radius: var(--rad-8);
+  background: var(--paper-solid);
+  color: var(--ink);
+  font-size: var(--fs-11);
+  padding: 3px 8px;
+  cursor: pointer;
+  font-weight: 500;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-delmenu button:hover {
+  background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+.widget-cal-delmenu-close {
+  margin-left: auto;
+}
+
+/* === 删除撤销条 === */
+.widget-cal-undo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--rad-10);
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  font-size: var(--fs-11);
+  color: var(--muted);
+  animation: cal-detail-in var(--dur-fx, 0.2s) var(--ease-out) both;
+}
+.widget-cal-undo span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.widget-cal-undo button {
+  border: 0;
+  border-radius: var(--rad-6);
+  background: var(--accent);
+  color: var(--btn-fg);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  padding: 3px 10px;
+  cursor: pointer;
+  flex: none;
+}
+
+/* === 搜索浮层 === */
+.widget-cal-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--paper-solid);
+  color: var(--muted);
+  animation: cal-detail-in var(--dur-fx, 0.2s) var(--ease-out) both;
+  z-index: 6;
+}
+.widget-cal-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--fs-12);
+  outline: none;
+}
+.widget-cal-search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-10);
+  background: var(--paper-solid);
+  backdrop-filter: blur(var(--blur, 20px));
+  box-shadow: var(--shadow);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.widget-cal-search-results button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border: 0;
+  border-radius: var(--rad-8);
+  background: transparent;
+  padding: 5px 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-search-results button:hover {
+  background: var(--surface-hover);
+}
+.widget-cal-search-results .t {
+  font-size: var(--fs-12);
+  color: var(--ink);
+  font-weight: 500;
+}
+.widget-cal-search-results .m {
+  font-size: var(--fs-10);
+  color: var(--muted-2);
+}
+.widget-cal-search-empty {
+  font-size: var(--fs-11);
+  color: var(--muted);
+  text-align: center;
+  padding: 8px 0;
+}
+
+/* === ICS 导入 / 导出 === */
+.widget-cal-io {
+  width: 22px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--rad-6);
+  background: var(--surface-soft);
+  color: var(--muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-io:hover {
+  color: var(--ink);
+  background: var(--surface-hover);
+}
+.widget-cal-file {
+  display: none;
+}
+.widget-cal-import-note {
+  font-size: var(--fs-10);
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.widget-cal-import-note.error {
+  color: var(--danger);
+}
+
+/* === 年份直接输入 === */
+.widget-cal-picker-year-input {
+  width: 58px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  background: var(--surface-soft);
+  color: var(--ink);
+  /* color-hop 契约：focus 换 accent 描边，基类补 border-color 过渡。 */
+  transition: border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+  font:
+    600 var(--fs-13)/1 Outfit,
+    sans-serif;
+  text-align: center;
+  padding: 3px 2px;
+  outline: none;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.widget-cal-picker-year-input::-webkit-outer-spin-button,
+.widget-cal-picker-year-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.widget-cal-picker-year-input:focus {
+  border-color: var(--accent);
+}
+
+/* === 编辑器新控件（起止时间分隔 / 间隔与终止 / 地点备注输入） === */
+.widget-cal-pop-add-sep {
+  color: var(--muted-2);
+  font-size: var(--fs-11);
+  flex: none;
+}
+.widget-cal-adv-repeat-extra {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.widget-cal-adv-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+.widget-cal-adv-inline input[type="number"] {
+  width: 48px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: var(--fs-12);
+  text-align: center;
+  padding: 2px 3px;
+  outline: none;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.widget-cal-adv-inline input[type="number"]::-webkit-outer-spin-button,
+.widget-cal-adv-inline input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.widget-cal-adv-inline input[type="date"] {
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: var(--fs-11);
+  padding: 2px 4px;
+  outline: none;
+}
+.widget-cal-adv-inline input:focus {
+  border-color: var(--accent);
+}
+.widget-cal-adv-clear {
+  border: 0;
+  background: transparent;
+  color: var(--muted-2);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  border-radius: var(--rad-6);
+  /* color-hop 契约：hover 换 danger 底/字色，基类补颜色过渡防瞬跳。 */
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-adv-clear:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.widget-cal-adv-input {
+  border: 1px solid var(--line);
+  border-radius: var(--rad-6);
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: var(--fs-12);
+  padding: 4px 8px;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+  /* color-hop 契约：focus 换 accent 描边，基类补 border-color 过渡。 */
+  transition: border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-adv-input:focus {
+  border-color: var(--accent);
+}
+.widget-cal-adv-input::placeholder {
+  color: var(--muted-2);
+}
+
+/* 时间线事件块到达淡入（对齐订阅事件行的过渡语言）。 */
+.widget-cal-tl-ev {
+  animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
+}
+
+/* === 详情周条（iOS 日视图：选中日所在周 7 天快速换天） === */
+.widget-cal-weekstrip {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  padding: 2px 0;
+}
+.widget-cal-weekstrip-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 0 3px;
+  border: 0;
+  border-radius: var(--rad-10);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-weekstrip-day:hover {
+  background: var(--surface-hover);
+}
+.widget-cal-weekstrip-num {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-weekstrip-day.today .widget-cal-weekstrip-num {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.widget-cal-weekstrip-day.selected .widget-cal-weekstrip-num {
+  background: var(--accent);
+  color: var(--btn-fg);
+}
+.widget-cal-weekstrip-lunar {
+  max-width: 100%;
+  font-size: var(--fs-10);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* color-hop 契约：selected 态换 accent 字色，基类补 color 过渡。 */
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-weekstrip-day.selected .widget-cal-weekstrip-lunar {
+  color: var(--accent);
+  font-weight: 600;
+}
+.widget-cal-weekstrip-day .mark {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  font-style: normal;
+  font-size: var(--fs-8);
+  line-height: 1;
+  padding: 1px 2px;
+  border-radius: var(--rad-3);
+  font-weight: 700;
+}
+.widget-cal-weekstrip-day .mark.rest {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.widget-cal-weekstrip-day .mark.work {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* === 时间轴常驻 + 空态叠加 === */
+.widget-cal-tl-wrap {
+  position: relative;
+}
+.widget-cal-tl-hint {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: var(--fs-11);
+  color: var(--muted-2);
+  pointer-events: none;
+  z-index: 5;
+}
+.widget-cal-tl-scroll {
+  max-height: 400px;
+}
+.widget-calendar.compact .widget-cal-tl-scroll {
+  max-height: 300px;
+}
+
+/* === 编辑范围（重复事件：整个系列 / 仅此日） === */
+.widget-cal-scope-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.widget-cal-scope-row button {
+  border: 1px solid var(--line);
+  border-radius: var(--rad-8);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--fs-11);
+  font-weight: 500;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.widget-cal-scope-row button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--btn-fg);
+  font-weight: 600;
+}
+
+/* === 键盘焦点可见性（时间线块 / 全天 chip / 周条） === */
+.widget-cal-tl-ev[role="button"]:focus-visible,
+.widget-cal-allday-chip.event:focus-visible,
+.widget-cal-weekstrip-day:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.widget-cal-tl-ev:focus-visible {
+  z-index: 6;
+}
+
+/* 删除按钮确认态：第一次点击后变红 + 勾（2s 内再点才真删）。 */
+.widget-cal-tl-ev-del.confirm {
+  display: grid;
+  background: var(--danger);
+  color: #fff;
+}
+
+/* === 时间线块拖拽调时刻 === */
+.widget-cal-tl-ev.grabbable {
+  cursor: grab;
+  touch-action: none; /* 拖拽优先于触屏滚动 */
+}
+.widget-cal-tl-ev.dragging {
+  cursor: grabbing;
+  z-index: 7;
+  box-shadow: var(--shadow);
+  opacity: 0.92;
+  transform: scale(1.02);
+  transition: none; /* 跟手渲染不做过渡 */
 }

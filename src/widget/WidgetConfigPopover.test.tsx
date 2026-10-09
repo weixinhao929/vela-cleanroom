@@ -1,5 +1,5 @@
 /**
- * B1 就地配置弹层（WidgetConfigPopover）组件测试：
+ * 就地配置弹层（WidgetConfigPopover）组件测试：
  * 渲染内容（通用行 + quick 字段）、写值链路（经 schema 洗涤落盘）、
  * Esc/外点关闭、单例互斥、placePopover 定位数学。
  */
@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 
 import { WidgetConfigPopover, placePopover } from "./WidgetConfigPopover";
 import { WidgetCard } from "./WidgetCard";
+import { PromptDialogHost } from "../components/PromptDialog";
 import { getWidgetMeta } from "./registry";
 import { useWidgetStore } from "./widget-store";
 import { loadWidgetConfig } from "./widget-config";
@@ -72,6 +73,27 @@ describe("WidgetConfigPopover 组件", () => {
     expect(screen.getByText("Asia/Shanghai")).toBeTruthy();
     expect(screen.getByLabelText("添加时区")).toBeTruthy();
     expect(document.querySelectorAll("#wcfg-all-timezones option").length).toBeGreaterThan(10);
+  });
+
+  it("S3：标题与名称行跟随显示名；名称行打开共享改名弹窗（独立卡最高频的就地入口）", async () => {
+    seedConfig("w-name", {});
+    useWidgetStore.setState({
+      editMode: false,
+      instances: [{ id: "w-name", type: "todo", x: 0, y: 0, w: 300, h: 200, z: 1, label: "我的待办" }]
+    });
+    render(
+      <>
+        <PromptDialogHost />
+        <WidgetConfigPopover instanceId="w-name" widgetType="todo" anchor={ANCHOR} open onClose={() => {}} />
+      </>
+    );
+    // 标题 = 实例显示名（重命名后不再显示类型名）。
+    const dlg = await screen.findByRole("dialog", { name: "我的待办 配置" }, { timeout: 3000 });
+    expect(dlg).toBeTruthy();
+    // 名称行按钮文案即当前自定义名；点击弹共享改名弹窗（预填原值）。
+    fireEvent.click(screen.getByRole("button", { name: "我的待办" }));
+    const input = await screen.findByRole("textbox");
+    expect((input as HTMLInputElement).value).toBe("我的待办");
   });
 
   it("切换 quick 开关 → 经 schema 洗涤落盘（补全其余默认字段）", async () => {

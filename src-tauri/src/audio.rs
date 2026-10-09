@@ -17,13 +17,14 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tauri::{AppHandle, Emitter};
+use ts_rs::TS;
 
 const EVENT: &str = "audio:spectrum";
 const BANDS: usize = 64;
 const FFT_SIZE: usize = 2048;
 /// 每帧推送间隔（毫秒）：30fps 足够丝滑，且 IPC 压力可忽略。
 const FRAME_MS: u64 = 33;
-/// G-4：事件投递抽取比——每 N 帧发一次（2 = 15Hz 投递 / 30Hz 包络平滑）。
+/// 事件投递抽取比——每 N 帧发一次（2 = 15Hz 投递 / 30Hz 包络平滑）。
 const EMIT_DECIMATE: u32 = 2;
 /// 设备重连退避。
 const RETRY_MS: u64 = 500;
@@ -51,7 +52,7 @@ fn window_refs() -> &'static std::sync::Mutex<std::collections::HashMap<String, 
     REFS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// D-7：当前采集线程的启动参数。共享线程只在首个 start 时拉起，此前后续
+/// 当前采集线程的启动参数。共享线程只在首个 start 时拉起，此前后续
 /// 窗口传入的 mode/dist 被静默忽略——多屏配置不同检测模式时必有一屏失效。
 /// 现在记录活动参数，后续 start 参数不同即换代重拉。
 fn active_params() -> &'static std::sync::Mutex<(Vec<SourceKind>, BandDist)> {
@@ -83,7 +84,7 @@ fn spawn_capture(app: AppHandle, kinds: Vec<SourceKind>, dist: BandDist) -> Resu
 
 /// 饱和递减总引用；归零即请求采集线程停止。
 fn dec_ref() {
-    // R8（审计）：旧实现"先 load 检查再 fetch_sub"，两线程并发在计数为 1 时
+    // 旧实现"先 load 检查再 fetch_sub"，两线程并发在计数为 1 时
     // 都通过检查、各减一次会把 0 回绕成 usize::MAX（频谱静默失效直到自愈）。
     // 改为先减后判：prev==0 说明发生回绕，立即回滚为 0，保持饱和语义。
     let prev = REF_COUNT.fetch_sub(1, Ordering::AcqRel);
@@ -109,6 +110,118 @@ struct SpectrumPayload {
     bands: Vec<f32>,
 }
 
+/// audio:status 事件载荷（W-审计：采集管线健康态 + 当前活动口径）。
+/// 只在开流结果变化时发射（换代重拉 / 设备恢复 / 降级），频率极低。
+/// - 前端状态行据 `sources` 展示「麦克风不可用」等真实口径（此前降级只有
+///   log::warn，UI 仍宣称麦克风频谱）；
+/// - `mode`/`dist` 是**进程级单管线**的当前参数：多屏窗口配置不一致时后启动
+/// 者全局生效，其余窗口据此前缀「跟随全局」提示（的 UI 侧补丁）。
+#[derive(Serialize, Clone, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/types/bindings/")]
+pub struct AudioStatusPayload {
+    /// 管线当前检测模式：playback / microphone / both。
+    pub mode: String,
+    /// 管线当前频带分布：log / linear。
+    pub dist: String,
+    /// 各采集源健康态（按启动参数 kinds 顺序，含打开失败的源）。
+    pub sources: Vec<AudioSourceStatus>,
+}
+
+#[derive(Serialize, Clone, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/types/bindings/")]
+pub struct AudioSourceStatus {
+    /// loopback（播放环回）/ capture（麦克风）。
+    pub kind: String,
+    /// 本轮开流是否成功。
+    pub ok: bool,
+}
+
+/// 把启动参数映射回前端 mode 字符串（与 parse_mode 互逆）。
+fn mode_string(kinds: &[SourceKind]) -> String {
+    match kinds {
+        [SourceKind::Capture] => "microphone".into(),
+        [SourceKind::Loopback, SourceKind::Capture] => "both".into(),
+        _ => "playback".into(),
+    }
+}
+
+fn dist_string(dist: BandDist) -> String {
+    match dist {
+        BandDist::Linear => "linear".into(),
+        BandDist::Log => "log".into(),
+    }
+}
+
+/// 发射管线健康态（状态不变不重发），并留一份到模块级缓存（`LAST_AUDIO_STATUS`）
+/// 供 `get_audio_status` 初值拉取——事件只在状态变化时发，晚挂载的订阅窗口
+/// 靠命令补上现状。目标限定小组件层窗口——消费者是音乐小组件的状态行，
+/// 设置窗/速记窗无需被唤醒。
+fn emit_audio_status(
+    app: &AppHandle,
+    kinds: &[SourceKind],
+    dist: BandDist,
+    opened: &[bool],
+    last_status: &mut Option<String>,
+) {
+    let sources: Vec<AudioSourceStatus> = kinds
+        .iter()
+        .zip(opened.iter().chain(std::iter::repeat(&false)))
+        .map(|(k, ok)| AudioSourceStatus {
+            kind: if *k == SourceKind::Loopback {
+                "loopback"
+            } else {
+                "capture"
+            }
+            .into(),
+            ok: *ok,
+        })
+        .collect();
+    let sig = format!(
+        "{:?}|{:?}|{:?}",
+        mode_string(kinds),
+        dist_string(dist),
+        sources.iter().map(|s| s.ok).collect::<Vec<_>>()
+    );
+    if last_status.as_deref() == Some(sig.as_str()) {
+        return;
+    }
+    *last_status = Some(sig);
+    let payload = AudioStatusPayload {
+        mode: mode_string(kinds),
+        dist: dist_string(dist),
+        sources,
+    };
+    *LAST_AUDIO_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = Some(payload.clone());
+    let _ = app.emit_filter("audio:status", payload, |win| match win {
+        tauri::EventTarget::WebviewWindow { label }
+        | tauri::EventTarget::Webview { label }
+        | tauri::EventTarget::Window { label }
+        | tauri::EventTarget::AnyLabel { label } => label.starts_with("widget-"),
+        _ => false,
+    });
+}
+
+/// 最近一次 audio:status 的缓存（管线未启动/从未开流为 None）。
+static LAST_AUDIO_STATUS: std::sync::Mutex<Option<AudioStatusPayload>> =
+    std::sync::Mutex::new(None);
+
+/// Tauri command: 当前音频采集管线的健康态与活动口径——audio:status 的
+/// 初值拉取口径。无敏感面（检测模式 + 各源健康布尔），与
+/// get_selected_media_session 同口径不带窗口闸门。
+#[tauri::command]
+pub fn get_audio_status(window: tauri::Window) -> Option<AudioStatusPayload> {
+    // 音频输出状态属系统状态面，仅本应用窗口可读。
+    if !crate::trusted_window(window.label()) {
+        return None;
+    }
+    LAST_AUDIO_STATUS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
 /// 采集源：播放音频（系统输出环回）或麦克风（默认采集端点）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SourceKind {
@@ -129,7 +242,7 @@ fn parse_mode(mode: Option<&str>) -> Vec<SourceKind> {
     }
 }
 
-/// W-127 频带分布：log（音乐，低频细分）/ linear（语音，均匀展开）。
+/// 频带分布：log（音乐，低频细分）/ linear（语音，均匀展开）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BandDist {
     Log,
@@ -167,7 +280,7 @@ pub fn start_audio_spectrum(
             .clear();
     }
     let prev = REF_COUNT.fetch_add(1, Ordering::AcqRel);
-    // D-7：线程已在跑时，后续窗口传入的 mode/dist 与活动参数不同则换代
+    // 线程已在跑时，后续窗口传入的 mode/dist 与活动参数不同则换代
     // 重拉（旧线程代数过期自退，ExitGuard 不会复位新线程的开关）。
     {
         let mut params = active_params().lock().unwrap_or_else(|p| p.into_inner());
@@ -186,7 +299,7 @@ pub fn start_audio_spectrum(
 #[tauri::command]
 pub fn stop_audio_spectrum(window: tauri::WebviewWindow) {
     // gate: none needed（label 仅作订阅账本键递减自己，无特权访问面）
-    // P1（审计修复）：仅当本窗口账本确有订阅时才递减全局引用。此前 dec_ref()
+    // 仅当本窗口账本确有订阅时才递减全局引用。此前 dec_ref()
     // 无条件执行——前端约定"cleanup 总是调 stop 即使 start 失败"，时序
     // A start(REF=1) → B 未 start 就 cleanup → REF 减至 0 → 采集线程退出，
     // A 的频谱被静默"偷走"。饱和保护只防回绕，防不了这种透支。
@@ -221,7 +334,7 @@ pub fn drop_window(label: &str) {
     }
 }
 
-/// W-128 点击频谱切换系统静音。返回切换后的静音状态。
+/// 点击频谱切换系统静音。返回切换后的静音状态。
 /// 独立的 COM 作用域：命令可能跑在与采集线程不同的线程上，各自初始化。
 /// M2: 借助 spawn_blocking 放到阻塞池，避免音频子系统慢/挂起时冻结主线程
 /// （与 get_system_media_info 的处理保持一致）。
@@ -236,40 +349,88 @@ pub async fn toggle_system_mute(window: tauri::Window) -> Result<bool, String> {
         .map_err(|e| format!("静音切换任务执行失败: {e}"))?
 }
 
+/// 读取默认输出端的当前静音态（前端 aria-pressed 初值/对账用）。
+/// M2：与 toggle 同标准走阻塞池，避免音频子系统慢/挂起时冻结主线程。
+#[tauri::command]
+pub async fn get_system_mute(window: tauri::Window) -> Result<bool, String> {
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
+    tauri::async_runtime::spawn_blocking(get_system_mute_blocking)
+        .await
+        .map_err(|e| format!("静音读取任务执行失败: {e}"))?
+}
+
+/// 默认输出端点的 COM 作用域脚手架：MTM 初始化（RPC_E_CHANGED_MODE 不算
+/// 失败，S_OK/S_FALSE 配对 CoUninitialize），把 IAudioEndpointVolume 交给
+/// 调用方。get/toggle 两命令共用同一套约定。
+#[cfg(windows)]
+fn with_default_endpoint_volume<T>(
+    f: impl FnOnce(&windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume) -> Result<T, String>,
+) -> Result<T, String> {
+    use windows::core::Interface;
+    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+
+    // 阻塞池线程会被复用，此前可能已被其它任务初始化为 MTA——
+    // RPC_E_CHANGED_MODE 不算失败（COM 已可用），只是不需要（也不能）配对
+    // CoUninitialize。S_OK 与 S_FALSE 都会增加本线程的 COM 引用计数，两者
+    // 都必须配对 CoUninitialize。
+    let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+    let must_uninit = hr.is_ok();
+    if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+        return Err(format!("COM 初始化失败: {}", hr.0));
+    }
+
+    let result = (|| -> Result<T, String> {
+        unsafe {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                    .map_err(|e| format!("无法创建音频枚举器: {e}"))?;
+            let device = enumerator
+                .GetDefaultAudioEndpoint(eRender, eConsole)
+                .map_err(|e| format!("无法获取默认输出设备: {e}"))?;
+            let volume: IAudioEndpointVolume = device
+                .cast()
+                .map_err(|e| format!("无法获取音量控制接口: {e}"))?;
+            f(&volume)
+        }
+    })();
+
+    if must_uninit {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+fn get_system_mute_blocking() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        with_default_endpoint_volume(|volume| {
+            // SAFETY: 只读端点静音态；COM 指针来自同作用域的合法枚举。
+            unsafe { volume.GetMute() }
+                .map(|m| m.as_bool())
+                .map_err(|e| format!("无法读取静音状态: {e}"))
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        Err("仅支持 Windows".to_string())
+    }
+}
+
 fn toggle_system_mute_blocking() -> Result<bool, String> {
     #[cfg(windows)]
     {
-        use windows::core::Interface;
-        use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
-        use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-        use windows::Win32::Media::Audio::{
-            eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
-        };
-        use windows::Win32::System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
-        };
-
-        // 主线程通常已是 STA，MTM 初始化会返回 RPC_E_CHANGED_MODE——那不算
-        // 失败（COM 已可用），只是不需要（也不能）配对 CoUninitialize。
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        // S_OK 与 S_FALSE 都会增加本线程的 COM 引用计数，两者都必须配对
-        // CoUninitialize；仅 RPC_E_CHANGED_MODE（套间模型不符）除外。
-        let must_uninit = hr.is_ok();
-        if hr.is_err() && hr != RPC_E_CHANGED_MODE {
-            return Err(format!("COM 初始化失败: {}", hr.0));
-        }
-
-        let result = (|| -> Result<bool, String> {
+        with_default_endpoint_volume(|volume| {
+            // SAFETY: 读 + 写端点静音态；COM 指针来自同作用域的合法枚举。
             unsafe {
-                let enumerator: IMMDeviceEnumerator =
-                    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                        .map_err(|e| format!("无法创建音频枚举器: {e}"))?;
-                let device = enumerator
-                    .GetDefaultAudioEndpoint(eRender, eConsole)
-                    .map_err(|e| format!("无法获取默认输出设备: {e}"))?;
-                let volume: IAudioEndpointVolume = device
-                    .cast()
-                    .map_err(|e| format!("无法获取音量控制接口: {e}"))?;
                 let muted = volume
                     .GetMute()
                     .map_err(|e| format!("无法读取静音状态: {e}"))?
@@ -279,12 +440,7 @@ fn toggle_system_mute_blocking() -> Result<bool, String> {
                     .map_err(|e| format!("无法切换静音: {e}"))?;
                 Ok(!muted)
             }
-        })();
-
-        if must_uninit {
-            unsafe { CoUninitialize() };
-        }
-        result
+        })
     }
     #[cfg(not(windows))]
     {
@@ -292,11 +448,14 @@ fn toggle_system_mute_blocking() -> Result<bool, String> {
     }
 }
 
-/// W-131 按 PID 读写应用音频会话音量（ISimpleAudioVolume，0–1）。
-/// `set_to = None` 仅读取当前值；目标进程在默认输出设备上没有音频会话时
-/// 返回 None。滚轮调「正在播放应用的音量」（media.rs 解析 SMTC 会话 →
-/// PID 后调这里）。
-pub fn media_session_volume(pid: u32, set_to: Option<f64>) -> Option<f64> {
+/// 按进程集合读写应用音频会话音量（ISimpleAudioVolume，0–1）。
+/// `set_to = None` 仅读取当前值（多个会话取最大，最有代表性的一路）；
+/// `Some` 时对**全部**匹配会话统一设置——多音频会话应用（浏览器每个
+/// 播放标签页独立会话）此前只调第一个命中的会话，滚轮只改了一个标签。
+/// `pids` 为同应用的进程集合（浏览器多进程同名，音频会话可能挂在其中
+/// 任意一个上）；无任何匹配会话时返回 None。滚轮调「正在播放应用的
+/// 音量」（media.rs 解析 SMTC 会话 → PID 集合后调这里）。
+pub fn media_session_volume(pids: &[u32], set_to: Option<f64>) -> Option<f64> {
     #[cfg(windows)]
     {
         use windows::core::Interface;
@@ -325,6 +484,8 @@ pub fn media_session_volume(pid: u32, set_to: Option<f64>) -> Option<f64> {
                 let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None).ok()?;
                 let session_enum: IAudioSessionEnumerator = manager.GetSessionEnumerator().ok()?;
                 let count = session_enum.GetCount().ok()?;
+                let mut hit_any = false;
+                let mut read_max: Option<f64> = None;
                 for i in 0..count {
                     let Ok(control) = session_enum.GetSession(i) else {
                         continue;
@@ -336,23 +497,31 @@ pub fn media_session_volume(pid: u32, set_to: Option<f64>) -> Option<f64> {
                     let Ok(session_pid) = ctl2.GetProcessId() else {
                         continue;
                     };
-                    if session_pid != pid {
+                    if !pids.contains(&session_pid) {
                         continue;
                     }
-                    let simple = control.cast::<ISimpleAudioVolume>().ok()?;
-                    let current = simple.GetMasterVolume().ok()? as f64;
-                    return match set_to {
-                        None => Some(current),
-                        Some(v) => {
-                            let v = v.clamp(0.0, 1.0) as f32;
-                            simple
-                                .SetMasterVolume(v, std::ptr::null())
-                                .ok()
-                                .map(|_| v as f64)
-                        }
+                    let Ok(simple) = control.cast::<ISimpleAudioVolume>() else {
+                        continue;
                     };
+                    let Ok(current) = simple.GetMasterVolume() else {
+                        continue;
+                    };
+                    hit_any = true;
+                    read_max =
+                        read_max.map_or(Some(current as f64), |m: f64| Some(m.max(current as f64)));
+                    if let Some(v) = set_to {
+                        let v = v.clamp(0.0, 1.0) as f32;
+                        // 单个会话设置失败不阻断其余会话（挂起中的标签页）。
+                        let _ = simple.SetMasterVolume(v, std::ptr::null());
+                    }
                 }
-                None
+                if !hit_any {
+                    return None;
+                }
+                match set_to {
+                    None => read_max,
+                    Some(v) => Some(v.clamp(0.0, 1.0)),
+                }
             }
         })();
 
@@ -363,7 +532,7 @@ pub fn media_session_volume(pid: u32, set_to: Option<f64>) -> Option<f64> {
     }
     #[cfg(not(windows))]
     {
-        let _ = (pid, set_to);
+        let _ = (pids, set_to);
         None
     }
 }
@@ -585,10 +754,12 @@ impl Drop for CaptureExitGuard {
         }
         // 过期线程退出时不能关掉新线程的开关；只有当前代线程才复位计数，
         // 让异常退出（格式不支持/COM 初始化失败/panic 等）也能被下一次
-        // start 自愈。
+        // start 自愈。status 缓存一并清空——管线已死，晚挂载组件经
+        // get_audio_status 拉到的应是 None，而不是已死管线的陈旧口径。
         if GENERATION.load(Ordering::Acquire) == self.gen {
             RUNNING.store(false, Ordering::Release);
             REF_COUNT.store(0, Ordering::Release);
+            *LAST_AUDIO_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = None;
         }
     }
 }
@@ -626,6 +797,10 @@ fn capture_loop_inner(app: AppHandle, gen: usize, kinds: Vec<SourceKind>, dist: 
     // 预生成对数频带 → FFT bin 的映射（在首个已知的采样率下计算；
     // WASAPI 共享模式几乎总是 48k/44.1k，重连时若采样率变化会重建）。
     let mut band_bins: Option<(f32, Vec<(usize, usize)>)> = None;
+    // 连续失败计数（backoff 指数退避用；开流成功清零）。
+    let mut open_fails: u32 = 0;
+    // audio:status 去抖签名（状态不变不重发）。
+    let mut last_status: Option<String> = None;
 
     'outer: loop {
         if !alive(RUNNING.load(Ordering::Acquire)) {
@@ -637,31 +812,51 @@ fn capture_loop_inner(app: AppHandle, gen: usize, kinds: Vec<SourceKind>, dist: 
         // 失败就拆掉全部源，播放环回也会被拖死，且线程以 RETRY_MS 周期对
         // 永久失败源无限空转重试。这里让成功的源先工作起来，全部源都打
         // 开失败才整体退避。运行期 drain 失败（设备热切换）仍走整体重连，
-        // 以便恢复被降级掉的源。
+        // 以便恢复被降级掉的源。逐源开流结果经 audio:status 广播（含降级），
+        // 前端状态行不再对「麦克风不可用」装瞎。
         let mut sources: Vec<SourceStream> = Vec::with_capacity(kinds.len());
+        let mut opened: Vec<bool> = Vec::with_capacity(kinds.len());
         for &kind in &kinds {
             match SourceStream::open(kind) {
-                Some(s) => sources.push(s),
-                None => log::warn!(
-                    "audio source {:?} unavailable; degrading to remaining sources",
-                    kind
-                ),
+                Some(s) => {
+                    opened.push(true);
+                    sources.push(s);
+                }
+                None => {
+                    opened.push(false);
+                    log::warn!(
+                        "audio source {:?} unavailable; degrading to remaining sources",
+                        kind
+                    );
+                }
             }
         }
+        // 开流是慢调用（COM 激活 + Initialize），期间可能发生换代（配置
+        // 变更 spawn 了新线程）。过期线程不得发射 status——晚于新线程的发射
+        // 会以旧口径覆盖 LAST_AUDIO_STATUS，get_audio_status 此后无限期返回
+        // 死管线参数，各窗口的「跟随全局」提示错乱。sources 由 Drop 兜底关闭。
+        if !alive(RUNNING.load(Ordering::Acquire)) {
+            break 'outer;
+        }
+        emit_audio_status(&app, &kinds, dist, &opened, &mut last_status);
         if sources.is_empty() {
-            if !backoff(gen) {
+            if !backoff(gen, &mut open_fails) {
                 break 'outer;
             }
             continue 'outer;
         }
+        open_fails = 0;
         // 混音以第一个源的采样率为基准（默认端点几乎都是 48k）。
         let sample_rate = sources[0].sample_rate;
         // 默认设备 epoch（audio_events.rs 推进）：开源自那一刻的序号。切换默认
         // 输出设备后旧设备的 Loopback 流**依然活着、还在送静音帧**——drain 不
         // 报错、频谱只会永远归零。每帧核对一次 AtomicU64（近零开销），序号
         // 前进即重开源（重开走 GetDefaultAudioEndpoint，自然绑到新端点）。
-        // 借鉴 NPS AudioAnalyzer 的「设备切换必须主动发现」结论。
-        let opened_epoch = crate::audio_events::default_render_epoch();
+        // 麦克风同理（eCapture epoch）：按**启动意图**（kinds）而非已开成的源
+        // 比对——被降级的源也能借默认设备切换获得一次重开重试。
+        // 借鉴 同类工具 AudioAnalyzer 的「设备切换必须主动发现」结论。
+        let opened_render_epoch = crate::audio_events::default_render_epoch();
+        let opened_capture_epoch = crate::audio_events::default_capture_epoch();
 
         // --- 采集 + 频谱计算 ---
         let mut ring: Vec<f32> = Vec::with_capacity(FFT_SIZE * 2);
@@ -671,7 +866,7 @@ fn capture_loop_inner(app: AppHandle, gen: usize, kinds: Vec<SourceKind>, dist: 
         // 上一帧是否已完全静音（level=0 且包络全部归零）：连续静音帧不再
         // 推送——条形已无信息量，恢复出声的下一帧会立即恢复推送。
         let mut last_silent = false;
-        // G-4：投递抽取节拍（见 EMIT_DECIMATE）。
+        // 投递抽取节拍（见 EMIT_DECIMATE）。
         let mut emit_tick: u32 = 0;
 
         loop {
@@ -699,17 +894,26 @@ fn capture_loop_inner(app: AppHandle, gen: usize, kinds: Vec<SourceKind>, dist: 
             }
             std::thread::sleep(std::time::Duration::from_millis(FRAME_MS));
 
-            // 默认输出设备被切换（epoch 前进）：旧流不会自毙，主动重开。
-            if crate::audio_events::default_render_epoch() != opened_epoch {
-                log::info!("audio: default render device changed; reopening capture sources");
+            // 默认输出/采集设备被切换（epoch 前进）：旧流不会自毙，主动重开。
+            // 按启动意图比对——被降级的源也借机重试新默认设备。
+            let render_changed = kinds.contains(&SourceKind::Loopback)
+                && crate::audio_events::default_render_epoch() != opened_render_epoch;
+            let capture_changed = kinds.contains(&SourceKind::Capture)
+                && crate::audio_events::default_capture_epoch() != opened_capture_epoch;
+            if render_changed || capture_changed {
+                log::info!(
+                    "audio: default {} device changed; reopening capture sources",
+                    if render_changed { "render" } else { "capture" }
+                );
                 for s in &mut sources {
                     s.close();
                 }
                 continue 'outer;
             }
 
-            // 逐源排空本帧，再按最长帧对齐混音（缺的补 0，多源求均值），
-            // 这样播放源与麦克风即便采样率/包长略有差异也能安全叠加。
+            // 逐源排空本帧，再按最长帧对齐混音（缺位补 0，÷√n 能量保持，
+            // 见下方混音处注释），这样播放源与麦克风即便采样率/包长略有
+            // 差异也能安全叠加。
             let mut failed = false;
             let mut frames_of_sources: Vec<Vec<f32>> = Vec::with_capacity(sources.len());
             for s in &mut sources {
@@ -725,14 +929,23 @@ fn capture_loop_inner(app: AppHandle, gen: usize, kinds: Vec<SourceKind>, dist: 
                 for s in &mut sources {
                     s.close();
                 }
-                if !backoff(gen) {
+                if !backoff(gen, &mut open_fails) {
                     break 'outer;
                 }
                 continue 'outer;
             }
 
             let n = frames_of_sources.iter().map(|v| v.len()).max().unwrap_or(0);
-            let count = frames_of_sources.len().max(1) as f32;
+            // 完全无声时环回不出包（n=0）：ring 保持旧窗不动，跳过本拍——
+            // 此前会对同一窗数据重复加窗+FFT+比较，纯烧 CPU（首个静音帧的
+            // 归零事件在前一拍已发出，last_silent 语义不受影响）。
+            if n == 0 {
+                continue;
+            }
+            // 多源混音按最长帧对齐（缺位补 0）后 ÷√n：both 模式此前按源数求
+            // 平均，播放+麦克风各被压到一半能量，频谱明显变矮；÷√n 是能量
+            // 保持口径（两源各 −3dB 而非 −6dB），且不引入削波失真。
+            let count = (frames_of_sources.len() as f32).sqrt();
             for i in 0..n {
                 let mut sum = 0f32;
                 for v in &frames_of_sources {
@@ -763,7 +976,7 @@ fn capture_loop_inner(app: AppHandle, gen: usize, kinds: Vec<SourceKind>, dist: 
             fft(&mut re, &mut im);
 
             // 频带映射：35Hz ~ 12kHz。log = 对数分布（音乐默认）；
-            // linear = 线性均匀展开（W-127，语音场景低频不挤成一团）。
+            // linear = 线性均匀展开（语音场景低频不挤成一团）。
             let mapping = match &band_bins {
                 Some((rate, m)) if *rate == sample_rate => m.clone(),
                 _ => {
@@ -815,12 +1028,12 @@ fn capture_loop_inner(app: AppHandle, gen: usize, kinds: Vec<SourceKind>, dist: 
                 };
             }
 
-            // 对齐 sys:stats 的 F-3 模式：频谱是全应用频率最高的 IPC（30 帧/秒），
+            // 对齐 sys:stats 的 模式：频谱是全应用频率最高的 IPC（30 帧/秒），
             // 改 emit_filter 只投递给引用账本里实际订阅了的窗口，不再让设置窗/
             // quick-note/taskbar-net 每秒被无意义唤醒 30 次（载荷只序列化一次）。
             // 静音帧（包络已衰减归零）跳过发送：首个静音帧仍发一次让前端条形
             // 落到零位，之后连续静音不再有信息量。
-            // G-4：事件投递二抽一（EMIT_DECIMATE）——包络按 30Hz 平滑、投递
+            // 事件投递二抽一（EMIT_DECIMATE）——包络按 30Hz 平滑、投递
             // 15Hz，前端本就再做一层插值，观感不变而事件量减半。
             let silent = level <= 0.0 && bands.iter().all(|&b| b < 0.001);
             emit_tick = (emit_tick + 1) % EMIT_DECIMATE;
@@ -873,7 +1086,7 @@ fn mix_format_is_float(fmt: &windows::Win32::Media::Audio::WAVEFORMATEX) -> bool
     if fmt.wFormatTag == WAVE_FORMAT_EXTENSIBLE {
         // SAFETY: WAVEFORMATEXTENSIBLE 以 WAVEFORMATEX 开头，GetMixFormat 在
         // tag==EXTENSIBLE 时返回的缓冲区合法容纳该结构。该结构是 packed
-        // （1 字节对齐），不能直接解引用取 SubFormat，否则触发 E0793：
+        // （1 字节对齐），不能直接解引用取 SubFormat，否则触发 ：
         // 用 addr_of! 取字段的裸指针（不产生引用），再 read_unaligned 读取。
         let ext = fmt as *const windows::Win32::Media::Audio::WAVEFORMATEX
             as *const windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE;
@@ -884,13 +1097,19 @@ fn mix_format_is_float(fmt: &windows::Win32::Media::Audio::WAVEFORMATEX) -> bool
 }
 
 /// 采集出错后的退避重连；返回 false 表示应当结束线程。
+/// 指数退避——固定 500ms 在「全源打开永久失败」（独占模式应用占住默认
+/// 输出、mix_format 异常设备）下是 CoCreateInstance→Initialize 重试风暴，
+/// 日志逐拍刷屏；500ms 起倍增至 30s 封顶，成功开流由调用方清零。
 #[cfg(windows)]
-fn backoff(gen: usize) -> bool {
+fn backoff(gen: usize, fails: &mut u32) -> bool {
     let running = RUNNING.load(Ordering::Acquire);
     if !running || GENERATION.load(Ordering::Acquire) != gen {
         return false;
     }
-    std::thread::sleep(std::time::Duration::from_millis(RETRY_MS));
+    let shift = (*fails).min(6);
+    let delay = (RETRY_MS << shift).min(30_000);
+    *fails = (*fails).saturating_add(1);
+    std::thread::sleep(std::time::Duration::from_millis(delay));
     let running = RUNNING.load(Ordering::Acquire);
     running && GENERATION.load(Ordering::Acquire) == gen
 }
@@ -908,6 +1127,70 @@ fn capture_loop(_app: AppHandle, gen: usize, _kinds: Vec<SourceKind>, _dist: Ban
 /* 与 Windows 自身"声音设置 → 输出音量"的小音量计对照；完全静音时返回全 0  */
 /* 是合法真实值（管线正常），绝不伪造非零数据。                            */
 /* ------------------------------------------------------------------ */
+
+#[cfg(test)]
+mod dsp_tests {
+    use super::*;
+
+    /// FFT 守卫——已知频率正弦的主峰应落在对应 bin（位反转置换 + 蝶形
+    /// 运算的整链回归），振幅口径与 capture_loop 的 norm=2/n 一致（单频
+    /// 单位幅值正弦 → 主峰幅值 ~1）。
+    #[test]
+    fn fft_sine_peaks_at_expected_bin() {
+        let n = FFT_SIZE;
+        let freq_bin = 37usize; // 非 2 的幂的任意 bin
+        let mut re: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * freq_bin as f32 * i as f32 / n as f32).sin())
+            .collect();
+        let mut im = vec![0f32; n];
+        fft(&mut re, &mut im);
+        let mag = |k: usize| (re[k] * re[k] + im[k] * im[k]).sqrt();
+        let peak_bin = (1..n / 2)
+            .max_by(|&a, &b| mag(a).total_cmp(&mag(b)))
+            .unwrap();
+        assert!(
+            (peak_bin as i64 - freq_bin as i64).abs() <= 1,
+            "peak {peak_bin} vs {freq_bin}"
+        );
+        assert!((mag(freq_bin) * 2.0 / n as f32 - 1.0).abs() < 0.02);
+    }
+
+    /// 汉宁窗端点归零、中点为 1、全程 [0,1]。
+    #[test]
+    fn hann_window_tapers_to_zero_at_edges() {
+        let w = hann_window(512);
+        assert!(w[0].abs() < 1e-6);
+        assert!((w[256] - 1.0).abs() < 1e-6);
+        assert!(w.iter().all(|&v| (0.0..=1.0).contains(&v)));
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    /// audio:status 载荷的口径字符串与 parse_mode/parse_dist 互逆：前端提示
+    /// （跟随全局/麦克风不可用）依赖 mode/dist 字符串与配置枚举可直接比对。
+    #[test]
+    fn mode_dist_strings_roundtrip() {
+        for (input, expected) in [
+            ("playback", "playback"),
+            ("microphone", "microphone"),
+            ("both", "both"),
+            ("garbage", "playback"), // 未知值回退仅播放
+        ] {
+            assert_eq!(
+                mode_string(&parse_mode(Some(input))),
+                expected,
+                "mode {input}"
+            );
+        }
+        assert_eq!(dist_string(parse_dist(Some("log"))), "log");
+        assert_eq!(dist_string(parse_dist(Some("linear"))), "linear");
+        assert_eq!(dist_string(parse_dist(None)), "log");
+    }
+}
+
 #[cfg(all(test, windows))]
 mod verify {
     use super::*;

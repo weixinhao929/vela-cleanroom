@@ -5,7 +5,7 @@
 //!
 //! 握手：等服务端 [`TapMessage::Hello`] → 回 [`TapMessage::Ready`]（无论版本
 //! 是否匹配都先回，主进程比对）；不匹配则回完即断、置关闭标记、不再响应
-//! （F-10：主进程侧转 Failed）。
+//! （主进程侧转 Failed）。
 //!
 //! 运行期：ApplyAppearance / SetBorderVisibility / RestoreAll →
 //! [`appearance::dispatch`]（投递任务栏 UI 线程）；Ping → 立即 Pong（心跳不
@@ -37,17 +37,19 @@ pub fn handshake_action(remote_version: u32) -> HandshakeAction {
     }
 }
 
-/// 服务端映像判定（D-3）：管道对端必须是 Vela 宿主进程。管道名可被同用户
+/// 服务端映像判定：管道对端必须是 Vela 宿主进程。管道名可被同用户
 /// 进程抢注（服务端侧有 FIRST_PIPE_INSTANCE 防抢注，但重连窗口内仍可能
 /// 出现冒充者），冒充服务端可任意操纵任务栏外观。映像路径取末段文件名，
 /// 大小写不敏感；非 Vela 宿主一律拒绝本次连接（继续重连等真宿主）。
+/// 名单收编到共享 crate（taskbar_common::servers）——
+/// 原先硬编码在此，与产物名单手工同步，改名即静默失联。
 pub fn server_image_allowed(image_path: &str) -> bool {
     let name = image_path
         .rsplit(['\\', '/'])
         .next()
         .unwrap_or(image_path)
         .to_ascii_lowercase();
-    name == "focus-desk.exe" || name == "vela.exe"
+    taskbar_common::servers::ALLOWED_SERVERS.contains(&name.as_str())
 }
 
 /// 查询管道服务端进程的完整映像路径（查询失败返回 None，调用方决定策略）。
@@ -92,8 +94,8 @@ pub fn reconnect_delay(failures: u32) -> std::time::Duration {
 /// 握手应答版本：默认 [`PROTOCOL_VERSION`]。
 ///
 /// **仅 debug 构建**接受 DLL 同目录 `velatap.mockver`（内容为一个 u32）覆盖
-/// ——TB-INJECT 约定的联调钩子（injector.rs `manual_version_mismatch`：预放
-/// mockver=99 → 验证主进程转 Failed +「重启资源管理器」文案，F-10）。解包
+/// ——注入器约定的联调钩子（injector.rs `manual_version_mismatch`：预放
+/// mockver=99 → 验证主进程转 Failed +「重启资源管理器」文案）。解包
 /// 目录 `%TEMP%\vela\tap\<hash>\` 用户可写，发布构建若保留该钩子，任何进程
 /// 放一个文件就能让注入恒 Failed，故 release 下编译期剔除、代码路径恒为
 /// 常量。
@@ -219,18 +221,30 @@ fn serve_inner(pipe: HANDLE) -> ServeOutcome {
 
     // --- 记录服务端身份 → 主进程死亡监视 ---
     let mut server_pid: u32 = 0;
-    if unsafe { GetNamedPipeServerProcessId(pipe, &mut server_pid) }.is_ok() {
-        // D-3：先验服务端映像——explorer 内以 PROCESS_QUERY_LIMITED_INFORMATION
-        // 查询宿主进程映像通常允许；查不到时维持现状服务（冒充者还需同时伪造
-        // 协议版本号，收益极低）。查到且非 Vela 宿主：按断连处理（恢复默认外
-        // 观后继续重连等真宿主），不置永久停机标记——冒充者可能是临时的。
-        if let Some(path) = server_image_path(server_pid) {
-            if !server_image_allowed(&path) {
-                crate::vlog!("pipe client: server image is not Vela host ({path}), reconnecting");
-                return ServeOutcome::Disconnected;
+    match unsafe { GetNamedPipeServerProcessId(pipe, &mut server_pid) } {
+        Ok(()) => {
+            // 先验服务端映像——explorer 内以 PROCESS_QUERY_LIMITED_INFORMATION
+            // 查询宿主进程映像通常允许；查不到时维持现状服务（冒充者还需同时伪造
+            // 协议版本号，收益极低）。查到且非 Vela 宿主：按断连处理（恢复默认外
+            // 观后继续重连等真宿主），不置永久停机标记——冒充者可能是临时的。
+            if let Some(path) = server_image_path(server_pid) {
+                if !server_image_allowed(&path) {
+                    crate::vlog!(
+                        "pipe client: server image is not Vela host ({path}), reconnecting"
+                    );
+                    return ServeOutcome::Disconnected;
+                }
             }
+            crate::parent_watch::retarget(server_pid);
         }
-        crate::parent_watch::retarget(server_pid);
+        Err(e) => {
+            //握手期取服务端 pid 失败——此前既不 retarget 也不清空，
+            // 死亡监视停在上一连接的旧目标上（旧目标死亡触发一次幂等
+            // RestoreAll，恢复线 2 在该会话内失准）。按断连处理：重连周期会
+            // 重新握手，下一轮成功即恢复监视。
+            crate::vlog!("pipe client: GetNamedPipeServerProcessId failed ({e}), reconnecting");
+            return ServeOutcome::Disconnected;
+        }
     }
     crate::vlog!("pipe client: serving main pid {server_pid}");
 
@@ -339,7 +353,7 @@ mod tests {
         assert_eq!(handshake_action(0), HandshakeAction::Refuse);
     }
 
-    /// D-3：服务端映像判定——只认 Vela 宿主（开发 focus-desk.exe / 发布 Vela.exe）。
+    /// 服务端映像判定——只认 Vela 宿主（开发 focus-desk.exe / 发布 Vela.exe）。
     #[test]
     fn server_image_gate() {
         assert!(server_image_allowed(
@@ -381,7 +395,7 @@ mod tests {
     #[test]
     fn assembler_enforces_frame_cap() {
         let mut a = LineAssembler::default();
-        // 上限含换行：MAX-1 内容 + 1 换行 = MAX 恰好合法。
+        // 上限含换行：内容 + 1 换行 = MAX 恰好合法。
         assert!(a.push(&vec![b'x'; MAX_FRAME_BYTES - 1]));
         assert!(a.push(
             b"

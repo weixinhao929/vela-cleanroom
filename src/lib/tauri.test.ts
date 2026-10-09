@@ -1,5 +1,5 @@
 /**
- * lib/tauri · previewTaskbarState（F-8 预览通道包装）：
+ * lib/tauri · previewTaskbarState（预览通道包装）：
  * - 载荷形状与 Rust `preview_taskbar_state(state, overrides)` 一致：`overrides` 缺省 / undefined
  *   一律传 null（取消 = state null）；
  * - 浏览器模式（无 __TAURI_INTERNALS__）与所有 invoke 一样 reject，不吞错。

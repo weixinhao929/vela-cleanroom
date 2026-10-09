@@ -60,7 +60,7 @@
 - 图库卡片、设置行等大目标自然满足（图库卡片显式 `min-height: 48px`）。
 - `data-interactive` 上报与命中区同源：桌面层非 overlay 状态下命中区不得大于上报包围盒。
 
-**落地参照**：`M3Slider`（feature-polish.css `.tm-slider-track`）、`Toggle`
+**落地参照**：`M3Slider`（feature-polish.css `.tm-slider-row` / `.tm-slider-reset-wrap`，双击恢复默认值）、`Toggle`
 （feature-polish.css `.tm-toggle-wrap`）、`Stepper` / `Segmented`（settings.css
 [POLISH] 伪元素外扩）、`WidgetGallery` 卡片（widget.css 图库区段）。
 
@@ -68,7 +68,7 @@
 
 ## 3. 按压反馈：几何形变优先于纯缩放
 
-**规则**（A4，选配用于高曝光控件）：按压反馈优先用「几何形变」——
+**规则**（选配用于高曝光控件）：按压反馈优先用「几何形变」——
 激活段外圆角 + 按压加宽、拇指按压涨径、邻块挤压吸收——而非千篇一律的
 `scale(0.94)`。形变优先用 transform / 非布局属性实现，遵守 lint:anim 三闸；
 在 backdrop-filter 表面的透明窗口子元素上（如桌面层图库面板）**禁用 transform**
@@ -84,23 +84,23 @@
 
 ---
 
-## 4. 灵动岛动效规范（F-9 精简版，业界灵动岛基准）
+## 4. 灵动岛动效规范（精简版，业界灵动岛基准）
 
 **规则**：灵动岛（`src/styles/feature-dock.css`，`src/widget/dock/**`）的全部动效按
-下表取时长与曲线；曲线只引用 A3 token（feature-animations.css），文件内不得出现裸
+下表取时长与曲线；曲线只引用 token（feature-animations.css），文件内不得出现裸
 `cubic-bezier()`；颜色只引用主题 token。新增动效先对号入座，再落代码。
 
-| 场景                                           | 时长 / 曲线                                                                                                                                                                                                                                                                           | 依据                                                                                                  |
+| 场景 | 时长 / 曲线 | 依据 |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| 展开 / 收回（磁贴 → 面板）                     | 500ms `--ease-spatial` / 360ms `--ease-in`；内容 200ms 交叉淡化                                                                                                                                                                                                                       | 基准 500 / 360；`WidgetExpandOverlay`                                                                 |
-| hover 微涨（peak）                             | 宽 +16 / 高 +6 / 圆角 +3，360ms `--ease-fx`（`.dock.is-peak` padding 过渡）                                                                                                                                                                                                           | `HorizontalKeystoneLayout` collapsedHovered                                                           |
-| 磁贴增 / 删 / 排序                             | FLIP 经 `pickSpatialEase`：位移 ≤20px 350ms `--ease-spatial-fast`，否则 500ms `--ease-spatial`；新磁贴 scale .8 + opacity 0 弹入 350ms fast；移除 160ms `--ease-in` 收缩                                                                                                              | `KeystoneSurface:655-663` 小增量降档；`lib/anim.ts`                                                   |
-| 岛位置拖动 / 吸附 / 换边                       | 拖动只写 transform；松手吸附 360ms `--ease-spatial-fast`；换边 500ms `--ease-spatial`                                                                                                                                                                                                 | 与卡片 `dragPreview → commit` 同范式                                                                  |
-| 接管（番茄钟 / 媒体 / 通知）                   | 磁贴层与接管层常驻叠放，200ms `--ease-fx` 交叉淡化；岛宽随内容 spring：`--ease-dock-spring`（dockQ 弹簧 450ms，`linear()` 采样峰值 1.1583，不支持时回退 `--ease-spatial`；`--dur-dock-spring` 随 --anim-dur 派生）、回落 360ms `--ease-in`（`@supports (interpolate-size)` 渐进增强） | dockQ 弹簧 s(t)=1−cos(2π·2.65·t)·e^(−10.8·t)；前代 `--ease-island-expand`（基准样条峰值 1.035）已退役 |
-| 全岛面板轮播                                   | 拖动 1:1 跟手，松手 settle 300ms `--ease-spatial-fast`，越界 0.3× 阻尼                                                                                                                                                                                                                | `KeyholeCardCarousel:188-227`                                                                         |
-| 状态 / 颜色 / 透明度                           | 150 / 200 / 300ms `--ease-fx`（hover 底色、图标色、进度环）                                                                                                                                                                                                                           | A3 fx 族分工                                                                                          |
-| 弹层入退场（类型选择器 / 配置面板 / 拖入预览） | 入场 150–200ms `--ease-out`；退场 160ms `--ease-in`；按压 `--ease-spring`                                                                                                                                                                                                             | D1 三分法                                                                                             |
-| 指针跟随指示（插入位竖条）                     | transform 150ms `--ease-out`（不过冲）                                                                                                                                                                                                                                                | 跟手指示不宜回弹                                                                                      |
+| 展开 / 收回（磁贴 → 面板） | 500ms `--ease-spatial` / 360ms `--ease-in`；内容 200ms 交叉淡化 | 基准 500 / 360；`WidgetExpandOverlay` |
+| hover 微涨（peak） | 宽 +16 / 高 +6 / 圆角 +3，360ms `--ease-fx`（`.dock.is-peak` padding 过渡） | `HorizontalKeystoneLayout` collapsedHovered |
+| 磁贴增 / 删 / 排序 | FLIP 经 `pickSpatialEase`：位移 ≤20px 350ms `--ease-spatial-fast`，否则 500ms `--ease-spatial`；新磁贴 scale .8 + opacity 0 弹入 350ms fast；移除 160ms `--ease-in` 收缩 | `KeystoneSurface:655-663` 小增量降档；`lib/anim.ts` |
+| 岛位置拖动 / 吸附 / 换边 | 拖动只写 transform；松手吸附 360ms `--ease-spatial-fast`；换边 500ms `--ease-spatial` | 与卡片 `dragPreview → commit` 同范式 |
+| 接管（番茄钟 / 媒体 / 通知） | 磁贴层与接管层常驻叠放，200ms `--ease-fx` 交叉淡化；岛宽随内容 spring：`--ease-dock-spring`（dockQ 弹簧 450ms，`linear()` 采样峰值 1.1583，不支持时回退 `--ease-spatial`；`--dur-dock-spring` 随 --anim-dur 派生）、回落 360ms `--ease-in`（`@supports (interpolate-size)` 渐进增强） | dockQ 弹簧 s(t)=1−cos(2π·2.65·t)·e^(−10.8·t)；前代 `--ease-island-expand`（基准样条峰值 1.035）已退役 |
+| 全岛面板轮播 | 拖动 1:1 跟手，松手 settle 300ms `--ease-spatial-fast`，越界 0.3× 阻尼 | `KeyholeCardCarousel:188-227` |
+| 状态 / 颜色 / 透明度 | 150 / 200 / 300ms `--ease-fx`（hover 底色、图标色、进度环） | fx 族分工 |
+| 弹层入退场（类型选择器 / 配置面板 / 拖入预览） | 入场 150–200ms `--ease-out`；退场 160ms `--ease-in`；按压 `--ease-spring` | 三分法 |
+| 指针跟随指示（插入位竖条） | transform 150ms `--ease-out`（不过冲） | 跟手指示不宜回弹 |
 
 细则：
 
@@ -114,16 +114,17 @@
   把全部 transition / animation 压到 0.001s；JS `prefersReducedMotion()` 让 FLIP、幽灵退场、
   轮播 settle 直接瞬移；feature-dock.css 文末对本文件几何动效再显式声明一次。音乐跑马用
   `animation: none`（压时长会停在终点裁掉前半段）。
-- **颜色**：岛底 `--layer2` / 内容 `--layer2-on`（A1 层级求解，随不透明度与壁纸 token 联动）；
+- **颜色**：岛底 `--layer2` / 内容 `--layer2-on`（层级求解，随不透明度与壁纸 token 联动）；
   面板内容 `--layer4-on`；on-accent 文字 `--btn-fg`；投影色 `--dock-shadow` = `--widget-hover-shadow`；
   焦点环 `--ring` = `--accent`（岛表面自定义，小组件窗口没有设置窗的 `--ring`）。
   豁免：`mask-image` 渐变的不透明停靠点 `#000`（只取 alpha）、跑马 `linear`。
 - **命中区（§2 在桌面层的补充）**：磁贴 / 「+」/ 拖动柄 / 接管条视觉不变，`::after` 外扩到
   ≥48px（44px 桌面鼠标可接受）。岛本体 `.dock` 整块上报命中矩形，岛内 padding 带被外扩
   完整覆盖；超出岛包围盒的部分在 Tauri 非 overlay 态穿透到桌面——那里没有可见元素，
-  属「指到空处」而非「看得见点不中」。要让 48px 在桌面层成为真实盒子，走 F-6 密度 48 档。
+  属「指到空处」而非「看得见点不中」。要让 48px 在桌面层成为真实盒子，走 密度 48 档。
   嵌在磁贴内的次级控件（`.dock-mini-btn`）不外扩（会吞掉磁贴自身点击面，WCAG 2.5.8 行内豁免）。
-- **门禁**：`lint:anim` 四项（will-change / check-transitions 含 ease-contract / fx-gate）；
+- **门禁**：`lint:anim` 五项（will-change / check-transitions 含 ease-contract / fx-gate / check-js-anim（motion 弹簧须显式豁免 + rAF 循环健康度）/ check-layout-anim --strict）；
+- **行级定位指示**（设置搜索跳转）：`flashSettingsRowByTitle` 滚动居中 + `.tm-row-flash` 1.8s 脉冲（accent 24% 底光渐隐）；reduce-motion 档下降级为静态 12% 淡底；
   新增 hover / active 改 transform 必有 transition；只动 transform / opacity（例外：hover 微涨
   的 padding 与接管宽度 spring 的 width——离散事件、非常驻，已在文件内注明）。
 
@@ -137,10 +138,10 @@
 
 **规则**：
 
-1. **间距阶梯**：新增 `padding / gap / margin` 消费 `--space-N` 阶梯
-   （`--space-1..10` = `--spacing` × 0.25..2.5，4px 基，定义于 global.css :root，
-   随设置页「间距」滑条整体缩放）。存量约千处裸 px 间距为已登记技术债，
-   **随改随迁**（触碰同一规则块时顺手换算），禁止批量机械替换。
+1. **间距基准**：新增 `padding / gap / margin` 消费 `var(--spacing)` 运算
+   （`calc(var(--spacing, 16px) * N)`；设置页「间距」滑条直接调 `--spacing` 本体，
+   全仓等比缩放）。`--space-1..10` 阶梯令牌曾定义后零消费，已整组删除
+   （2026-10-08 ）。存量约千处裸 px 间距为已登记技术债，
 2. **模态遮罩**：浓度一律消费 `--scrim`（明暗两档同值 0.32），不得各写 rgba。
 3. **浮层阴影**：新增阴影色消费 `var(--shadow-tint)`（明暗分档：浅色档暖棕、
    深色档纯黑）并用 `color-mix(... N%, transparent)` 调浓度；卡片族优先用
@@ -155,5 +156,34 @@
 禁用态不可见）的系统性收口；token 化让同类问题可被 `lint:tokens`
 （未定义 token 引用门禁，已入 CI）兜住。
 
-**落地参照**：global.css `--space-*`/`--scrim`/`--shadow-tint` 定义；
+**落地参照**：global.css `--spacing`/`--scrim`/`--shadow-tint` 定义；
 `scripts/check-css-tokens.mjs`（`npm run lint:tokens`）。
+
+## 6. 交互防误触（默认关闭）
+
+**规则**：凡是「替用户吞掉输入」或「改变指针悬停行为」的交互辅助（弹窗关闭后
+的点击屏蔽、HUD 悬停淡出避让），必须做成独立设置开关且**默认关闭**；开启后
+的行为幅度要有节制（屏蔽 ≤100ms / 淡出到 ≥20% 不透明）。
+
+**细则**：
+
+1. **点击屏蔽**：浮层退场原语统一走 `useDelayedUnmount`（`src/lib/anim.ts`）——
+   退场开始的瞬间在 document 捕获层吞掉后续 ~80ms 的 `pointerdown`
+   （`src/lib/click-shield.ts`，开关 `extra.popupClickShield`，由
+   settings-store 订阅推送）。不走该原语的浮层（WidgetGallery / 两个文件夹
+   弹窗）在各自的关闭入口手动 `armPopupClickShield()`。
+2. **HUD 淡出避让**：只适用于非交互 HUD（任务栏网速条 / 全屏展示窗），
+   悬停淡出到 20% 不透明并保留 `transition: opacity var(--dur-fx)`
+   （`.hud-giveway` 类，开关 `extra.hudGiveWay`）。交互组件（卡片/磁贴/按钮）
+   一律不做悬停淡出——用户悬停通常正是为了点它。
+3. **默认关闭的理由**：这类行为改变操作手感（连点被吞 / 悬停内容消失），
+   只有明确需要的用户才应承担感知成本；与「替用户做决定」的功能（自动化
+   规则）不同，它们直接影响每一次点击。
+
+**理由**：（用户裁定默认关）：其关弹窗后屏蔽 3 帧点击
+（防连点误触下层）与 HUD Give Way to Mouse（悬停淡出避让）两条经验的
+正经化。
+
+**落地参照**：`src/lib/click-shield.ts`、`src/lib/anim.ts`（useDelayedUnmount）、
+`feature-taskbar-net.css` / `fullscreen.css` 的 `.hud-giveway`、GeneralPage
+「弹窗关闭后屏蔽误连点 / 鼠标悬停时 HUD 淡出避让」两行。

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { coveredTickGate, subscribeCoveredChange } from "./use-covered";
 
-/* C9（性能）：同一 interval 值共享一个定时器——AnalyticsPanel / DeadlinePanel /
+/* （性能）：同一 interval 值共享一个定时器——AnalyticsPanel / DeadlinePanel /
    TodayTasksPanel / PomodoroPanel 同窗各自 useNow(30s) 时不再重复排 N 个
    interval，卸载后引用计数归零自动停表。 */
 const tickerListeners = new Map<number, Set<() => void>>();
@@ -8,8 +9,15 @@ const tickerTimers = new Map<number, number>();
 
 /* 二.6 窗口隐藏静默：被遮挡/最小化期间跳过 tick 通知（CSS 动画已有
    data-app-hidden 暂停门，JS 节拍器同步静默——遮挡节流跨平台不一致，显式
-   兜底）；恢复可见立即补一拍，时钟不落分钟。模块级安装一次。 */
+   兜底）；恢复可见立即补一拍，时钟不落分钟。模块级安装一次。
+   [COVERED]：画布被前台全屏完全遮挡（document 仍
+   visible）时同样静默；恢复补拍同款。 */
 let visGateInstalled = false;
+function fireAllTickers(): void {
+  for (const set of tickerListeners.values()) {
+    for (const fn of [...set]) fn();
+  }
+}
 function installTickerVisibilityGate(): void {
   if (visGateInstalled || typeof document === "undefined") return;
   visGateInstalled = true;
@@ -17,12 +25,13 @@ function installTickerVisibilityGate(): void {
     "visibilitychange",
     () => {
       if (document.hidden) return;
-      for (const set of tickerListeners.values()) {
-        for (const fn of [...set]) fn();
-      }
+      fireAllTickers();
     },
     { passive: true }
   );
+  subscribeCoveredChange((covered) => {
+    if (!covered) fireAllTickers();
+  });
 }
 
 function subscribeTicker(intervalMs: number, cb: () => void): () => void {
@@ -33,6 +42,7 @@ function subscribeTicker(intervalMs: number, cb: () => void): () => void {
     tickerListeners.set(intervalMs, set);
     const id = window.setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
+      if (coveredTickGate()) return;
       for (const fn of tickerListeners.get(intervalMs) ?? []) fn();
     }, intervalMs);
     tickerTimers.set(intervalMs, id);
@@ -55,7 +65,7 @@ function subscribeTicker(intervalMs: number, cb: () => void): () => void {
  * 订阅共享节拍器并返回当前时间（每次 tick 更新一个新 Date）。
  *
  * 模块职责：为所有需要周期性刷新「当前时刻」的面板提供统一时钟源。
- * C9（性能）：同一 interval 值全局共享一个定时器（观察者模式）——
+ * （性能）：同一 interval 值全局共享一个定时器（观察者模式）——
  * AnalyticsPanel / DeadlinePanel / TodayTasksPanel / PomodoroPanel 同窗
  * 各自 useNow(30s) 时不再重复排 N 个 interval；卸载后引用计数归零自动停表。
  *
@@ -64,10 +74,10 @@ function subscribeTicker(intervalMs: number, cb: () => void): () => void {
  * @throws 无（纯订阅语义；intervalMs 非法由 setInterval 自行兜底）。
  *
  * @example
- * ```tsx
+ * `tsx
  * const now = useNow(1000); // 秒级时钟组件
- * const now30 = useNow();   // 30s 粒度面板，与其它面板共享节拍器
- * ```
+ * const now30 = useNow(); // 30s 粒度面板，与其它面板共享节拍器
+ * `
  */
 export function useNow(intervalMs = 30_000) {
   const [now, setNow] = useState(() => new Date());
@@ -103,5 +113,9 @@ export function dayKeyToDate(key: string): Date | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
   if (!m) return null;
   const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (Number.isNaN(d.getTime())) return null;
+  // JS Date 构造器自动归一化越界分量（"2026-13-45" → 2027-02-13），getTime
+  // 永不 NaN——回验一次往返，构成非法的键按承诺返回 null 而不是被归一成
+  // 另一个日期。
+  return dayKeyOf(d) === key ? d : null;
 }

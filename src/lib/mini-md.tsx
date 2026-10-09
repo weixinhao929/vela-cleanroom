@@ -64,10 +64,15 @@ export function renderInline(text: string, keyPrefix = ""): ReactNode[] {
       <a
         className="md-link"
         href={href}
-        target="_blank"
-        rel="noopener noreferrer"
         key={`${keyPrefix}a${m.index}`}
         data-interactive
+        onClick={(e) => {
+          // Tauri WebView 会拦截 <a target=_blank>（新窗被吞或整窗被外部
+          // 页面替换）——接管点击，走与书签同一条 open_path 路径交给系统
+          // 默认浏览器。safeHref 已限 http(s)。
+          e.preventDefault();
+          void import("./tauri").then(({ invoke }) => invoke("open_path", { path: href })).catch(() => {});
+        }}
       >
         {m[1]}
       </a>
@@ -117,7 +122,7 @@ export function renderInline(text: string, keyPrefix = ""): ReactNode[] {
 export interface MiniMdOptions {
   /** 点击 #标签 时回调（用于过滤）。 */
   onTagClick?: (tag: string) => void;
-  /** W-063：点击任务清单复选框时回调（lineIndex 为该行在原文中的行号）。 */
+  /** 点击任务清单复选框时回调（lineIndex 为该行在原文中的行号）。 */
   onToggleTask?: (lineIndex: number, checked: boolean) => void;
 }
 

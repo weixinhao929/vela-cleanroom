@@ -195,19 +195,47 @@ for (const fileRaw of files) {
   const css = stripComments(raw);
 
   if (!file.endsWith(".css")) {
-    // TS/TSX：内联 transition 字符串（style 对象 / 元素样式赋值）。
-    const inlineRe = /(transition(?:-property)?)\s*[:=]\s*["'`]([^"'`]+)["'`]/g;
-    let im;
-    while ((im = inlineRe.exec(css)) !== null) {
-      const line = lineOf(css, im.index);
-      for (const seg of splitTopLevelCommas(im[2])) {
-        const prop = seg.split(/\s+/)[0].toLowerCase();
-        if (!prop) continue;
-        bump(prop);
-        const kind = classify(prop);
-        if (kind === "ignore" || kind === "other") continue;
-        findings[kind].push({ file, line, prop, via: `inline-${im[1]}`, exempt: exempted(rawLines, line) });
+    /* TS/TSX：内联 transition 字符串（style 对象 / 元素样式赋值）。
+       此前 inlineRe 只匹配 `transition: "…"` 引号紧跟
+       形态——三元形态（`transition: cond ? "left 300ms" : "none"`，真/假分支
+       均可能藏布局串）与真假分支中的模板串对门禁完全不可见（现网唯一实例
+       WidgetExpandOverlay.tsx:385 = 三元 + 模板 + Tier1 布局属性）。改为取
+       赋值行内全部引号段逐一判定；段内属性名之外全为 ${…} 运行时插值的，
+       时长/曲线来自变量（animDurations/pickSpatialEase 产物）→ 天然放行，
+       纯字面量段（"left 300ms"）照常按 Tier1 分层拦截。 */
+    const assignRe = /(transition(?:-property)?)\s*[:=]\s*/g;
+    let am;
+    while ((am = assignRe.exec(css)) !== null) {
+      const line = lineOf(css, am.index);
+      const eol = css.indexOf("\n", am.index + am[0].length);
+      const rhs = css.slice(am.index + am[0].length, eol < 0 ? css.length : eol);
+      const strRe = /["'`]([^"'`\n]+)["'`]/g;
+      let sm;
+      while ((sm = strRe.exec(rhs)) !== null) {
+        const ternary = rhs.slice(0, sm.index).includes("?");
+        for (const seg of splitTopLevelCommas(sm[1])) {
+          const prop = seg.split(/\s+/)[0].toLowerCase();
+          if (!prop) continue;
+          bump(prop);
+          const kind = classify(prop);
+          if (kind === "ignore" || kind === "other") continue;
+          // 属性名之外全为 ${…} 插值 → 运行时 token 消费（非字面量布局动画），
+          // 不进 findings；`left ${t} 300ms` 混写仍含字面量、照报。
+          const rest = seg
+            .slice(seg.split(/\s+/)[0].length)
+            .replace(/\$\{[^}]*\}/g, " ")
+            .trim();
+          if (rest.length === 0) continue;
+          findings[kind].push({
+            file,
+            line,
+            prop,
+            via: `inline-${am[1]}${ternary ? "-ternary" : ""}`,
+            exempt: exempted(rawLines, line)
+          });
+        }
       }
+      assignRe.lastIndex = am.index + am[0].length;
     }
     continue;
   }

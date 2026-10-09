@@ -128,12 +128,7 @@
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(120%);
   backdrop-filter: blur(var(--glass-blur)) saturate(120%);
 }
-.current-task-label {
-  font-size: var(--fs-10);
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  font-weight: 600;
-}
+/* .current-task-label 大写标签已删。 */
 .current-task strong {
   font-size: var(--fs-13);
   color: var(--ink);
@@ -157,12 +152,7 @@
   color: var(--muted);
   font-weight: 700;
 }
-.pomodoro-config-fields {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr) auto;
-  gap: 8px;
-  align-items: end;
-}
+/* .pomodoro-config-fields 网格壳已删。 */
 .pomodoro-config-field {
   display: flex;
   flex-direction: column;
@@ -279,50 +269,15 @@
 .pomodoro-config-apply:active {
   transform: scale(0.96);
 }
-/* 当前专注事件选择 */
-.pomodoro-task-select {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.pomodoro-task-select > span {
-  font-size: var(--fs-10);
-  color: var(--muted);
-  font-weight: 600;
-}
-.pomodoro-task-select select {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--line);
-  background: var(--paper-solid);
-  color: var(--ink);
-  border-radius: var(--rad-9);
-  padding: 8px 10px;
-  font-size: var(--fs-12);
-  outline: none;
-  cursor: pointer;
-  transition: border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
-}
-.pomodoro-task-select select:focus {
-  border-color: var(--accent);
-}
-.pomodoro-task-select select option {
-  background: var(--paper-solid);
-  color: var(--ink);
-}
+/* 当前专注事件选择（.pomodoro-task-select 全族 4 条）已删——事件选择改
+   下拉统一件，0 引用。 */
 
-.widget-card .pomodoro-control-bar {
-  margin-top: 6px;
-  gap: 5px;
-}
-.widget-card .pomodoro-seg-btn {
-  padding: 4px 11px;
-  font-size: var(--fs-10-5);
-}
-.widget-card .pomodoro-mode-mini button {
-  padding: 3px 8px;
-  font-size: var(--fs-9-5);
-}
+/* 本块曾是一组级联死声明壳（control-bar
+   gap / seg-btn padding 4px 11px / mode-mini button 整块），与 612 行起的
+   调整区逐条交叠且全部被其位序压制，已删。margin-top 的真正胜者是 769 行
+   的 `.pomodoro-panel .pomodoro-control-bar { margin-top: 2px }`（0,2,0 同
+   特异度、位序在后）——① 注释旧称「收敛到 614 行（3px）」与级联事实
+   不符（3px 同为死声明，实渲 2px），一并修正。 */
 .widget-card .current-task {
   margin-top: 10px;
   padding: 6px 12px;
@@ -331,9 +286,6 @@
   margin-top: 12px;
   padding-top: 10px;
 }
-.widget-card .pomodoro-config-fields {
-  grid-template-columns: repeat(3, 1fr);
-}
 .widget-card .pomodoro-config-apply {
   grid-column: 1 / -1;
 }
@@ -341,11 +293,8 @@
 .pomodoro-panel .panel-header {
   margin-bottom: 10px;
 }
-.pomodoro-panel .pomodoro-control-bar {
-  margin-top: 10px;
-}
 
-/* 配置折叠：常驻挂载 + grid-rows 0fr→1fr（同 W-151 硬件明细/侧栏子列表范式），
+/* 配置折叠：常驻挂载 + grid-rows 0fr→1fr（同 硬件明细/侧栏子列表范式），
    替换此前 {showConfig && ...} 的硬切挂载。 */
 .pomodoro-config-wrap {
   display: grid;
@@ -444,9 +393,9 @@
 .pomodoro-panel .focus-timer {
   margin-top: 6px;
 }
-.pomodoro-panel .timer-actions {
-  margin-top: 14px;
-}
+/* （级联去重）：本文件同特异度同名规则的 margin-top 此前四轮覆盖
+   （control-bar 10→10→10→2px、timer-actions 14→16→18px、config 14→16px），
+   中间层全部是死声明，已删——最终值统一收敛到文件后段的调整区。 */
 /* 面板头的会话计数现在是真实 <button>（aria-expanded 驱动配置折叠）：
    补按钮复位，视觉与旧 span 一致。 */
 .pomodoro-panel .panel-header .session-count {
@@ -525,10 +474,6 @@
   margin-bottom: 4px;
 }
 
-.pomodoro-panel .pomodoro-control-bar {
-  margin-top: 10px;
-}
-
 .focus-timer-wrap {
   cursor: pointer;
   border-radius: 50%;
@@ -599,23 +544,19 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 琛ㄧ洏涓庢搷浣滃尯涔嬮棿鏇磋垝灞?*/
+/* 表盘与操作区之间更紧凑（原注释为 GBK 乱码，按规则语义恢复） */
 .pomodoro-panel .focus-timer {
   margin-top: 6px;
 }
 .pomodoro-panel .timer-actions {
-  margin-top: 16px;
+  /* margin-top 收敛到后段调整区（18px），此处只保留本层新增的 gap。 */
   gap: 12px;
 }
 
 .pomodoro-event-select {
   margin-top: 12px;
 }
-/* 配置区分隔更清晰 */
-.pomodoro-panel .pomodoro-config {
-  margin-top: 14px;
-  padding-top: 12px;
-}
+/* 配置区分隔更清晰（margin/padding 收敛到后段调整区的 16px/14px）。 */
 
 .pomodoro-panel .pomodoro-stats {
   gap: 0;
@@ -629,13 +570,10 @@
 .widget-card .pomodoro-panel .focus-timer {
   margin-top: 4px;
 }
-.widget-card .pomodoro-panel .timer-actions {
-  margin-top: 12px;
-  gap: 8px;
-}
-.widget-card .pomodoro-event-select {
-  margin-top: 10px;
-}
+/* ②：`.widget-card .pomodoro-panel .timer-actions` 的 margin-top:12px/
+   gap:8px 与后段 662 行同特异度规则全部交叠（终值 10px/8px），整条删除。 */
+/* `.widget-card .pomodoro-event-select { margin-top: 10px }` 死声明
+   已删（下方同特异度 8px 位序在后胜出）。 */
 .widget-card .pomodoro-panel .pomodoro-config {
   margin-top: 12px;
   padding-top: 10px;
@@ -663,8 +601,9 @@
 }
 
 .widget-card .pomodoro-control-bar {
+  /* margin-top 不在此声明——真胜者是 `.pomodoro-panel
+     .pomodoro-control-bar`（2px，同特异度位序在后），此处 3px 是死值已删。 */
   gap: 5px;
-  margin-top: 3px;
 }
 .widget-card .pomodoro-seg-btn {
   padding: 3px 11px;
@@ -678,15 +617,11 @@
 .widget-card .pomodoro-panel .focus-timer-wrap {
   margin-top: 4px;
 }
+/* 本块原有的 width:192px 与 .focus-timer-time 的 font/letter-spacing
+   均被后置同特异度规则（width:min(204px,78%) / 650 41px）整组覆盖——死
+   声明删除，仅存 margin。 */
 .widget-card .focus-timer {
-  width: 192px;
   margin: 0 auto;
-}
-.widget-card .focus-timer-time {
-  font:
-    600 38px/1 Outfit,
-    sans-serif;
-  letter-spacing: -0.03em;
 }
 .widget-card .focus-timer-kicker {
   font-size: var(--fs-8-5);
@@ -823,6 +758,7 @@
 /* 表盘进度光点的呼吸动画统一由 global.css 的 .focus-timer.running .focus-timer-tip
    单点定义；此处曾有一条重复声明（注释自称不重复、实际却定义了），已删除。 */
 
+/* control-bar 的 margin-top 唯一事实源（同特异度位序最后）。 */
 .pomodoro-panel .pomodoro-control-bar {
   margin-top: 2px;
 }
@@ -934,7 +870,7 @@
   overflow: hidden;
   animation: wg-panel-in var(--dur-fx, 0.2s) var(--ease-spring) both;
 }
-/* D3 对称退场：TSX 挂 .is-closing 并等 animDurations().fxFastMs 再卸载，
+/* 对称退场：TSX 挂 .is-closing 并等 animDurations().fxFastMs 再卸载，
    此前缺本规则导致白等后瞬关（与 PromptDialog 同类半成品）。 */
 .pomodoro-event-dropdown.is-closing {
   animation: pev-out var(--dur-fx-fast, 0.15s) var(--ease-in) forwards;
@@ -963,6 +899,12 @@
   font-size: var(--fs-12);
   font-family: inherit;
   outline: none;
+}
+/* 搜索框键盘焦点环（outline:none 的替代，stepper 的 :focus-within 范式）。 */
+.pomodoro-event-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-ctl);
 }
 .pomodoro-event-list {
   max-height: 220px;
@@ -1053,6 +995,12 @@
   font-size: var(--fs-12);
   font-family: inherit;
   outline: none;
+}
+/* 新建输入框键盘焦点环（同上）。 */
+.pomodoro-event-add input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-ctl);
 }
 .pomodoro-event-add button {
   border: 0;
@@ -1161,7 +1109,7 @@
     transform: none;
   }
 }
-/* === 姣忔棩鐩爣杩涘害 === */
+/* === 每日目标进度 === */
 .pomodoro-goal {
   margin-top: 12px;
 }
@@ -1257,7 +1205,7 @@
   position: relative;
   overflow: hidden;
 }
-/* 閰嶇疆鎻愮ず琛?*/
+/* 配置提示行 */
 .pomodoro-config-hint {
   flex: 1 1 100%;
   margin: 0;
@@ -1454,7 +1402,7 @@
     transform: scale(2.1);
   }
 }
-/* #100 +N 涓婇檺鎻愮ず鍑虹幇鏃惰交寰烦鍔?*/
+/* +N 上限提示出现时轻微跳动 */
 .focus-timer-sessions em.bump {
   display: inline-block;
   animation: ft-plus-bump var(--dur-spatial-fast, 0.35s) var(--ease-spring) backwards;
@@ -1536,7 +1484,7 @@
   }
 }
 
-/* #102 时间数字 count-down 回卷收缩 */
+/* 时间数字 count-down 回卷收缩 */
 .focus-timer-time.rewind {
   animation: ft-num-rewind var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
 }
@@ -1688,8 +1636,10 @@
 }
 
 .widget-card .focus-timer-time {
+  /* 裸 px 字号改令牌（41→--fs-40，令牌阶差 1px，视觉不可辨）；
+     此前多行 font: 简写绕过 check-size-tokens 的按行正则。 */
   font:
-    650 41px/1 Outfit,
+    650 var(--fs-40)/1 Outfit,
     sans-serif;
   letter-spacing: -0.035em;
 }
@@ -1710,9 +1660,8 @@
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 
-.widget-card .pomodoro-control-bar {
-  gap: 5px;
-}
+/* `.widget-card .pomodoro-control-bar { gap: 5px }` 第三份同值冗余
+   已删（调整区 612 行起即为唯一声明）。 */
 .widget-card .pomodoro-seg,
 .widget-card .pomodoro-mode-mini {
   padding: 3px;
@@ -1827,8 +1776,9 @@
   background: linear-gradient(90deg, transparent, var(--line-strong), transparent);
 }
 .widget-card .pomodoro-panel .pomodoro-stat strong {
+  /* 裸 px 字号改令牌（多行简写同上）。 */
   font:
-    650 16px/1 Outfit,
+    650 var(--fs-16)/1 Outfit,
     sans-serif;
   letter-spacing: -0.02em;
 }
@@ -1895,7 +1845,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-card .pomodoro-panel.immersed::
 /* ================================================================== */
 
 /* ================================================================== */
-/* 閰嶇疆鏍囬琛岋細caret 旋转指示展开方向 */
+/* 配置标题行：caret 旋转指示展开方向 */
 .pomodoro-config-caret {
   margin-left: auto;
   transition: transform var(--dur-fx, 0.2s) var(--ease-out);
@@ -1957,7 +1907,7 @@ html:not([data-fx-off~="ambientMotion"]) .widget-card .pomodoro-panel.immersed::
 }
 
 /* ================================================================== */
-/* FocusTimer 借鉴批次：等待回座提示 + 专注环境音控制行               */
+/* 等待回座提示 + 专注环境音控制行 */
 /* ================================================================== */
 .pomodoro-await-hint {
   display: flex;
@@ -2031,6 +1981,12 @@ html:not([data-fx-off~="ambientMotion"]) .widget-card .pomodoro-panel.immersed::
   background: var(--paper-solid);
   outline: none;
   cursor: pointer;
+}
+/* 音量滑杆键盘焦点环——上方的 outline:none 会压过全局 :focus-visible
+   （同特异度后者胜），无替代样式的元素此前键盘焦点不可见。 */
+.pomodoro-ambience-volume:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 .pomodoro-ambience-volume::-webkit-slider-thumb {
   appearance: none;

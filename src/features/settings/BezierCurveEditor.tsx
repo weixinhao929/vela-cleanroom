@@ -1,5 +1,5 @@
 /**
- * B3 贝塞尔曲线编辑器（动画页「自定义曲线」）。
+ * 贝塞尔曲线编辑器（动画页「自定义曲线」）。
  *
  * 结构：左侧 SVG 画板（网格 + 对角参考线 + 曲线 + 两个可拖控制点 + 循环
  * 播放的 playhead）与下方水平演示道（小球按曲线映射的进度平移）；右侧
@@ -82,6 +82,10 @@ export function BezierCurveEditor({
   /* 四个数值框各自持有文本（允许中间态如 "0."），失焦/Enter 提交。 */
   const [texts, setTexts] = useState<string[]>(() => draft.map((v) => String(v)));
   const focusedIdx = useRef<number | null>(null);
+  /* Esc 还原标志：Escape 分支 setTexts(草稿) 后同步 blur()，但此时 onBlur
+     闭包里的 texts 仍是编辑值（状态未冲刷），会把刚被还原的草稿当编辑值
+     提交回去——Esc 退化成提交。置位后 onBlur 跳过一次提交。 */
+  const escapedRef = useRef(false);
   useEffect(() => {
     setTexts((t) => t.map((s, i) => (focusedIdx.current === i ? s : String(Math.round(draft[i] * 1000) / 1000))));
   }, [draft]);
@@ -263,7 +267,7 @@ export function BezierCurveEditor({
             const c = idx === 0 ? c1 : c2;
             return (
               <circle
-                /* C-12：两个控制点是固定二元组，用语义键代替下标。 */
+                /* 两个控制点是固定二元组，用语义键代替下标。 */
                 key={idx === 0 ? "handle-c1" : "handle-c2"}
                 className="tm-bezier-handle"
                 cx={c.px}
@@ -324,6 +328,10 @@ export function BezierCurveEditor({
                 }}
                 onBlur={() => {
                   focusedIdx.current = null;
+                  if (escapedRef.current) {
+                    escapedRef.current = false;
+                    return;
+                  }
                   commitTexts(texts);
                 }}
                 onKeyDown={(e) => {
@@ -331,6 +339,7 @@ export function BezierCurveEditor({
                     commitTexts(texts);
                     (e.target as HTMLInputElement).blur();
                   } else if (e.key === "Escape") {
+                    escapedRef.current = true;
                     setTexts(draft.map((v) => String(v)));
                     (e.target as HTMLInputElement).blur();
                   }

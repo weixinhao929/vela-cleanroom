@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// A-1：前端分层门禁（修订版规则的自研固化）。lib 的定位按 ARCHITECTURE.md
+// 前端分层门禁（修订版规则的自研固化）。lib 的定位按 ARCHITECTURE.md
 // 修订口径是双层——基础设施工具 + 应用中介者（cross-window/theme-engine/
 // notifications 等合法 import store）——门禁不追求「lib 不进 store」的旧
 // 理想态，只钉住今天成立的硬边界：
-//  R1 domain 纯度：src/domain/** 不得直接 import store/features/widget/
+// domain 纯度：src/domain/** 不得直接 import store/features/widget/
 //    app/components/lib/persistence（领域层只依赖 zod 与自身）。
-//  R2 持久化纯净：src/lib/persistence/** 不得 import store/features/widget/
+// 持久化纯净：src/lib/persistence/** 不得 import store/features/widget/
 //    app（SQLite/LocalStorage 适配器不得感知应用状态层）。
-//  R3 lib 不进 features：src/lib/**（persistence 除外）不得 import
+// lib 不进 features：src/lib/**（persistence 除外）不得 import
 //    features/**——features 是 UI 消费方，lib 反向依赖它会让任何 features
 //    重构都波及基础设施（唯一历史违例 lib/commands.ts 的设置搜索已改注入）。
-//  R4 widget 不进 features/settings：小组件层为借设置页控件反向 import
-//    features/settings 是目录级双向耦合的源头（A-2 已把 M3Slider/Segmented/
+// widget 不进 features/settings：小组件层为借设置页控件反向 import
+// features/settings 是目录级双向耦合的源头（已把 M3Slider/Segmented/
 //    Stepper/Toggle 上移 components/ui）；features/analytics 等面板被组件
 //    包装属合法组合（widget 渲染 feature 面板），不在此列。
 // 违例即非零退出；新增合法例外须在本文件 ALLOW 显式登记并写明理由。
@@ -24,7 +24,7 @@ const IMP_RE =
 
 /** 已知且接受的例外（规则号 → 说明），新条目必须附理由。 */
 const ALLOW = new Map([
-  // R2：local-storage 的落盘失败提示复用 ToastHost 的模块级队列（队列本来
+  // local-storage 的落盘失败提示复用 ToastHost 的模块级队列（队列本来
   // 就不在组件树里）；拆出去收益低于扰动，登记在案。
   [
     "src/lib/persistence/local-storage.ts -> ../../components/ToastHost",

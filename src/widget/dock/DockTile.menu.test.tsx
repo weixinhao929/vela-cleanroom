@@ -1,8 +1,8 @@
 /**
- * DockTile 右键 / 长按菜单（ISLAND-CFG · F-7）组件测试：
+ * DockTile 右键 / 长按菜单（ISLAND-CFG · ）组件测试：
  *  - 右键 → 四项菜单；无实例磁贴「配置」打开私有弹层，改动经 setDockTileConfig 写入
  *    DockTile.config 并随 dock 配置落盘（重启保持）；
- *  - 有实例磁贴「配置」打开 B1 WidgetConfigPopover，改动写该实例 widget-config
+ *  - 有实例磁贴「配置」打开 WidgetConfigPopover，改动写该实例 widget-config
  *    （与画布卡片同一份数据）；「在画布中定位」复用画布选中态 + 脉冲；
  *  - 「从灵动岛移除」可撤销（toast 撤销恢复原位）；
  *  - 长按 600ms 松手弹菜单且吞掉随之的 click（不展开）；位移 > 4px 取消。
@@ -110,8 +110,11 @@ describe("DockTile · 右键菜单", () => {
     expect(stored().tiles.find((t) => t.id === "t-clock")?.config?.showSeconds).toBe(false);
     // 弹层随 store 重渲：开关显示为关
     expect(within(dialog).getByRole("switch", { name: "显示秒" })).toHaveAttribute("aria-checked", "false");
-    // 不应误写任何实例 widget-config
-    expect(Object.keys(localStorage).filter((k) => k.startsWith("focus-desk.widget-config."))).toEqual([]);
+    // 无实例磁贴挂载即把 tile.config 落种到合成键（折叠态 Mini 的配置源，
+    // 与展开面同口径）——除本磁贴合成键外不误写任何 widget-config 键。
+    expect(Object.keys(localStorage).filter((k) => k.startsWith("focus-desk.widget-config."))).toEqual([
+      "focus-desk.widget-config.dock-tile-t-clock.v1"
+    ]);
     // Esc 关闭
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -183,7 +186,7 @@ describe("DockTile · 长按 600ms 松手", () => {
   beforeEach(() => {
     localStorage.clear();
     useWidgetStore.setState({ dock: { ...parseDockConfig(null), tiles: [CLOCK] }, dockDrag: null });
-    // 吞 click 的 400ms 时间窗读 performance.now()：一并伪造，advanceTimersByTime 才能越过它。
+    // 吞 click 的 400ms 时间窗读 performance.now：一并伪造，advanceTimersByTime 才能越过它。
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
   });
   afterEach(() => {

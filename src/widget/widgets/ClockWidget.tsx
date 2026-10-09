@@ -1,8 +1,8 @@
 /**
  * 时钟小组件：数字时钟（多时区）+ 模拟表盘 + 秒表 + 番茄钟迷你入口。
  * 时区校验结果模块级缓存（P-perf），表盘静态子树提取为常量元素。
- * 配置经统一就地弹层 WidgetConfigPopover（B1）：齿轮按钮打开，锚定本组件
- * 矩形；此前的自搓弹层（原生 checkbox/pill radio）已删除。
+ * 配置经统一就地弹层 WidgetConfigPopover：齿轮按钮打开，锚定本组件
+ * 矩形；此前的自绘弹层（原生 checkbox/pill radio）已删除。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWidgetConfig } from "../widget-config";
@@ -10,6 +10,7 @@ import { useT } from "../../i18n-lite";
 import { useSettingsStore } from "../../store/settings-store";
 import { useNow } from "../../lib/use-now";
 import { useIdleDecor } from "../../lib/idle-decor";
+import { uiZoom } from "../../lib/ui-zoom";
 import { cityOf } from "../clock-timezones";
 import { WidgetConfigPopover, type PopoverAnchor } from "../WidgetConfigPopover";
 
@@ -32,7 +33,7 @@ function isValidTimeZone(tz: string): boolean {
 }
 
 /** P-perf：Intl formatter 缓存。toLocaleTimeString/Date 每次调用都会按
-    options 重新构造 DateTimeFormat（V8 的内部命中对逐次新建的字面量
+    options 重新构造 DateTimeFormat（的内部命中对逐次新建的字面量
     options 对象不稳定），时钟每秒重渲 × 多时区行 × 世界时钟城市数放大
     这一开销。按 (locale|tz|options) 签名缓存，条目数 = 配置组合数。
     条目上限兜底防长会话累积（正常用不满，满则整体重建）。 */
@@ -68,22 +69,32 @@ function Digits({ text, animate = true }: { text: string; animate?: boolean }) {
   );
 }
 
-/* W-003 秒表/正计时：点表冠在时钟 ↔ 秒表间切换（对标 iOS 秒表）。
+/* 秒表/正计时：点表冠在时钟 ↔ 秒表间切换（对标 iOS 秒表）。
    渲染分层：百分秒每帧直写 DOM（csRef.textContent，不进 React），
    mm/ss 只在实际秒值翻转时重渲（1Hz）走 Digits 数字滑动——旧版 rAF
-   逐帧 setState 以 60fps 重渲整个秒表子树，是时钟组件最大的常驻开销。 */
-function Stopwatch() {
+   逐帧 setState 以 60fps 重渲整个秒表子树，是时钟组件最大的常驻开销。
+   会话（running / 分段累计 base / 分段起点 start /
+   最近采样 elapsed）提升到 ClockWidget 层持有——表冠切换只卸载本视图，
+   会话不随卸载清零（此前切一次表冠静默归零，跑 10 分钟误触全丢）。
+   分段起点只在「开始」时盖章：挂载即续跑不重新盖章，表冠切走再切回的
+   隐藏期由 performance.now 单调钟差值照常计入，计时连续不丢。 */
+type StopwatchSession = { base: number; start: number; elapsed: number };
+
+function Stopwatch({
+  running,
+  setRunning,
+  session
+}: {
+  running: boolean;
+  setRunning: React.Dispatch<React.SetStateAction<boolean>>;
+  session: { readonly current: StopwatchSession };
+}) {
   const tr = useT();
-  const [running, setRunning] = useState(false);
   const [, tickSecond] = useState(0);
-  const startRef = useRef(0);
-  const baseRef = useRef(0);
-  const elapsedRef = useRef(0);
   const lastSecRef = useRef(-1);
   const csRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     if (!running) return;
-    startRef.current = performance.now();
     /* 百分秒文本 30fps 刷新（~33ms 间隔）而非每帧：人眼对百分秒两位的
        流畅度感知到此为止，省掉高频 textContent 写与布局无效化。 */
     const CS_INTERVAL_MS = 33;
@@ -91,14 +102,14 @@ function Stopwatch() {
     let lastPaint = 0;
     /* raf: ok 计时数据（百分秒文本）非装饰动画，30fps 已限速 */
     const loop = (now: number) => {
-      elapsedRef.current = baseRef.current + (performance.now() - startRef.current);
+      session.current.elapsed = session.current.base + (performance.now() - session.current.start);
       if (now - lastPaint >= CS_INTERVAL_MS) {
         lastPaint = now;
         if (csRef.current) {
-          csRef.current.textContent = String(Math.floor((elapsedRef.current % 1000) / 10)).padStart(2, "0");
+          csRef.current.textContent = String(Math.floor((session.current.elapsed % 1000) / 10)).padStart(2, "0");
         }
       }
-      const total = Math.floor(elapsedRef.current / 1000);
+      const total = Math.floor(session.current.elapsed / 1000);
       if (total !== lastSecRef.current) {
         lastSecRef.current = total;
         tickSecond((v) => v + 1);
@@ -107,11 +118,14 @@ function Stopwatch() {
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [running]);
-  const total = Math.floor(elapsedRef.current / 1000);
+  }, [running, session]);
+  /* running 时读数现算（base + now − start）而非上次 rAF 采样——
+     表冠切回的重挂首帧即显示含隐藏期的正确值，不等下一拍采样。 */
+  const snap = running ? session.current.base + (performance.now() - session.current.start) : session.current.elapsed;
+  const total = Math.floor(snap / 1000);
   const mm = String(Math.floor(total / 60)).padStart(2, "0");
   const ss = String(total % 60).padStart(2, "0");
-  const cs = String(Math.floor((elapsedRef.current % 1000) / 10)).padStart(2, "0");
+  const cs = String(Math.floor((snap % 1000) / 10)).padStart(2, "0");
   return (
     <div className="clock-stopwatch">
       <div className="clock-stopwatch-time">
@@ -121,7 +135,11 @@ function Stopwatch() {
         <button
           className={`clock-stopwatch-btn${running ? " stop" : ""}`}
           onClick={() => {
-            if (running) baseRef.current = elapsedRef.current;
+            if (running) session.current.base = session.current.elapsed;
+            /* 开始时在此给分段起点盖章——原实现在 effect 内
+               startRef=performance.now()，「切回续跑」的挂载会被错当新
+               分段，隐藏期计时被清零。 */
+            else session.current.start = performance.now();
             setRunning((v) => !v);
           }}
         >
@@ -131,8 +149,9 @@ function Stopwatch() {
           className="clock-stopwatch-btn"
           onClick={() => {
             setRunning(false);
-            baseRef.current = 0;
-            elapsedRef.current = 0;
+            session.current.base = 0;
+            session.current.start = 0;
+            session.current.elapsed = 0;
             lastSecRef.current = -1;
             if (csRef.current) csRef.current.textContent = "00";
             tickSecond((v) => v + 1);
@@ -145,7 +164,7 @@ function Stopwatch() {
   );
 }
 
-/* W-002 模拟表盘：SVG 指针时钟，指针角度随当前时间平滑旋转。 */
+/* 模拟表盘：SVG 指针时钟，指针角度随当前时间平滑旋转。 */
 
 /* P-perf：表盘数字与 60 根刻度是纯静态 SVG 子树，提取为模块级常量元素。
    此前随每秒 tick 重新创建 64 个 React 元素再走一遍 reconcile。 */
@@ -232,16 +251,21 @@ function AnalogFace({ now, showSeconds }: { now: Date; showSeconds: boolean }) {
 export function ClockWidget({ instanceId }: { instanceId: string }) {
   const tr = useT();
   const { config } = useWidgetConfig(instanceId);
-  /* B1 统一就地配置弹层：齿轮打开，锚定本组件矩形（打开瞬间测量）。 */
+  /* 统一就地配置弹层：齿轮打开，锚定本组件矩形（打开瞬间测量）。 */
   const rootRef = useRef<HTMLDivElement>(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [configAnchor, setConfigAnchor] = useState<PopoverAnchor>({ x: 0, y: 0, w: 0, h: 0 });
   const openConfig = () => {
     const r = rootRef.current?.getBoundingClientRect();
-    if (r) setConfigAnchor({ x: r.x, y: r.y, w: r.width, h: r.height });
+    /* gBCR 是视觉坐标，PopoverAnchor 契约要求布局单位——除回 uiZoom
+       （与 DockTile 的换算同款），否则缩放 ≠100% 时弹层漂移。 */
+    if (r) {
+      const z = uiZoom();
+      setConfigAnchor({ x: r.x / z, y: r.y / z, w: r.width / z, h: r.height / z });
+    }
     setConfigOpen(true);
   };
-  /* G-9 空闲降频：presence Idle 期间降为 30s 档并收起秒位——秒级翻牌是
+  /* 空闲降频：presence Idle 期间降为 30s 档并收起秒位——秒级翻牌是
      桌面层空闲 CPU/GPU 的常驻大头（动态实测 ~0.47 单核）；分钟级照常走。
      任何输入立即恢复秒级。秒表/倒计时等主动计时不受影响（各自独立节拍）。 */
   const idleDecor = useIdleDecor();
@@ -255,7 +279,7 @@ export function ClockWidget({ instanceId }: { instanceId: string }) {
   const weekdayStyle = (config.weekdayStyle as string) || "long";
   const transparentBg = !!config.transparent;
   const timeZone = (config.timeZone as string) || "auto";
-  // P2（审计修复）：zones 此前只做 Array.isArray 检查，非字符串元素会传入
+  // zones 此前只做 Array.isArray 检查，非字符串元素会传入
   // Intl 的 timeZone 抛 RangeError 把整卡打进错误边界。这里过滤非法元素，
   // 并用 try/catch 预检每个时区标识符（畸形时区直接丢弃）。
   const zones = (Array.isArray(config.zones) ? (config.zones as unknown[]) : []).filter(
@@ -265,8 +289,17 @@ export function ClockWidget({ instanceId }: { instanceId: string }) {
   const dateStyle = (config.dateStyle as string) || "auto";
   const fontScale = typeof config.fontScale === "number" ? config.fontScale : 1;
   const customColor = typeof config.color === "string" ? config.color : "";
-  /* W-003 时钟 ↔ 秒表切换（组件内 state，不持久化）。 */
+  /* 时钟 ↔ 秒表切换（组件内 state，不持久化）。 */
   const [stopwatch, setStopwatch] = useState(false);
+  /* 秒表会话提升到本层（running / base / start /
+     elapsed 见 Stopwatch 注释）——表冠切换只卸载秒表视图，会话不丢，
+     切回计时连续。选「提升状态」而非「保持挂载 display:none」：后者隐藏期
+     rAF 循环照跑（30fps textContent 写 + 1Hz 重渲），违背本组件 P-perf 的
+     常驻降载路线；提升后卸载即 cancelAnimationFrame，隐藏期零渲染开销，
+     计时由 performance.now 单调钟差值续算（对照独立 StopwatchWidget 的
+     持久化，此处至少做到视图级不丢）。 */
+  const [swRunning, setSwRunning] = useState(false);
+  const swSession = useRef<StopwatchSession>({ base: 0, start: 0, elapsed: 0 });
 
   const tz: string | undefined = timeZone === "auto" ? undefined : timeZone;
   const lang = useSettingsStore((s) => s.general.language);
@@ -285,7 +318,7 @@ export function ClockWidget({ instanceId }: { instanceId: string }) {
   /* P-perf：weekday/date 一天只变一次——以「当日键」为记忆化依据（useNow
      每秒换引用，直接依赖 now 会让 useMemo 每秒失效重算整段日期字符串）。 */
   const dayKey = fmt("en-US", { year: "numeric", month: "2-digit", day: "2-digit" }, tz).format(now);
-  // W-004 日期格式：auto 沿用英文长格式；zh 输出中文「8月17日」；slash 输出 yyyy/MM/dd。
+  // 日期格式：auto 沿用英文长格式；zh 输出中文「8月17日」；slash 输出 yyyy/MM/dd。
   const weekday = useMemo(
     () => fmt(locale, { weekday: "long" }, tz).format(now),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -316,13 +349,13 @@ export function ClockWidget({ instanceId }: { instanceId: string }) {
 
   const styleGap = style === "compact" ? 2 : style === "loose" ? 16 : 8;
   const timeClass = style === "compact" ? "compact" : style === "loose" ? "loose" : "";
-  /* W-005 字号/颜色：CSS 变量注入，主时间与世界时钟共用。 */
+  /* 字号/颜色：CSS 变量注入，主时间与世界时钟共用。 */
   const cssVars = {
     "--clock-scale": fontScale,
     ...(customColor ? { color: customColor } : {})
   } as React.CSSProperties;
 
-  /* W-001 世界时钟：zones 非空时按城市并列（每个城市 HH:mm + 城市名）。
+  /* 世界时钟：zones 非空时按城市并列（每个城市 HH:mm + 城市名）。
      options 对象提出渲染外只建一次，formatter 走缓存。 */
   const worldClock = zones.length > 0;
   const worldOpts: Intl.DateTimeFormatOptions = {
@@ -339,7 +372,7 @@ export function ClockWidget({ instanceId }: { instanceId: string }) {
       style={{ gap: styleGap, ...cssVars }}
     >
       {stopwatch ? (
-        <Stopwatch />
+        <Stopwatch running={swRunning} setRunning={setSwRunning} session={swSession} />
       ) : worldClock ? (
         <div className="clock-world">
           {zones.map((z, i) => (
@@ -359,7 +392,7 @@ export function ClockWidget({ instanceId }: { instanceId: string }) {
         </div>
       )}
       {!stopwatch && showDate && !worldClock && <div className="widget-clock-date">{date}</div>}
-      {/* W-003 表冠按钮：时钟 ↔ 秒表切换 */}
+      {/* 表冠按钮：时钟 ↔ 秒表切换 */}
       <button
         className={`clock-crown-btn${stopwatch ? " active" : ""}`}
         onClick={(e) => {
@@ -395,7 +428,7 @@ export function ClockWidget({ instanceId }: { instanceId: string }) {
         </svg>
       </button>
 
-      {/* B1：齿轮打开统一就地配置弹层（原自搓弹层已删除，字段见 QUICK_CONFIG_FIELDS.clock） */}
+      {/* 齿轮打开统一就地配置弹层（原自绘弹层已删除，字段见 QUICK_CONFIG_FIELDS.clock） */}
       <button
         className="clock-settings-btn"
         onClick={(e) => {

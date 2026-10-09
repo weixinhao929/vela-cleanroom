@@ -50,3 +50,60 @@ export function markReminded(key: string, prefix: string, today: string): boolea
     return false;
   }
 }
+
+/**
+ * （会话落库去重）：区分「已存在」与「写入失败」的三态标记。
+ *
+ * `markReminded` 对通知语义返回统一的 false（宁可不发，防无限重发）；但
+ * 番茄钟完成记录的去重把 false 当「重复，跳过落库」——localStorage 写入
+ * 失败（配额/隐私模式）时整段会话被静默丢弃。数据记录的正确默认值是
+ * 「宁可重复」，失败按首次标记处理并如实返回。
+ *
+ * @param key - 完整去重键，尾部须为 `YYYY-MM-DD`。
+ * @param prefix - 同类键的公共前缀（用于清扫）。
+ * @param today - 今天的 `YYYY-MM-DD`。
+ * @param payload - 可选负载：与标记一并暂存（JSON）。标记先行、写入后行的
+ *        崩溃窗口内，负载让启动对账（`readPendingPayloads`）能把没来得及
+ *        落库的记录补写回去，把「崩溃丢段」收敛为「崩溃可恢复」。
+ * @returns "marked"=首次标记成功；"duplicate"=键已存在（真重复）；
+ *          "error"=写入失败（调用方按非重复继续，接受极小概率的重复）。
+ */
+export function tryMarkOnce(
+  key: string,
+  prefix: string,
+  today: string,
+  payload?: unknown
+): "marked" | "duplicate" | "error" {
+  sweepStaleReminders(prefix, today);
+  try {
+    if (localStorage.getItem(key)) return "duplicate";
+    localStorage.setItem(key, payload === undefined ? "1" : JSON.stringify(payload));
+    return "marked";
+  } catch {
+    return "error";
+  }
+}
+
+/**
+ * 读取某前缀下所有带负载的暂存标记（无负载的旧式 "1" 标记跳过）。
+ * 启动对账用：负载存在而库中无对应记录 = 崩溃窗口内丢失的写入，补写。
+ */
+export function readPendingPayloads<T>(prefix: string): { key: string; payload: T }[] {
+  const out: { key: string; payload: T }[] = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(prefix)) continue;
+      const raw = localStorage.getItem(k);
+      if (!raw || raw === "1") continue;
+      try {
+        out.push({ key: k, payload: JSON.parse(raw) as T });
+      } catch {
+        // 负载损坏的标记按无负载处理（保留去重语义，跳过对账）。
+      }
+    }
+  } catch {
+    // best-effort
+  }
+  return out;
+}

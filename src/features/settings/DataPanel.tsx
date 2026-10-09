@@ -1,7 +1,8 @@
 /**
  * 设置页 · 数据面板：完整备份导出/恢复（校验 + 确认摘要）、自动备份
- * （状态 + 立即备份 + 逐条恢复）、CSV 导入导出、localStorage 镜像应用
- * 与危险区（清空数据）。
+ * （状态 + 立即备份 + 逐条恢复）、任务 / DDL 的 CSV 导入导出、小组件布局
+ * 导入导出与回收站保留期（「清空数据」的危险操作归 GeneralPage 的
+ * 「重置」区，本面板不承载——原文件头注释已漂移，修正）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -52,13 +53,13 @@ export function DataPanel() {
   const importTasks = useAppStore((s) => s.importTasksCsv);
   const importDeadlines = useAppStore((s) => s.importDeadlinesCsv);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
-  /* #91 提示退场：2.5s 后置空 message，延迟卸载保留 200ms 播淡出 */
+  /* 提示退场：2.5s 后置空 message，延迟卸载保留 200ms 播淡出 */
   const msgVisible = useDelayedUnmount(message !== null, animDurations().fxMs);
   const msgClosing = message === null && msgVisible;
   const flashTimer = useRef<number>(0);
-  /* #78 恢复中：import_data 执行期间按钮 loading + 「恢复中」遮罩（reload 前） */
+  /* 恢复中：import_data 执行期间按钮 loading + 「恢复中」遮罩（reload 前） */
   const [restoring, setRestoring] = useState(false);
-  /* B3/审计#20：导入期间按钮 loading + 禁用（大文件同步解析不再冻结无反馈）。 */
+  /* /审计#20：导入期间按钮 loading + 禁用（大文件同步解析不再冻结无反馈）。 */
   const [importing, setImporting] = useState(false);
   const jsonInput = useRef<HTMLInputElement>(null);
   const tasksInput = useRef<HTMLInputElement>(null);
@@ -85,18 +86,19 @@ export function DataPanel() {
   ) {
     const file = input?.files?.[0];
     if (!file || importing) return;
-    // P2（审计修复）：file.text() 抛出（文件被占用/权限）此前会成为未处理
+    // file.text() 抛出（文件被占用/权限）此前会成为未处理
     // rejection，提示条不出现，且 input.value 重置不会执行 → 同一文件重新
     // 选择不触发 onChange。统一 try/catch/finally，finally 里先清空 input。
     let raw: string;
     try {
       raw = await file.text();
     } catch (e) {
-      flash(t("读取文件失败：") + (e instanceof Error ? e.message : String(e)), false);
+      /* 整句模板（拼接式破坏英文语序）。 */
+      flash(t("读取文件失败：{err}", { err: e instanceof Error ? e.message : String(e) }), false);
       if (input) input.value = "";
       return;
     }
-    /* B3：大文件解析会冻结主线程——先置 loading 渲染一帧再执行。
+    /* 大文件解析会冻结主线程——先置 loading 渲染一帧再执行。
        persist-first：run 落库完成后才 resolve（内存未提交），await 确保提示
        条反映真实持久化结果。 */
     setImporting(true);
@@ -105,7 +107,7 @@ export function DataPanel() {
       const parsed = await run(raw);
       flash(parsed ? ok : fail, parsed);
     } catch (e) {
-      flash(fail + "：" + (e instanceof Error ? e.message : String(e)), false);
+      flash(tr("{fail}：{err}", { fail, err: e instanceof Error ? e.message : String(e) }), false);
     } finally {
       setImporting(false);
       if (input) input.value = "";
@@ -147,7 +149,7 @@ export function DataPanel() {
       await loadAutoBackups();
       flash(tr("备份完成"), true);
     } catch (e) {
-      flash(`${tr("备份失败")}：${e instanceof Error ? e.message : String(e)}`, false);
+      flash(tr("备份失败：{err}", { err: e instanceof Error ? e.message : String(e) }), false);
     } finally {
       setBackingUp(false);
     }
@@ -169,6 +171,25 @@ export function DataPanel() {
     }
     if (!picked) return;
     await restoreBackupFromPath(picked, { flash, setRestoring });
+  }
+
+  /* 重入锁：从点击「恢复」到危险确认框关闭之间 restoring 仍是 false——
+     此前可再点另一条备份叠出第二个确认框，触发两次整库导入。进入恢复流程
+     （含文件选择与确认窗口期）即置位，流程结束（确认 / 取消 / 失败；成功
+     路径随后整窗 reload）才释放；ref 为准（密集连点下闭包态可能落后），
+     state 只负责按钮禁用。 */
+  const restoreInFlight = useRef(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  async function runRestore(flow: () => Promise<void>) {
+    if (restoreInFlight.current) return;
+    restoreInFlight.current = true;
+    setRestoreBusy(true);
+    try {
+      await flow();
+    } finally {
+      restoreInFlight.current = false;
+      setRestoreBusy(false);
+    }
   }
 
   return (
@@ -216,7 +237,7 @@ export function DataPanel() {
         </h3>
         <p className="data-hint">
           {tr("每日自动滚动备份，保留最近 7 份。")}
-          {autoBackups[0] ? ` ${tr("最近：")}${autoBackups[0].name}` : ` ${tr("暂无备份")}`}
+          {autoBackups[0] ? ` ${tr("最近：{name}", { name: autoBackups[0].name })}` : ` ${tr("暂无备份")}`}
         </p>
         <div className="data-actions">
           <button
@@ -239,8 +260,8 @@ export function DataPanel() {
                 </span>
                 <button
                   className="data-button"
-                  disabled={restoring}
-                  onClick={() => void restoreBackupFromPath(b.path, { flash, setRestoring })}
+                  disabled={restoring || restoreBusy}
+                  onClick={() => void runRestore(() => restoreBackupFromPath(b.path, { flash, setRestoring }))}
                 >
                   {tr("恢复")}
                 </button>
@@ -257,7 +278,11 @@ export function DataPanel() {
         </h3>
         <p className="data-hint">{tr("从 vela-*.json 备份文件恢复任务、专注记录、小组件布局、便签与习惯等全部数据")}</p>
         <div className="data-actions">
-          <button className="data-button" onClick={() => void restoreFullBackup()} disabled={!isTauri() || restoring}>
+          <button
+            className="data-button"
+            onClick={() => void runRestore(restoreFullBackup)}
+            disabled={!isTauri() || restoring || restoreBusy}
+          >
             {restoring ? <span className="tm-spinner" /> : <RotateCcw size={14} />}
             {restoring ? tr("恢复中…") : tr("选择文件恢复")}
           </button>
@@ -370,7 +395,7 @@ export function DataPanel() {
         </p>
       )}
 
-      {/* #78 恢复中遮罩：覆盖整个设置窗，阻止恢复期间的误操作 */}
+      {/* 恢复中遮罩：覆盖整个设置窗，阻止恢复期间的误操作 */}
       {restoring && (
         <div className="data-restore-overlay">
           <span className="tm-spinner" />

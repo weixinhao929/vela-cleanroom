@@ -1,11 +1,11 @@
-//! 目录监视自动整理（DeskOrder 借鉴 #1/#2）：
+//! 目录监视自动整理：
 //!
 //! - **自动整理（#1）**：每个快捷方式组件实例可配置一个监视目录 + 匹配规则
 //!   （扩展名 / 文件名关键字，双启用取 AND）。新文件 Created/Renamed 事件经
 //!   500ms 按路径去抖、`matches` 纯函数命中后广播 `auto-organize:add`
 //!   { instanceId, path }，前端走 classify_path 入列（与手动拖入同一条路）。
-//!   整理动作 = 添加引用，**不移动/不复制文件**（DeskOrder 同哲学）。
-//! - **配置三态**（DeskOrder 规则与生效分离）：extEnabled/nameEnabled 关掉时
+//!   整理动作 = 添加引用，**不移动/不复制文件**。
+//! - **配置三态**：extEnabled/nameEnabled 关掉时
 //!   规则保留、仅不参与匹配；watchPath 清空 = 停止监视该实例。
 //! - **失效引用清理（#2）**：`check_paths_exist` 供前端挂载时校验条目，
 //!   失效的自动移除（条目只是路径引用，文件本体从不动）。
@@ -26,7 +26,7 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::Deserialize;
 use tauri::Emitter;
 
-/** 同路径去抖窗口（DeskOrder 同款 500ms）。 */
+/** 同路径去抖窗口。 */
 const DEBOUNCE_MS: u64 = 500;
 
 #[derive(Clone, Deserialize, PartialEq)]
@@ -46,22 +46,22 @@ pub struct AutoOrganizeConfig {
     pub ext_enabled: bool,
     #[serde(default)]
     pub name_enabled: bool,
-    /// C10 通知动作（命中交互/提示类通知动作）：命中时除
+    /// 通知动作（命中交互/提示类通知动作）：命中时除
     /// 入列外，前端额外发一条系统通知（新文件名 + 来源目录）。事件载荷携带。
     #[serde(default)]
     pub notify: bool,
-    /// BentoDesk 借鉴 #6：文件年龄下限（天，0 = 不限）。
+    /// 文件年龄下限（天，0 = 不限）。
     #[serde(default)]
     pub older_than_days: u32,
     /// 年龄依据（默认修改时间）。
     #[serde(default)]
     pub older_by: OlderBy,
-    /// BentoDesk 借鉴 #6：最小体积（MB，0 = 不限）。
+    /// 最小体积（MB，0 = 不限）。
     #[serde(default)]
     pub min_size_mb: u64,
 }
 
-/// 文件年龄依据（BentoDesk CreatedBefore/ModifiedBefore 叶子的扁平化）。
+/// 文件年龄依据。
 #[derive(Clone, Copy, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum OlderBy {
@@ -120,7 +120,7 @@ fn norm_ext(e: &str) -> String {
 
 /// 匹配（时间注入，可单测）：只匹配文件路径；双规则启用取 AND，只启用一类则
 /// 只看该类；两类都没启用或没有任何规则项 = 不命中（空条件不空真）。
-/// BentoDesk 借鉴 #6 的两个附加 AND 叶子：olderThanDays（年龄下限，依据
+/// 的两个附加 AND 叶子：olderThanDays（年龄下限，依据
 /// olderBy 修改/创建时间）与 minSizeMb（最小体积），0 = 该条件不参与。
 pub fn matches(c: &AutoOrganizeConfig, path: &str) -> bool {
     matches_at(c, path, std::time::SystemTime::now())
@@ -169,7 +169,7 @@ pub fn matches_at(c: &AutoOrganizeConfig, path: &str, now: std::time::SystemTime
     if !(ext_hit && name_hit) {
         return false;
     }
-    // 附加 AND 叶子（BentoDesk 借鉴 #6）。
+    // 附加 AND 叶子。
     if c.older_than_days > 0 {
         let Ok(meta) = std::fs::metadata(p) else {
             return false;
@@ -220,7 +220,7 @@ fn with_watchers<T>(f: impl FnOnce(&mut HashMap<String, WatcherEntry>) -> T) -> 
 }
 
 /// 为一个实例建 watcher + 接收线程。Created/Renamed 之外的 event kind 全部
-/// 忽略（DeskOrder 同款：重命名视作新文件）。
+/// 忽略。
 fn spawn_watcher(
     app: &tauri::AppHandle,
     config: &AutoOrganizeConfig,
@@ -383,10 +383,22 @@ fn visit_dir(
     Ok(())
 }
 
-/// 失效引用清理（DeskOrder 借鉴 #2）：批量检查路径是否仍存在。
+/// 失效引用清理：批量检查路径是否仍存在。
 /// 返回与入参同长的布尔数组（false = 已消失）。
+/// 补窗口闸门——无闸门时 quick-note / web-preview 远程页可批量探测
+/// 任意文件系统路径存在性（1Password.kdbx、公司共享盘等用户身份侧信道）；
+/// 现仅受信窗口（widget-*/settings 等）可达，且单次批量封顶防批量枚举。
 #[tauri::command]
-pub async fn check_paths_exist(paths: Vec<String>) -> Result<Vec<bool>, String> {
+pub async fn check_paths_exist(
+    window: tauri::Window,
+    paths: Vec<String>,
+) -> Result<Vec<bool>, String> {
+    crate::require_trusted(&window)?;
+    /// 单次探测上限：正常失效检查（快捷方式目标复检）远低于此。
+    const MAX_PATHS_PER_CALL: usize = 500;
+    if paths.len() > MAX_PATHS_PER_CALL {
+        return Err(format!("路径数超上限（{MAX_PATHS_PER_CALL}）"));
+    }
     tauri::async_runtime::spawn_blocking(move || {
         Ok(paths
             .iter()
@@ -511,11 +523,11 @@ mod tests {
         let mut e = a.clone();
         e.instance_id = "other".into();
         assert_eq!(config_hash(&a), config_hash(&e));
-        // C10：notify 参与哈希（开关变化要拆建 watcher 才能把新载荷带出去）。
+        // notify 参与哈希（开关变化要拆建 watcher 才能把新载荷带出去）。
         let mut n = a.clone();
         n.notify = true;
         assert_ne!(config_hash(&a), config_hash(&n));
-        // BentoDesk 借鉴 #6：新条件叶子参与哈希。
+        // 新条件叶子参与哈希。
         let mut o = a.clone();
         o.older_than_days = 3;
         assert_ne!(config_hash(&a), config_hash(&o));

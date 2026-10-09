@@ -1305,6 +1305,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sysinfo",
+ "taskbar_common",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -4345,6 +4346,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
+name = "taskbar_common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tauri"
 version = "2.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5218,11 +5227,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
+name = "vela-symbolize"
+version = "0.1.0"
+dependencies = [
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "velatap"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "taskbar_common",
  "windows 0.61.3",
  "windows-core 0.61.2",
 ]

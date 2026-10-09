@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 超级面板窗的独立精简入口（super-panel.html；C-10，对照 taskbar-net.html
+ * 超级面板窗的独立精简入口（super-panel.html；，对照 taskbar-net.html
  * 模式）。原走 index.html#super-panel 共用主入口——长按右键取词到面板可见
  * 的链路里塞进了 3.5 万行 CSS 大头 + 双 store 水合 + 全部全局 handler。
  *
@@ -25,6 +25,11 @@ import { logCrash, toCrashFields } from "./lib/crash-log";
 import { hydrateSettingsFromDb } from "./store/settings-store";
 import "./styles/fonts.css";
 import "./styles/global.css";
+/* 动效令牌面（--ease-* / --dur-* 派生链）定义在
+   feature-animations.css，vite 多入口不共享 CSS——不加载则本窗动效时长
+   恒吃回退字面量、速度三档失效。规则限定在本窗不存在的类名/fx 闸下，
+   无视觉泄漏。 */
+import "./styles/feature-animations.css";
 
 // 首帧即透明：与 main.tsx 同款处置（面板底色由 super-panel.css 自绘）。
 document.body.classList.add("tm-widget-layer");

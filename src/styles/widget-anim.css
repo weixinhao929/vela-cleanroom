@@ -1,6 +1,6 @@
 ﻿/**
  * 小组件交互动画补全（对应 vela-animation-opportunities.html A 节 #1–#42、
- * 课程表增补 #115–#127）。所有规则遵守 G-4 透明窗口合成层守则：
+ * 课程表增补 #115–#127）。所有规则遵守 透明窗口合成层守则：
  * 常驻元素动画 fill-mode 一律 backwards（不留持久合成层）；仅即将卸载的
  * 退场元素允许 forwards；hover 反馈不用 transform，用 box-shadow / 色彩。
  */
@@ -87,7 +87,7 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* #1 CalendarWidget 切月方向化过渡                                     */
+/* CalendarWidget 切月方向化过渡 */
 /* ------------------------------------------------------------------ */
 .widget-cal-grid {
   animation: cal-grid-dir var(--dur-fx, 0.2s) var(--ease-out) backwards;
@@ -103,15 +103,12 @@
   }
 }
 
-/* #2 详情面板切换内容过渡 */
+/* 详情面板切换内容过渡 */
 .widget-cal-detail {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 
-/* #125 同步课程区块：容器入场 + 圆点/行错落 */
-.widget-cal-courses {
-  animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
-}
+/* 课程区块：圆点/行错落。 */
 .widget-cal-dot {
   animation: w-pop-in var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
@@ -128,7 +125,7 @@
 /* ------------------------------------------------------------------ */
 /* #3–#6 WeatherWidget                                                  */
 /* ------------------------------------------------------------------ */
-/* #3 城市切换：根 key 重挂载整体 fade，子块错落上移入场 */
+/* 城市切换：根 key 重挂载整体 fade，子块错落上移入场 */
 .widget-weather {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
@@ -154,7 +151,7 @@
   animation-delay: calc(5 * var(--anim-dur, 0.25s) * 0.16);
 }
 
-/* #4 预警详情 grid-rows 展开（覆盖 widget.css 基础 max-height 布局） */
+/* 预警详情 grid-rows 展开（覆盖 widget.css 基础 max-height 布局） */
 .widget-weather-alert-desc {
   display: grid;
   grid-template-rows: 0fr;
@@ -188,12 +185,12 @@
   overflow-y: auto;
 }
 
-/* #5 温度数值变化 pop */
+/* 温度数值变化 pop */
 .widget-weather-temp {
   animation: w-num-pop var(--dur-fx-slow, 0.3s) var(--ease-spring) backwards;
 }
 
-/* #6 离线 / 加载态 fade-in */
+/* 离线 / 加载态 fade-in */
 .widget-weather-offline {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
@@ -201,7 +198,7 @@
 /* ------------------------------------------------------------------ */
 /* #7–#9 FileBrowserWidget                                              */
 /* ------------------------------------------------------------------ */
-/* #7 搜索栏展开 slide-down + fade */
+/* 搜索栏展开 slide-down + fade */
 .widget-files-search {
   animation: w-files-search-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
@@ -226,11 +223,11 @@
 /* ------------------------------------------------------------------ */
 /* #10–#12 GalleryWidget                                                */
 /* ------------------------------------------------------------------ */
-/* #10 添加表单复用书签表单入场语言 */
+/* 添加表单复用书签表单入场语言 */
 .gal-form {
   animation: bm-form-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
-/* #11 大图 prev/next 切换 crossfade（img 以 viewer.id 为 key 重挂载） */
+/* 大图 prev/next 切换 crossfade（img 以 viewer.id 为 key 重挂载） */
 .gal-viewer-card img {
   animation: gal-img-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
@@ -244,7 +241,7 @@
     transform: none;
   }
 }
-/* #12 计数 scale-pop（key=photos.length） */
+/* 计数 scale-pop（key=photos.length） */
 .gal-count {
   display: inline-block;
   animation: w-num-pop var(--dur-fx, 0.2s) var(--ease-spring) backwards;
@@ -260,7 +257,7 @@
   display: inline-block;
   animation: w-num-pop var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
-/* #15 删除退场：fade + collapse（240ms 后卸载，forwards 安全） */
+/* 删除退场：fade + collapse（240ms 后卸载，forwards 安全） */
 .habit-item {
   overflow: hidden;
 }
@@ -273,13 +270,13 @@
 /* ------------------------------------------------------------------ */
 /* #16–#18 NotesWidget                                                  */
 /* ------------------------------------------------------------------ */
-/* #17 删除退场 */
+/* 删除退场 */
 .widget-note.is-closing {
   --out-h: 240px; /* 便签正文可多行，上限放宽避免应用瞬间裁切 */
   animation: w-item-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
   pointer-events: none;
 }
-/* #18 标签栏错落入场 */
+/* 标签栏错落入场 */
 .widget-notes-tags {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
@@ -311,19 +308,19 @@
 /* ------------------------------------------------------------------ */
 /* #19–#21 BookmarksWidget                                              */
 /* ------------------------------------------------------------------ */
-/* #19 校验错误 shake + fade（复用设置页 rb-shake 语言） */
+/* 校验错误 shake + fade（复用设置页 rb-shake 语言） */
 .bm-error {
   animation:
     rb-shake var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
     w-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) backwards;
 }
-/* #20 删除退场 */
+/* 删除退场 */
 .bm-item.is-closing {
   --out-h: 80px; /* 单行书签行 */
   animation: w-item-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
   pointer-events: none;
 }
-/* #21 「继续滚动加载」提示 fade（key=remaining） */
+/* 「继续滚动加载」提示 fade（key=remaining） */
 .widget-list-more {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
@@ -331,11 +328,11 @@
 /* ------------------------------------------------------------------ */
 /* #22–#23 ColorPickerWidget                                            */
 /* ------------------------------------------------------------------ */
-/* #22 预览色块背景过渡 */
+/* 预览色块背景过渡 */
 .cp-preview {
   transition: background-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
 }
-/* #23 复制成功/失败提示 pop 入场 */
+/* 复制成功/失败提示 pop 入场 */
 .cp-copied {
   animation: w-pop-in var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
@@ -350,7 +347,7 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* #24 CalculatorWidget 表达式行                                        */
+/* CalculatorWidget 表达式行 */
 /* ------------------------------------------------------------------ */
 .calc-expr-input {
   animation: w-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) backwards;
@@ -365,7 +362,7 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* #25 CountdownWidget 状态文本                                         */
+/* CountdownWidget 状态文本 */
 /* ------------------------------------------------------------------ */
 .cd-state {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
@@ -374,35 +371,31 @@
 /* ------------------------------------------------------------------ */
 /* #26–#29 EmailWidget                                                  */
 /* ------------------------------------------------------------------ */
-/* #26 filter 切换列表 fade（key=filter） */
+/* filter 切换列表 fade（key=filter） */
 .mail-list {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
-/* #27 未读计数 pop（key=unread）——动画唯一定义地在本文 1758 行附近
-   （#105 rb-meta-pop）；此处曾有一份 w-num-pop 版被其整组覆盖，已删（P3 三轮）。 */
-/* #28 错误提示 / 真实账户徽标 fade-in */
+/* 未读计数 pop（key=unread）——动画唯一定义地在本文 1758 行附近
+   （#105 rb-meta-pop）；此处曾有一份 w-num-pop 版被其整组覆盖，已删（三轮）。 */
+/* 错误提示 / 真实账户徽标 fade-in */
 .mail-error,
 .mail-real-badge {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
-/* #29 已读/未读切换：色彩与图标过渡 */
+/* 已读/未读切换：色彩与图标过渡 */
 .mail-item {
   transition:
     opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     background-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
 }
-.mail-item .mail-item-dot,
 .mail-item svg {
   transition:
     color var(--dur-fx, 0.2s) var(--ease-fx, ease),
     opacity var(--dur-fx, 0.2s) var(--ease-fx, ease);
 }
-.mail-item .mail-item-dot {
-  animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
-}
 
 /* ------------------------------------------------------------------ */
-/* #30 BluetoothWidget 环形项错落入场                                    */
+/* BluetoothWidget 环形项错落入场 */
 /* ------------------------------------------------------------------ */
 .bt-ring-wrap {
   animation: w-pop-in 0.24s var(--ease-out) backwards;
@@ -423,7 +416,7 @@
 /* ------------------------------------------------------------------ */
 /* #31–#32 Hardware / System / SystemBar                                */
 /* ------------------------------------------------------------------ */
-/* #32 数值 chip 变化 fade（fade 仅首次挂载播一次，见 SystemWidget 注记）；
+/* 数值 chip 变化 fade（fade 仅首次挂载播一次，见 SystemWidget 注记）；
    进度条的 transform 过渡统一在 widget.css .widget-sys-bar span 声明，
    此处曾有一份 0.45s 重复声明（后导入覆盖成两处维护），已删除。 */
 .hw-chip {
@@ -441,7 +434,7 @@
 /* ------------------------------------------------------------------ */
 /* #33–#34 SketchWidget                                                 */
 /* ------------------------------------------------------------------ */
-/* #33 快照切换闪变（brightness 闪一下替代双画布 crossfade，无 transform） */
+/* 快照切换闪变（brightness 闪一下替代双画布 crossfade，无 transform） */
 .sketch-canvas.snap-flash {
   animation: sk-snap-flash var(--dur-fx-xfast, 0.12s) var(--ease-out, ease-out) backwards;
 }
@@ -468,46 +461,12 @@
     transform: none;
   }
 }
-/* #34 自定义画笔大小滑杆 */
-.sk-range {
-  -webkit-appearance: none;
-  appearance: none;
-  height: 4px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--ink) 14%, transparent);
-  outline: none;
-  cursor: pointer;
-}
-.sk-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid var(--paper-solid);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 0.3);
-  transition:
-    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
-    background-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
-}
-.sk-range::-webkit-slider-thumb:hover {
-  background: var(--accent-2, var(--accent));
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
-}
-.sk-range::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid var(--paper-solid);
-  transition: box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
-}
+/* 自定义画笔大小滑杆 */
 
 /* ------------------------------------------------------------------ */
 /* #35–#36、#115–#124 TimetableWidget                                    */
 /* ------------------------------------------------------------------ */
-/* #35 导入错误 shake + fade（key=importError） */
+/* 导入错误 shake + fade（key=importError） */
 .tt-error {
   animation:
     rb-shake var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
@@ -527,11 +486,11 @@
     transform: none;
   }
 }
-/* #115 周徽章数字 pop（key=viewWeek） */
+/* 周徽章数字 pop（key=viewWeek） */
 .tt-week-badge {
   animation: w-num-pop var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
-/* #116 导入预览 / 课程编辑弹层：overlay fade + 卡片 pop；closing 态淡出。
+/* 导入预览 / 课程编辑弹层：overlay fade + 卡片 pop；closing 态淡出。
    进场动画统一由 feature-animations.css（后导入）的 rb-modal-pop +
    --ease-spring-soft 软弹版生效，此处曾有一份硬弹 --ease-spring 死规则，已删。 */
 .tt-preview-overlay.closing {
@@ -554,7 +513,7 @@
     transform: scale(0.96);
   }
 }
-/* #117 冲突浮层退场（tipClosing → .out，120ms 后卸载） */
+/* 冲突浮层退场（tipClosing → .out，120ms 后卸载） */
 .tt-conflict-tooltip.out {
   animation: tt-tip-out var(--dur-fx-xfast, 0.12s) var(--ease-in) forwards;
 }
@@ -564,7 +523,7 @@
     transform: scale(0.95);
   }
 }
-/* #118 滚动边缘渐隐：顶/底还有节次时 mask 提示 + 表头投影 */
+/* 滚动边缘渐隐：顶/底还有节次时 mask 提示 + 表头投影 */
 .tt-grid.sc-top {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
   mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
@@ -580,7 +539,7 @@
 .tt:has(> .tt-grid.sc-top) .tt-header {
   box-shadow: 0 3px 8px -4px rgb(0 0 0 / 0.35);
 }
-/* #119 冲突按钮 pop 入场 + 数字 pop（key=size） */
+/* 冲突按钮 pop 入场 + 数字 pop（key=size） */
 .tt-mini-btn.conflict {
   animation: w-pop-in var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
@@ -588,15 +547,15 @@
   display: inline-block;
   animation: w-num-pop var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
-/* #120 同格多课课程名避让缩进过渡 */
+/* 同格多课课程名避让缩进过渡 */
 .tt-course.multi .tt-course-name {
   transition: padding-left var(--dur-fx, 0.2s) var(--ease-fx, ease); /* layout-anim: ok 同格多课避让缩进微过渡 */
 }
-/* #121 节假日角标入场 */
+/* 节假日角标入场 */
 .tt-holiday-badge {
   animation: w-pop-in var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
-/* #123 时间列开关：时间文字错落淡入（grid-template-columns 过渡已移除：
+/* 时间列开关：时间文字错落淡入（grid-template-columns 过渡已移除：
    列宽变化属于布局动画，逐帧 reflow 且与 key 重挂载的方向化入场冲突）。 */
 .tt-sec-time {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
@@ -604,7 +563,7 @@
 .tt-sec-time:nth-child(2n) {
   animation-delay: calc(1 * var(--anim-dur, 0.25s) * 0.16);
 }
-/* #124 导出按钮 accent 脉冲反馈（.done 态，无 transform） */
+/* 导出按钮 accent 脉冲反馈（.done 态，无 transform） */
 .tt-mini-btn.done {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
@@ -628,10 +587,10 @@
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 /* block-meta 的动画唯一定义地在本文 1565 行附近（#105 rb-meta-pop）；此处
-   曾有一份 w-num-pop 版被其同特异性整组覆盖，属死规则已删（P3 三轮）。 */
+   曾有一份 w-num-pop 版被其同特异性整组覆盖，属死规则已删（三轮）。 */
 
 /* ------------------------------------------------------------------ */
-/* #39 ClockWidget 数字滑动（每位数字独立 key，仅变化的位重播动画）        */
+/* ClockWidget 数字滑动（每位数字独立 key，仅变化的位重播动画） */
 /* ------------------------------------------------------------------ */
 .clock-digit {
   display: inline-block;
@@ -653,7 +612,7 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* #40 RecycleWidget                                                    */
+/* RecycleWidget */
 /* ------------------------------------------------------------------ */
 .recycle-count {
   display: inline-block;
@@ -665,15 +624,9 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* #41 AppLauncherWidget 真实图标渐显                                    */
+/* MusicWidget 状态文本切换 fade */
 /* ------------------------------------------------------------------ */
-.launcher-tile-icon img {
-  animation: w-fade-in var(--dur-fx-slow, 0.3s) var(--ease-fx, ease) backwards;
-}
-
-/* ------------------------------------------------------------------ */
-/* #42 MusicWidget 状态文本切换 fade                                     */
-/* ------------------------------------------------------------------ */
+/* AppLauncherWidget 图标渐显已随组件退役删除。 */
 .music-pure-status {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
@@ -706,7 +659,7 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   }
 }
 /* 换算结果数字 pop（key=pretty 重挂载重触发）。
-   双源分工（P3 三轮核实非死规则）：elastic 特效开启时由 feature-animations.css
+   双源分工（三轮核实非死规则）：elastic 特效开启时由 feature-animations.css
    的 rb-num-pop（更高特异性 html:not([data-fx-off~=elastic]) 前缀）接管；
    本规则是 elastic 关闭时的基础档。 */
 .uc-result {
@@ -726,7 +679,6 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   :is(
     .widget-cal-grid,
     .widget-cal-detail,
-    .widget-cal-courses,
     .widget-cal-dot,
     .widget-weather,
     .widget-weather > *,
@@ -779,7 +731,6 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
     .clock-digit,
     .recycle-count,
     .recycle-row.is-closing,
-    .launcher-tile-icon img,
     .music-pure-status,
     .music-pure-dot,
     .widget-files-list,
@@ -793,22 +744,22 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
 /* ================================================================== */
 /* B 节 · 设置页细节（#43–#53、#126–#127）                              */
 /* ================================================================== */
-/* #43 搜索空态 fade-in */
+/* 搜索空态 fade-in */
 .tm-sidebar-search-empty {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
 
-/* #44 崩溃日志 details 展开：内容 fade-slide（标准模式兜底，替代仅特效模式动效） */
+/* 崩溃日志 details 展开：内容 fade-slide（标准模式兜底，替代仅特效模式动效） */
 .tm-crashlog-item > pre {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 
-/* #45 运行日志 pre 出现 fade-in */
+/* 运行日志 pre 出现 fade-in */
 .tm-runtimelog-body {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 
-/* #46 定位提示 fade + slide-up；失败态附加 shake */
+/* 定位提示 fade + slide-up；失败态附加 shake */
 .tm-geo-msg {
   animation: w-geo-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
@@ -828,7 +779,7 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
     w-geo-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 
-/* #47 城市 chip：入场 scale-in（key=name），退场缩放淡出 */
+/* 城市 chip：入场 scale-in（key=name），退场缩放淡出 */
 .tm-city-chip {
   animation: w-pop-in var(--dur-fx, 0.2s) var(--ease-spring) backwards;
 }
@@ -843,17 +794,17 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   }
 }
 
-/* #48 显示器卡片：异步加载完成 stagger 入场 + hover 反馈（无 transform）。
+/* 显示器卡片：异步加载完成 stagger 入场 + hover 反馈（无 transform）。
    transition 与 hover 唯一生效地在 feature-animations.css（.tm-monitor-card
    等 5 选择器组，含 transform 快档）；此处曾有一份 3 属性 transition + accent
    光晕 hover 被其整组覆盖（hover 阴影值还不同，「调参不生效」陷阱），已删
-   （P3 三轮）。 */
+   （三轮）。 */
 .tm-monitor-card {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
   animation-delay: calc(min(var(--sti, 0), 3) * 50ms);
 }
 
-/* #49 更新结果 / 版本说明 / 按钮组 fade-slide */
+/* 更新结果 / 版本说明 / 按钮组 fade-slide */
 .tm-update-note {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
@@ -861,7 +812,7 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 
-/* #50 下载进度条 fill 过渡 + 数值文本淡变 */
+/* 下载进度条 fill 过渡 + 数值文本淡变 */
 .tm-update-progress {
   display: flex;
   flex-direction: column;
@@ -887,16 +838,16 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   animation: w-fade-in var(--anim-dur, 0.25s) var(--ease-fx, ease) backwards;
 }
 
-/* #51 更新错误提示 shake + fade */
+/* 更新错误提示 shake + fade */
 .tm-monitor-msg {
   animation:
     rb-shake var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
     w-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) backwards;
 }
 
-/* #52 小组件管理行：hover 反馈 + 删除/恢复退场。
+/* 小组件管理行：hover 反馈 + 删除/恢复退场。
    transition 唯一生效地在 feature-animations.css 同名组（4 属性，覆盖本处
-   曾有的 2 属性死规则，P3 三轮删除）；此处只保留入场动画。 */
+   曾有的 2 属性死规则，三轮删除）；此处只保留入场动画。 */
 .tm-widget-row {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
@@ -908,12 +859,9 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   pointer-events: none;
 }
 
-/* #53 画廊预览：切换选中卡片 key 重触发 */
-.tm-gallery-preview-body {
-  animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
-}
+/* 画廊预览：切换选中卡片 key 重触发 */
 
-/* #126 固定节次 Stepper 行：展开 fade-slide；收起延迟卸载淡出 */
+/* 固定节次 Stepper 行：展开 fade-slide；收起延迟卸载淡出 */
 .tm-row-collapse {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
@@ -921,7 +869,7 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   animation: w-fade-out var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) forwards;
 }
 
-/* #127 节次时间表：行错落淡入（≤10 行封顶）；联动结束值高亮淡变 */
+/* 节次时间表：行错落淡入（≤10 行封顶）；联动结束值高亮淡变 */
 .tm-times-item {
   animation: w-fade-in var(--anim-dur, 0.25s) var(--ease-fx, ease) backwards;
   animation-delay: calc(min(var(--sti, 0), 9) * 20ms);
@@ -957,7 +905,6 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
     .tm-monitor-msg,
     .tm-widget-row,
     .tm-widget-row.is-closing,
-    .tm-gallery-preview-body,
     .tm-row-collapse,
     .tm-row-collapse.is-closing,
     .tm-times-item,
@@ -970,18 +917,18 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
 /* ================================================================== */
 /* C 节 · 画布与全局弹层（#54–#58）                                     */
 /* ================================================================== */
-/* #54 拖拽对齐辅助线出现淡入 */
+/* 拖拽对齐辅助线出现淡入 */
 .widget-align-guide {
   animation: w-fade-in var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease) backwards;
 }
 
-/* #55 模板保存错误 shake + fade（key=错误文本重触发） */
+/* 模板保存错误 shake + fade（key=错误文本重触发） */
 .widget-template-error {
   animation:
     rb-shake var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
     w-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) backwards;
 }
-/* #55 模板行：错落入场 + hover 反馈（无 transform，遵守 G-4） */
+/* 模板行：错落入场 + hover 反馈（无 transform，遵守 ） */
 .widget-template-row {
   animation: w-fade-slide-in var(--dur-fx, 0.2s) var(--ease-out) backwards;
   transition:
@@ -1004,7 +951,7 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   background: color-mix(in srgb, var(--ink) 5%, transparent);
 }
 
-/* #57 右键菜单退场（缩小淡出后卸载；= --dur-fx-fast，与 ContextMenu 的
+/* 右键菜单退场（缩小淡出后卸载；= --dur-fx-fast，与 ContextMenu 的
    useDelayedUnmount 时长同源，随 设置→动效 速度档缩放） */
 .ctx-menu.is-closing {
   animation: ctx-menu-out var(--dur-fx-fast, 0.15s) var(--ease-in) forwards;
@@ -1017,27 +964,16 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   }
 }
 
-/* #57 时钟设置弹层退场 */
-.clock-settings-popover.is-closing {
-  animation: w-fade-out var(--dur-fx-xfast, 0.12s) var(--ease-out) forwards;
-  pointer-events: none;
-}
+/* 时钟设置弹层退场已随自绘弹层删除。 */
 
-/* #58 崩溃兜底页淡入 */
+/* 崩溃兜底页淡入 */
 .error-boundary {
   animation: w-fade-in var(--dur-fx-slow, 0.3s) var(--ease-fx, ease) backwards;
 }
 
 /* C 节减少动态兜底 */
 [data-reduce-motion="1"]
-  :is(
-    .widget-align-guide,
-    .widget-template-error,
-    .widget-template-row,
-    .ctx-menu.is-closing,
-    .clock-settings-popover.is-closing,
-    .error-boundary
-  ) {
+  :is(.widget-align-guide, .widget-template-error, .widget-template-row, .ctx-menu.is-closing, .error-boundary) {
   animation: none !important;
   transition: none !important;
 }
@@ -1045,8 +981,11 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
 /* ================================================================== */
 /* D 节 · 主界面画布（#59–#76）                                         */
 /* ================================================================== */
-/* #63 动画化删除：缩小淡出后移入回收站（220ms，与 removeWidgetsAnimated 对齐） */
-.widget-card.is-exiting {
+/* 动画化删除：缩小淡出后移入回收站（220ms，与 removeWidgetsAnimated 对齐）。
+   编组容器同款（删除整组时 removeGroup 先把组 id 挂进 exitingIds 再延迟删除，
+   退场动画打在组壳上——成员在编组期间没有卡片 DOM）。 */
+.widget-card.is-exiting,
+.widget-group.is-exiting {
   animation: w-card-exit var(--dur-fx, 0.2s) var(--ease-in) forwards;
   pointer-events: none;
 }
@@ -1057,8 +996,10 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   }
 }
 
-/* #73/#67/#64 落位 accent 描边脉冲（无 transform，只动 box-shadow） */
-.widget-card.pulse-in {
+/* #73/#67/#64 落位 accent 描边脉冲（无 transform，只动 box-shadow）。
+   编组容器同款（新建/并入/摘出/定位反馈）。 */
+.widget-card.pulse-in,
+.widget-group.pulse-in {
   animation: w-card-pulse 0.7s var(--ease-out, ease-out) backwards;
 }
 @keyframes w-card-pulse {
@@ -1070,11 +1011,12 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   }
 }
 
-/* #64 恢复入场：从回收站方向飞回落位（淡入 + 轻微回弹）。restoreWidget 同时挂
+/* 恢复入场：从回收站方向飞回落位（淡入 + 轻微回弹）。restoreWidget 同时挂
    fly-in + pulse-in 两个类，同特异度下靠源顺序取胜，故本条排在 pulse-in 之后
    并把脉冲合并进同一声明（两段 keyframes 无属性重叠，可并行）——只挂 pulse-in
    的旧卡仍走上条单脉冲规则。 */
-.widget-card.fly-in {
+.widget-card.fly-in,
+.widget-group.fly-in {
   animation:
     w-card-flyin 0.42s var(--ease-spring) backwards,
     w-card-pulse 0.7s var(--ease-out, ease-out) backwards;
@@ -1095,17 +1037,19 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
 }
 
 /* #65/#76 一次性 left/top 过渡（拖拽路径不带该类，保持直跟手）。
-   A3：卡片重排走 cardReflow 语义别名（Spatial 过冲族）；实际曲线/时长由
+   卡片重排走 cardReflow 语义别名（Spatial 过冲族）；实际曲线/时长由
    WidgetCard 按位移量经 pickSpatialEase 内联覆盖（≤20px 350ms / 否则 500ms），
    本规则是位移为 0 或未内联时的兜底。 */
-.widget-card.pos-anim {
-  /* layout-anim: ok 卡片重排 FLIP 兜底一次性（拖动路径不带类，选档设计见 WidgetCard.tsx A3） */
+.widget-card.pos-anim,
+.widget-group.pos-anim {
+  /* 选档设计见 WidgetCard.tsx ；组走默认档兜底（时间线恢复/视口回收的组几何变化经 posAnimIds 挂类）。 */
+  /* layout-anim: ok 卡片/组重排 FLIP 兜底一次性（拖动路径不带类） */
   transition:
     left var(--dur-fx, 0.2s) var(--ease-card-reflow),
     top var(--dur-fx, 0.2s) var(--ease-card-reflow);
 }
 
-/* #74 鼠标穿透开启确认：短暂降透明再回弹 */
+/* 鼠标穿透开启确认：短暂降透明再回弹 */
 .widget-card.ct-flash {
   animation: w-ct-flash 0.6s var(--ease-fx, ease) backwards;
 }
@@ -1137,38 +1081,38 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   pointer-events: none;
   animation: w-fade-in var(--anim-dur, 0.25s) var(--ease-fx, ease) backwards;
 }
-/* P2 三轮补退场：关闭穿透时播淡出再卸载（useDelayedUnmount 承载）。 */
+/* 三轮补退场：关闭穿透时播淡出再卸载（useDelayedUnmount 承载）。 */
 .widget-ct-badge.is-closing {
   animation: w-fade-out var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease) forwards;
 }
 
-/* #60 首启错落：hydrate 后 900ms 内出现的卡片按序延迟（复用其入场动画曲线） */
-.widget-canvas-viewport.hydrate-anim .widget-card:nth-child(2) {
+/* 首启错落：hydrate 后 900ms 内出现的卡片按序延迟（复用其入场动画曲线） */
+.widget-canvas-viewport.hydrate-anim :is(.widget-card, .widget-group):nth-child(2) {
   animation-delay: calc(1 * var(--anim-dur, 0.25s) * 0.16);
 }
-.widget-canvas-viewport.hydrate-anim .widget-card:nth-child(3) {
+.widget-canvas-viewport.hydrate-anim :is(.widget-card, .widget-group):nth-child(3) {
   animation-delay: calc(2 * var(--anim-dur, 0.25s) * 0.16);
 }
-.widget-canvas-viewport.hydrate-anim .widget-card:nth-child(4) {
+.widget-canvas-viewport.hydrate-anim :is(.widget-card, .widget-group):nth-child(4) {
   animation-delay: calc(3 * var(--anim-dur, 0.25s) * 0.16);
 }
-.widget-canvas-viewport.hydrate-anim .widget-card:nth-child(5) {
+.widget-canvas-viewport.hydrate-anim :is(.widget-card, .widget-group):nth-child(5) {
   animation-delay: calc(4 * var(--anim-dur, 0.25s) * 0.16);
 }
-.widget-canvas-viewport.hydrate-anim .widget-card:nth-child(n + 6) {
+.widget-canvas-viewport.hydrate-anim :is(.widget-card, .widget-group):nth-child(n + 6) {
   animation-delay: calc(5 * var(--anim-dur, 0.25s) * 0.16);
 }
 /* #61/#66 整组替换：新组错落入场（旧组由幽灵层淡出承载） */
-.widget-canvas-viewport.stagger-now .widget-card:nth-child(2) {
+.widget-canvas-viewport.stagger-now :is(.widget-card, .widget-group):nth-child(2) {
   animation-delay: calc(1 * var(--anim-dur, 0.25s) * 0.16);
 }
-.widget-canvas-viewport.stagger-now .widget-card:nth-child(3) {
+.widget-canvas-viewport.stagger-now :is(.widget-card, .widget-group):nth-child(3) {
   animation-delay: calc(2 * var(--anim-dur, 0.25s) * 0.16);
 }
-.widget-canvas-viewport.stagger-now .widget-card:nth-child(4) {
+.widget-canvas-viewport.stagger-now :is(.widget-card, .widget-group):nth-child(4) {
   animation-delay: calc(3 * var(--anim-dur, 0.25s) * 0.16);
 }
-.widget-canvas-viewport.stagger-now .widget-card:nth-child(n + 5) {
+.widget-canvas-viewport.stagger-now :is(.widget-card, .widget-group):nth-child(n + 5) {
   animation-delay: calc(4 * var(--anim-dur, 0.25s) * 0.16);
 }
 .canvas-ghost {
@@ -1184,7 +1128,7 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   animation: w-fade-out var(--dur-fx, 0.2s) var(--ease-out) forwards;
 }
 
-/* #62 编辑 UI 退场：卡片底部编辑栏 / 画布底部工具条下滑淡出后卸载 */
+/* 编辑 UI 退场：卡片底部编辑栏 / 画布底部工具条下滑淡出后卸载 */
 .widget-editbar-bottom.is-closing {
   animation: w-editbar-out var(--dur-fx-fast, 0.15s) var(--ease-out) forwards;
 }
@@ -1216,11 +1160,11 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   }
 }
 
-/* #67 框选矩形：100ms 淡入 + 虚线行军（stroke-dashoffset 循环） */
+/* 框选矩形：100ms 淡入 + 虚线行军（stroke-dashoffset 循环） */
 .widget-marquee {
   animation: w-fade-in var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease) backwards;
 }
-/* P2 三轮补退场：松手播一拍淡出再卸载（is-ending 由组件定时器承载）。 */
+/* 三轮补退场：松手播一拍淡出再卸载（is-ending 由组件定时器承载）。 */
 .widget-marquee.is-ending {
   animation: w-fade-out var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease) forwards;
   pointer-events: none;
@@ -1232,13 +1176,15 @@ html:not([data-fx-off~="ambientMotion"]) .music-pure.live .music-pure-dot {
   stroke-dasharray: 6 4;
   /* 三.5：循环周期改字面量（不随速度档——同 --dur-ft-breathe /
      --dur-np-progress「循环节奏不随档」政策，此前错用 --dur-spatial 导致
-     调慢动效档时蚂蚁线也变慢）；并补 pointerFollow 分类闸（本文件唯一
-     无分类门控的无限循环动画）——关闭跟指特效时蚂蚁线停走，静态虚线框
-     仍可辨识选区范围。 */
-  animation: marquee-march 0.5s linear infinite;
+     调慢动效档时蚂蚁线也变慢）。 */
 }
-html[data-fx-off~="pointerFollow"] .widget-marquee-rect {
-  animation: none;
+/* 跑马口径统一决策——蚂蚁线仅在指针框选拖拽会话期间
+   运转，与「跟指特效」强相关（保留原 pointerFollow 分类闸，关闭跟指时停走，
+   静态虚线框仍可辨识选区范围）；同时它是无限循环动画，叠加 ambientMotion
+   总闸（两闸任一关闭即停走），与 dock-mini-marquee（音乐标题跑马）的
+   ambientMotion 口径对齐。 */
+html:not([data-fx-off~="pointerFollow"]):not([data-fx-off~="ambientMotion"]) .widget-marquee-rect {
+  animation: marquee-march 0.5s linear infinite;
 }
 @keyframes marquee-march {
   to {
@@ -1246,7 +1192,7 @@ html[data-fx-off~="pointerFollow"] .widget-marquee-rect {
   }
 }
 
-/* #70 空态引导卡：居中淡入；出现小组件后淡出卸载（非交互） */
+/* 空态引导卡：居中淡入；出现小组件后淡出卸载（非交互） */
 .canvas-empty-guide {
   position: absolute;
   left: 50%;
@@ -1311,7 +1257,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   animation: w-fade-out var(--dur-fx, 0.2s) var(--ease-fx, ease) forwards;
 }
 
-/* #75 布局保存失败提示条：右下滑入，2.4s 后自动退出 */
+/* 布局保存失败提示条：右下滑入，2.4s 后自动退出 */
 .canvas-save-toast {
   position: absolute;
   right: 14px;
@@ -1343,7 +1289,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   }
 }
 
-/* #71 回收站：空态/列表淡入；确认按钮同元素 morph（色彩过渡 + 内容淡切） */
+/* 回收站：空态/列表淡入；确认按钮同元素 morph（色彩过渡 + 内容淡切） */
 .recycle-empty {
   animation: w-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
@@ -1377,7 +1323,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   animation: w-fade-in var(--dur-fx-fast, 0.15s) var(--ease-fx, ease) backwards;
 }
 
-/* #72 图库搜索过滤：被滤掉的卡片淡出缩离后卸载（延迟卸载承载）。
+/* 图库搜索过滤：被滤掉的卡片淡出缩离后卸载（延迟卸载承载）。
    悬浮窗网格磁贴（.gal-tile）删除时复用同一退场（此前选择器失配 +
    删除路径不挂 is-closing，图片一直是瞬时消失）。 */
 .widget-gallery-card.is-closing,
@@ -1398,6 +1344,9 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
     .widget-card.is-exiting,
     .widget-card.fly-in,
     .widget-card.pulse-in,
+    .widget-group.is-exiting,
+    .widget-group.fly-in,
+    .widget-group.pulse-in,
     .widget-card.ct-flash,
     .widget-ct-badge,
     .canvas-ghost-card,
@@ -1413,7 +1362,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   animation: none !important;
 }
 /* 退场类（.is-closing）不能 animation:none——压停会冻结在起点（不透明原地
-   停一拍再被 JS 卸载，F3「愣住再消失」，比瞬移更差）。改压时长：0.001s +
+   停一拍再被 JS 卸载，「愣住再消失」，比瞬移更差）。改压时长：0.001s +
    forwards 直达终点态（隐藏），与「瞬移」语义一致。JS 侧 useDelayedUnmount
    在 reduce-motion 下同步跳过等待窗口立即卸载（双保险）。 */
 [data-reduce-motion="1"]
@@ -1426,21 +1375,21 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   ) {
   animation-duration: 0.001s !important;
 }
-[data-reduce-motion="1"] :is(.widget-card.pos-anim, .recycle-empty-btn) {
+[data-reduce-motion="1"] :is(.widget-card.pos-anim, .widget-group.pos-anim, .recycle-empty-btn) {
   transition: none !important;
 }
-[data-reduce-motion="1"] .widget-canvas-viewport.hydrate-anim .widget-card,
-[data-reduce-motion="1"] .widget-canvas-viewport.stagger-now .widget-card {
+[data-reduce-motion="1"] .widget-canvas-viewport.hydrate-anim :is(.widget-card, .widget-group),
+[data-reduce-motion="1"] .widget-canvas-viewport.stagger-now :is(.widget-card, .widget-group) {
   animation-delay: 0s !important;
 }
 
 /* ================================================================== */
 /* F 节 · 旅程③ 每日使用与情感时刻：组件层（#104–108、#110、#114）      */
 /* （#99 应用内 toast 样式已拆到 feature-toast.css，由 ToastHost.tsx     */
-/*   随挂载窗口引入——C-10 精简入口窗口不再为此背整份动效样式表）        */
+/*   随挂载窗口引入——精简入口窗口不再为此背整份动效样式表） */
 /* ================================================================== */
 
-/* #104 待办行删除/清除退场：收拢淡出后再从 DOM 移除 */
+/* 待办行删除/清除退场：收拢淡出后再从 DOM 移除 */
 .task-row.is-closing {
   --out-h: 80px; /* 与下方基础 max-height 一致 */
   max-height: 80px;
@@ -1448,12 +1397,12 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   pointer-events: none;
   animation: w-item-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
 }
-/* #104 全部清空后的 empty-state 弹入（清空成就感） */
+/* 全部清空后的 empty-state 弹入（清空成就感） */
 .tasks-panel .empty-state {
   animation: w-pop-in var(--dur-fx-slow, 0.3s) var(--ease-spring) backwards;
 }
 
-/* #105 今日概览：勾选后行收拢淡出，后续行随高度收拢平滑上移 */
+/* 今日概览：勾选后行收拢淡出，后续行随高度收拢平滑上移 */
 .today-overview-task {
   max-height: 40px;
 }
@@ -1463,7 +1412,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   pointer-events: none;
   animation: w-item-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
 }
-/* #105 block-meta 计数同步跳动（TSX 已有 key 强制重建） */
+/* block-meta 计数同步跳动（TSX 已有 key 强制重建） */
 .today-overview-block-meta {
   display: inline-block;
   animation: rb-meta-pop var(--dur-fx-slow, 0.3s) var(--ease-spring) backwards;
@@ -1479,7 +1428,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   }
 }
 
-/* #106 习惯热力图：等级色/边框/光晕 .3s 过渡，今日格点亮 scale 弹跳 */
+/* 习惯热力图：等级色/边框/光晕 .3s 过渡，今日格点亮 scale 弹跳 */
 .habit-heatmap-cell {
   transition:
     background var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
@@ -1504,7 +1453,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   }
 }
 
-/* #107 倒计时归零：整环满环闪烁（track 高亮扩散）+ 数字放大回弹 */
+/* 倒计时归零：整环满环闪烁（track 高亮扩散）+ 数字放大回弹 */
 .cd-ring.just-ended .cd-ring-track {
   animation: cd-track-flash 0.8s var(--ease-out);
 }
@@ -1549,7 +1498,7 @@ html:not([data-fx-off~="ambientMotion"]) .canvas-empty-guide svg {
   }
 }
 
-/* #108 连续打卡火焰：streak≥2 轻微摇曳 idle；数值 +1 时 flare 放大（key 重建驱动） */
+/* 连续打卡火焰：streak≥2 轻微摇曳 idle；数值 +1 时 flare 放大（key 重建驱动） */
 .habit-streak {
   display: inline-flex;
   align-items: center;
@@ -1602,10 +1551,10 @@ html[data-reduce-motion="1"] .habit-streak.lit .habit-streak-icon {
   }
 }
 
-/* #110 命令面板：键盘导航滑移指示条已随命令面板 chunk 迁至
+/* 命令面板：键盘导航滑移指示条已随命令面板 chunk 迁至
    command-palette.css（此前错放在本文件，所有窗口静态背负）。 */
 
-/* #114 邮件刷新完成：绿色对勾 + 一次呼吸光晕；未读数变化轻微跳动 */
+/* 邮件刷新完成：绿色对勾 + 一次呼吸光晕；未读数变化轻微跳动 */
 .mail-refresh.done {
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 55%, transparent);

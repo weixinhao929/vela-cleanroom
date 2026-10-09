@@ -7,7 +7,7 @@ import { CalendarHeart, Pause, Play, Plus, RotateCcw, Trash2 } from "lucide-reac
 import { useGamePause } from "../../lib/useGamePause";
 import { sourceNotify, playChime } from "../../lib/notifications";
 
-/* W-030/F-托盘多写入方：托盘倒计时只有一个句柄，多个实例此前各自整表覆盖
+/* /F-托盘多写入方：托盘倒计时只有一个句柄，多个实例此前各自整表覆盖
  * （last-write-wins、任一停止即写"未运行"、卸载不清理残留冻结文本）。
  * 这里做模块级注册表仲裁：优先展示任一运行中实例的文本；全部空闲时清空；
  * 卸载时注销并立即重算，杜绝残留。 */
@@ -27,7 +27,7 @@ function recomputeTrayText() {
 }
 import { useWidgetConfig } from "../widget-config";
 import { useT } from "../../i18n-lite";
-import { useAppStore } from "../../store/app-store";
+import { getPomodoroEventContext, useAppStore } from "../../store/app-store";
 import { invoke, isTauri } from "../../lib/tauri";
 import { promptDialog } from "../../components/PromptDialog";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
@@ -36,7 +36,7 @@ import { DatePicker } from "../../components/DatePicker";
 
 const PRESETS = [60, 300, 600, 900, 1800, 3600];
 
-/** W-026 倒数日目标。 */
+/** 倒数日目标。 */
 type CountdownTarget = { id: string; label: string; date: string };
 
 const DEFAULT_TARGETS: CountdownTarget[] = [];
@@ -64,7 +64,7 @@ function loadTargets(raw: unknown): CountdownTarget[] {
   return out.sort((a, b) => a.date.localeCompare(b.date));
 }
 
-/** W-025 状态持久化：重启应用后倒计时接着跑。 */
+/** 状态持久化：重启应用后倒计时接着跑。 */
 type PersistedState = { total: number; left: number; running: boolean; endAt: number };
 
 function stateKey(instanceId: string) {
@@ -103,13 +103,13 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
   const loopAfterComplete = !!config.loopAfterComplete;
   const showSeconds = config.showSeconds !== false;
   const showPresets = config.showPresets !== false;
-  /* W-028 结束提示音 / W-029 联动番茄钟 / W-030 托盘剩余时间。 */
+  /* 结束提示音 / 联动番茄钟 / 托盘剩余时间。 */
   const endSound = config.endSound !== false;
   const linkPomodoro = !!config.linkPomodoro;
   const trayTime = config.trayTime !== false;
   const initial = Math.max(1, defaultPreset) * 60;
 
-  /* W-026 双模式：计时器 / 倒数日。 */
+  /* 双模式：计时器 / 倒数日。 */
   const mode = config.mode === "days" ? "days" : "timer";
   const targets = loadTargets(config.targets);
   const [targetLabel, setTargetLabel] = useState("");
@@ -151,8 +151,20 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
   useEffect(() => {
     linkRef.current = linkPomodoro;
   }, [linkPomodoro]);
+  /* defaultPreset 此前仅经 useState 初始化器进 total/left，一旦有过持久化
+     状态（任意一次运行后），设置页改默认预设永不生效。空闲且当前仍显示旧
+     默认值时跟随新配置；用户手动设过的自定义时长（≠旧默认）不覆盖。 */
+  const prevInitialRef = useRef(initial);
+  useEffect(() => {
+    if (running) return;
+    const wasOldDefault = totalRef.current === prevInitialRef.current;
+    prevInitialRef.current = initial;
+    if (!wasOldDefault) return;
+    setTotal(initial);
+    setLeft(initial);
+  }, [initial, running]);
 
-  /** W-025 节流落盘：状态切换立即写，运行中最多 3s 一次。读 ref 避免 interval 闭包拿到旧值。 */
+  /** 节流落盘：状态切换立即写，运行中最多 3s 一次。读 ref 避免 interval 闭包拿到旧值。 */
   const persist = (force = true) => {
     const now = Date.now();
     if (!force && now - lastWriteRef.current < 3000) return;
@@ -191,8 +203,21 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
           setRunning(false);
           if (soundRef.current) playChime("pomodoro", "countdown");
           if (notifyRef.current) void sourceNotify("countdown", tr("倒计时结束"), tr("时间到，休息一下吧。"));
-          // W-029：倒计时结束自动切入番茄钟短休息。
-          if (linkRef.current) useAppStore.getState().setPomodoroMode("shortBreak");
+          // 倒计时结束自动切入番茄钟短休息。只在番茄钟**无在途段**
+          // （含暂停）时接管——运行/暂停中的专注段被 setPomodoroMode 无记录
+          // 跳掉；切入后自动开始，兑现「自动切入」语义。：等待回座
+          // 自动开始（awaitingActivity）时也不接管——事件上下文的 mode 只看
+          // isRunning/segmentStartedAt，会把等待态误判成「无在途段」，强切
+          // 短休会清掉「等你回来」的承诺。
+          if (
+            linkRef.current &&
+            getPomodoroEventContext().mode === "stopped" &&
+            !useAppStore.getState().pomodoro.awaitingActivity
+          ) {
+            const st = useAppStore.getState();
+            st.setPomodoroMode("shortBreak");
+            st.togglePomodoro();
+          }
           recomputeTrayText();
         }
       }
@@ -201,10 +226,10 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
 
-  // W-025：卸载前把最新状态写盘（切视图 / 关窗口不丢计时）。
+  // 卸载前把最新状态写盘（切视图 / 关窗口不丢计时）。
   useEffect(() => () => persist(true), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // W-030/F-托盘多写入方：本实例注册进模块级注册表，由仲裁器统一写托盘；
+  // /F-托盘多写入方：本实例注册进模块级注册表，由仲裁器统一写托盘；
   // 运行中每 30s 重算一次，卸载/关开关/切模式时注销并立即重算（防残留）。
   useEffect(() => {
     if (!isTauri() || !trayTime || mode !== "timer") return;
@@ -248,7 +273,7 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
     if (secs > 0) start(secs);
   };
 
-  /* W-027 自定义预设：右键编辑（输入 0 = 删除该槽位），加号追加。 */
+  /* 自定义预设：右键编辑（输入 0 = 删除该槽位），加号追加。 */
   const presets = (() => {
     const raw = Array.isArray(config.presets) ? (config.presets as unknown[]) : [];
     const list = raw.filter((p): p is number => typeof p === "number" && p > 0 && Number.isFinite(p));
@@ -286,7 +311,7 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
     update({ presets: [...presets, Math.max(1, Math.round(mins * 60))] });
   };
 
-  /* W-026 倒数日目标管理。 */
+  /* 倒数日目标管理。 */
   const addTarget = () => {
     const label = targetLabel.trim();
     if (!label || !targetDate) return;
@@ -312,7 +337,7 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
   // 显示格式：开启「显示秒数」时显示 mm:ss，否则仅显示 mm。
   const display = showSeconds ? fmt(left) : fmt(left).replace(/:\d{2}$/, "");
 
-  /* #107 归零仪式感：非循环模式倒计时归零的一刻，整环满环闪烁 + 数字放大回弹 */
+  /* 归零仪式感：非循环模式倒计时归零的一刻，整环满环闪烁 + 数字放大回弹 */
   const prevLeftRef = useRef(left);
   const [justEnded, setJustEnded] = useState(false);
   useEffect(() => {
@@ -510,7 +535,8 @@ export function CountdownWidget({ instanceId }: { instanceId: string }) {
           <input
             value={custom}
             onChange={(e) => setCustom(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && applyCustom()}
+            /* IME 组合期 Enter（确认候选词）不当作提交。 */
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && applyCustom()}
             placeholder={tr("自定义 mm:ss 或 hh:mm:ss")}
             aria-label={tr("自定义倒计时时长")}
             data-interactive

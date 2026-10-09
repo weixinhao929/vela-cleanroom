@@ -31,8 +31,10 @@ import {
 import { GripHorizontal, LayoutGrid, Plus, X } from "lucide-react";
 import { useT } from "../../../i18n-lite";
 import { animDurations } from "../../../lib/durations";
+import { uiZoom } from "../../../lib/ui-zoom";
 import { getWidgetMeta } from "../../registry";
 import { useWidgetStore, type DockTile } from "../../widget-store";
+import { removeInstanceData } from "../../instance-data";
 import { WidgetErrorBoundary } from "../../WidgetErrorBoundary";
 import { DockTypePicker } from "../../dock/DockTypePicker";
 import type { PopoverAnchor } from "../../WidgetConfigPopover";
@@ -55,7 +57,7 @@ import {
 export const MISC_TYPE = "misc";
 
 /** 松手落格 FLIP 的弹簧时长：运行时取 --dur-dock-spring 的派生值（时长单一
- *  真源，与曲线 var(--ease-dock-spring) 配对），P1：此前写死 450ms 不随
+ *  真源，与曲线 var(--ease-dock-spring) 配对）：此前写死 450ms 不随
  *  设置→动效 速度档缩放——同一动画「弹但节奏错」。 */
 const settleMs = () => animDurations().dockSpringMs;
 
@@ -100,7 +102,7 @@ function itemRect(item: MiscItem, cellW: number): CSSProperties {
   };
 }
 
-export function MiscBoardPanel({ tile }: { tile: DockTile; active: boolean }) {
+export function MiscBoardPanel({ tile, active }: { tile: DockTile; active: boolean }) {
   const tr = useT();
   const setDockTileConfig = useWidgetStore((s) => s.setDockTileConfig);
   const items = useMemo(() => sanitizeMiscItems(tile.config?.items), [tile.config]);
@@ -185,8 +187,11 @@ export function MiscBoardPanel({ tile }: { tile: DockTile; active: boolean }) {
   const onBarMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = dragRef.current;
     if (!d || e.pointerId !== d.pointerId) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
+    /* clientX 差值是视觉位移 → 布局单位：÷uiZoom——dx/dy 换算后全程使用
+       （transform 的 px 与格位计算 (origLeft+dx)/(cellW+GAP) 均为布局）。 */
+    const z = uiZoom();
+    const dx = (e.clientX - d.startX) / z;
+    const dy = (e.clientY - d.startY) / z;
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
       setDrag({ id: d.id, dx, dy });
@@ -207,8 +212,10 @@ export function MiscBoardPanel({ tile }: { tile: DockTile; active: boolean }) {
     dragRef.current = null;
     setDrag(null);
     setPreview(null);
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
+    // clientX 视觉差 → 布局单位：÷uiZoom（与 onBarMove 同口径，格位与 FLIP 均布局）。
+    const z = uiZoom();
+    const dx = (e.clientX - d.startX) / z;
+    const dy = (e.clientY - d.startY) / z;
     // 松手视觉位置（起拖原点 + 指针位移）与落格后的格位原点：两者之差即 FLIP 补偿位移。
     let finalLeft = d.origLeft;
     let finalTop = d.origTop;
@@ -298,19 +305,22 @@ export function MiscBoardPanel({ tile }: { tile: DockTile; active: boolean }) {
     const r = resizeRef.current;
     if (!r || e.pointerId !== r.pointerId) return;
     // 指针位移 → 目标格数：宽按格步进（含间距），高按行步进；钳在 1..剩余列 / 1..MISC_MAX_H。
+    // clientX/Y 差是视觉坐标，格步进（stepW/MISC_ROW_PX）是布局单位——先除回 uiZoom。
     const it = items.find((i) => i.id === r.id);
     if (!it) return;
+    const z = uiZoom();
     const stepW = cellW + MISC_GAP_PX;
     const w = Math.max(
       1,
-      Math.min(MISC_COLS - it.x, Math.round((r.origW * stepW - MISC_GAP_PX + (e.clientX - r.startX)) / stepW))
+      Math.min(MISC_COLS - it.x, Math.round((r.origW * stepW - MISC_GAP_PX + (e.clientX - r.startX) / z) / stepW))
     );
     const h = Math.max(
       1,
       Math.min(
         MISC_MAX_H,
         Math.round(
-          (r.origH * MISC_ROW_PX + (r.origH - 1) * MISC_GAP_PX + (e.clientY - r.startY)) / (MISC_ROW_PX + MISC_GAP_PX)
+          (r.origH * MISC_ROW_PX + (r.origH - 1) * MISC_GAP_PX + (e.clientY - r.startY) / z) /
+            (MISC_ROW_PX + MISC_GAP_PX)
         )
       )
     );
@@ -412,13 +422,27 @@ export function MiscBoardPanel({ tile }: { tile: DockTile; active: boolean }) {
                     aria-label={`${tr("移除")} ${meta ? tr(meta.name) : item.type}`}
                     title={tr("移除")}
                     onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() => commit(removeItem(items, item.id))}
+                    onClick={() => {
+                      // （条目移除不清嵌套数据）：嵌套小组件以
+                      // `<tileId>:<itemId>` 为 instanceId，移除条目后其配置/
+                      // 数据桶（便签、倒计时状态、gallery 磁盘副本等）永留
+                      // localStorage——与整卡删除同契约，先清再提交。
+                      removeInstanceData(`${tile.id}:${item.id}`);
+                      commit(removeItem(items, item.id));
+                    }}
                   >
                     <X size={12} />
                   </button>
                 </div>
                 <div className="misc-item-body">
-                  {Content ? (
+                  {/* 收起（active=false，display:none）时不渲染嵌套组件——
+                      画布组件契约为 instanceId-only，无法内部感知面板可见性，
+                      常驻挂载会让天气轮询/回收站 8s 扫描等在面板收起后全速跑。
+                      代价是重开时数据重取（骨架占位），符合「active=false 暂停」
+                      的迷你/沉浸契约精神。 */}
+                  {!active ? (
+                    <div className="widget-skeleton" aria-hidden="true" />
+                  ) : Content ? (
                     <WidgetErrorBoundary instanceId={instanceId} type={item.type}>
                       <Suspense fallback={<div className="widget-skeleton" aria-busy="true" />}>
                         <Content instanceId={instanceId} />

@@ -1,8 +1,8 @@
 /**
- * G8 通用磁贴摘要测试：registry 为无富形态（MiniComponent）的常见入岛类型
+ * 通用磁贴摘要测试：registry 为无富形态（MiniComponent）的常见入岛类型
  * （今日概览 / 截止日期 / 便签 / 回收站 / 快捷方式 / 桌面文件）登记的
  * miniSummary 同步快照 + miniSummarySubscribe 变更通知，以及 i18n-lite
- * 的 `{n}` 占位符替换（G14 机制）。
+ * 的 `{n}` 占位符替换（机制）。
  *
  * 摘要经 getWidgetMeta(type).miniSummary 消费（与 DockTile 同路径），
  * 直接断言中文文案；英文走词典映射，缺省回退中文。

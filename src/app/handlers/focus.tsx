@@ -1,6 +1,6 @@
 /**
- * F7（组合根瘦身）：专注（番茄钟）域全局 handler。全部组件只做副作用/订阅、
- * 渲染 null；primary-only 的组件由 App 按窗口角色挂载（D-1：事件只 emit
+ * （组合根瘦身）：专注（番茄钟）域全局 handler。全部组件只做副作用/订阅、
+ * 渲染 null；primary-only 的组件由 App 按窗口角色挂载（事件只 emit
  * 一次，动作/媒体指令不重复执行）。职责原居 App.tsx，按域拆出；行为与
  * 注释原样迁移。
  */
@@ -36,13 +36,13 @@ export function GlobalPomodoroTicker() {
   const tick = useAppStore((s) => s.tickPomodoro);
   /* 公共 hook（浏览器模式 no-op + 静默失败），替代手写的「动态 import →
      listen → disposed 守卫」样板——手写版漏了 .catch，浏览器开发模式每次
-     开始计时都产生一条 unhandled rejection 并被记入崩溃日志（P3-9）。 */
-  useTauriEvent<number>("app:heartbeat", () => {
-    tick();
+     开始计时都产生一条 unhandled rejection 并被记入崩溃日志。 */
+  useTauriEvent<number>("app:heartbeat", (beat) => {
+    tick(typeof beat === "number" ? beat : undefined);
     // 喂狗：Rust 以此判定 primary WebView 存活（见 lib.rs failover 注释）。
     void invoke("heartbeat_ack").catch(() => {});
   });
-  /* P3：把番茄钟运行态同步给 Rust 心跳线程——没在跑时线程在 Condvar 上
+  /* 把番茄钟运行态同步给 Rust 心跳线程——没在跑时线程在 Condvar 上
      真挂起（每秒一次的原生唤醒 + 事件序列化全免），跑起来再唤醒。
      组件只在 primary 挂载，所以「谁消费心跳谁开关」。失败静默：心跳
      保持默认开启，行为不劣化。 */
@@ -54,7 +54,7 @@ export function GlobalPomodoroTicker() {
     if (!isRunning) return;
     // 兜底节拍（Rust 心跳失联且尚未 failover 的空窗期）。
     const interval = window.setInterval(tick, 1000);
-    // A-1：从后台节流/睡眠恢复可见时立即重算一次，把倒计时拉回墙钟真实值。
+    // 从后台节流/睡眠恢复可见时立即重算一次，把倒计时拉回墙钟真实值。
     const onVisible = () => {
       if (document.visibilityState === "visible") tick();
     };
@@ -77,9 +77,10 @@ export function GlobalPomodoroTicker() {
 export function StandbyPomodoroTicker() {
   const isRunning = useAppStore((s) => s.pomodoro.isRunning);
   const tick = useAppStore((s) => s.tickPomodoro);
-  useTauriEvent<number>("app:heartbeat", () => {
-    // 读即时态而非闭包：failover 期间本窗可能刚好暂停了专注。
-    if (useAppStore.getState().pomodoro.isRunning) tick();
+  useTauriEvent<number>("app:heartbeat", (beat) => {
+    // 读即时态而非闭包：failover 期间本窗可能刚好暂停了专注。拍号透传给
+    // tickPomodoro，双主同拍完成时按拍号跨窗去重落库。
+    if (useAppStore.getState().pomodoro.isRunning) tick(typeof beat === "number" ? beat : undefined);
   });
   /* primary 失联期间由本窗接管计时：用户在此窗停止专注时也要把心跳线程
      挂起（幂等 IPC，与 primary 并发表态同一值无副作用）。 */
@@ -109,10 +110,13 @@ export function GlobalGamePause() {
         autoPaused = true;
         useAppStore.getState().togglePomodoro();
       }
-    }).then((f) => {
-      if (disposed) f();
-      else unEnter = f;
-    });
+    })
+      .then((f) => {
+        if (disposed) f();
+        else unEnter = f;
+        /* 监听失败兜底，不留未处理 rejection（游戏暂停只是增强行为）。 */
+      })
+      .catch((err: unknown) => console.error("[focus] listen game-paused-entered failed:", err));
     void listen<unknown>("focus:game-paused-exited", () => {
       if (autoPaused) {
         autoPaused = false;
@@ -120,10 +124,13 @@ export function GlobalGamePause() {
         // 计时反向暂停），只清标记。
         if (!useAppStore.getState().pomodoro.isRunning) useAppStore.getState().togglePomodoro();
       }
-    }).then((f) => {
-      if (disposed) f();
-      else unExit = f;
-    });
+    })
+      .then((f) => {
+        if (disposed) f();
+        else unExit = f;
+        /* 监听失败兜底，不留未处理 rejection。 */
+      })
+      .catch((err: unknown) => console.error("[focus] listen game-paused-exited failed:", err));
     return () => {
       disposed = true;
       unEnter?.();
@@ -166,10 +173,13 @@ export function GlobalIdlePause() {
         // 同 GamePause：用户手动继续后（该点击本身会让 presence 变 active）不再反向 toggle。
         if (!useAppStore.getState().pomodoro.isRunning) useAppStore.getState().togglePomodoro();
       }
-    }).then((f) => {
-      if (disposed) f();
-      else un = f;
-    });
+    })
+      .then((f) => {
+        if (disposed) f();
+        else un = f;
+        /* 监听失败兜底，不留未处理 rejection（空闲暂停只是增强行为）。 */
+      })
+      .catch((err: unknown) => console.error("[focus] listen presence:state failed:", err));
     return () => {
       disposed = true;
       un?.();
@@ -179,7 +189,7 @@ export function GlobalIdlePause() {
 }
 
 /**
- * FocusTimer 借鉴（wait-activity 推进门）：presence 翻回 active 时若下一段
+ * （wait-activity 推进门）：presence 翻回 active 时若下一段
  * 专注正处于「等你回来」就位态，自动开始。仅 primary 挂载（与 tick 同窗口，
  * 避免多屏重复启动）；togglePomodoro 返回 false（未选事件）时清掉等待标记，
  * 由用户手动接管。
@@ -195,8 +205,8 @@ export function GlobalActivityGate() {
 }
 
 /**
- * FocusTimer 借鉴（Automation + MPRIS）：专注自动化引擎与媒体联动的挂载点，
- * 仅 primary 窗口运行（D-1：事件只 emit 一次，动作/媒体指令不重复执行）。
+ * （Automation + MPRIS）：专注自动化引擎与媒体联动的挂载点，
+ * 仅 primary 窗口运行（事件只 emit 一次，动作/媒体指令不重复执行）。
  */
 export function PomodoroAutomationHost() {
   useEffect(() => setupPomodoroAutomation(), []);
@@ -205,7 +215,7 @@ export function PomodoroAutomationHost() {
 }
 
 /**
- * FocusTimer 借鉴（媒体在播时抑制白噪音）：media:snapshot → ambience 守卫。
+ * （媒体在播时抑制白噪音）：media:snapshot → ambience 守卫。
  * 每个 widget 窗口各自守卫自己的音频图（氛围音的 AudioContext 就在其中某个
  * widget 窗口里）；设置窗等非 widget 窗口不挂（收不到该事件）。
  */
@@ -215,7 +225,7 @@ export function AmbienceMediaGuard() {
 }
 
 /**
- * FocusTimer 借鉴（滴答声）：专注运行中按设置循环播放挂钟/节拍器背景音。
+ * （滴答声）：专注运行中按设置循环播放挂钟/节拍器背景音。
  * 仅 primary 窗口——多屏窗口各播一路会叠加响度。tick 音色 none / 未运行时
  * 由 chimes 模块自行停止（卸载兜底）。
  */

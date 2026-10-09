@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════
-   设置窗口 — Vercel 式克制语言的「同族密度变体」（A2 统一后）
+   设置窗口 — Vercel 式克制语言的「同族密度变体」（统一后）
    中性阶做分隔 / accent 只做强调 / 8px 圆角 / 大写等宽小节标签
    （--font-label 角色）。表面与语义色全部继承主题引擎明暗双档，
    本文件不再重定义全局 token 取值（第二套色板已退役）。
@@ -10,7 +10,8 @@
 .tm-settings-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  /* 消费阶梯令牌（内嵌设置的模态遮罩；原裸 1000）。 */
+  z-index: var(--z-modal-scrim);
   background: var(--scrim-strong);
   display: flex;
   align-items: center;
@@ -50,7 +51,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   width: min(1200px, 100%);
   height: min(800px, 100%);
   /* 不透明度只作用于窗口背景色（同族底 = 生效主题 bg），内容与侧边栏保持
-     满强度可读。A2：不再消费第二套色板的 --paper。 */
+     满强度可读。：不再消费第二套色板的 --paper。 */
   background: color-mix(in srgb, var(--bg) calc(var(--settings-window-opacity, 1) * 100%), transparent);
   border-radius: var(--radius-xl);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
@@ -64,7 +65,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   animation: tm-window-in var(--dur-fx-slow, 0.3s) var(--ease-spring-soft, var(--ease-spring)) both;
 }
 
-/* ══ A2 密度变体（同族派生，取代原 neutral-dark / neutral-light 两套重定义）══
+/* ══ 密度变体（同族派生，取代原 neutral-dark / neutral-light 两套重定义）══
    设置窗不再用固定 Vercel 色板重定义全局 token（--paper/--ink/--line/--surface-*
    等）——同名 token 一律继承主题引擎的明暗双档值；本块只保留「窗口级密度」：
    8px 圆角、侧栏胶囊、焦点环。侧栏/激活胶囊从生效主题的 --bg/--ink 派生，
@@ -72,7 +73,6 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
    语义色（success/danger/amber/sky 及 *-ink/*-soft）由 theme-engine 明暗单源。 */
 .tm-settings-window {
   --radius: 8px;
-  --sidebar-item-radius: 8px;
   --ring: #737373;
   --sidebar-bg: color-mix(
     in srgb,
@@ -82,7 +82,6 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   --sidebar-item-hover: var(--surface-hover);
   /* 激活胶囊 = 反相实底（深色近白底深字 / 浅色近黑底浅字），Vercel 语言保留 */
   --sidebar-item-active: color-mix(in srgb, var(--ink) 94%, var(--bg));
-  --sidebar-item-active-fg: var(--bg);
 }
 
 /* === 键盘焦点环（Vercel ring）：仅键盘可达时显示，避免鼠标点击残留蓝圈。
@@ -271,7 +270,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   left: 0;
   right: 0;
   z-index: 60;
-  /* 原 var(--panel) 从未定义（透明底），改接 A1 求解的弹层色。 */
+  /* 原 var(--panel) 从未定义（透明底），改接 求解的弹层色。 */
   background: var(--popover-layer, var(--popover-bg, var(--paper-solid)));
   border: 1px solid var(--line);
   border-radius: var(--rad-10);
@@ -378,7 +377,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
     color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
   border-radius: var(--radius-pill);
-  /* B6：改为 <button> 语义，重置按钮默认外观保持原视觉。 */
+  /* 改为 <button> 语义，重置按钮默认外观保持原视觉。 */
   appearance: none;
   background: none;
   border: 0;
@@ -482,15 +481,8 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   padding: 2px 5px;
 }
 
-/* 视图 / 灵动岛折叠二级栏 */
-.tm-sidebar-item-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* B6：展开箭头独立按钮（嵌套交互目标），命中区放大到图标之外。 */
+/* 视图 / 灵动岛折叠二级栏。 */
+/* 展开箭头独立按钮（嵌套交互目标），命中区放大到图标之外。 */
 .tm-sidebar-chevron-btn {
   display: grid;
   place-items: center;
@@ -535,7 +527,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
     background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
     color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
   border-radius: var(--radius-pill);
-  /* B6：button 语义重置。 */
+  /* button 语义重置。 */
   appearance: none;
   background: none;
   border: 0;
@@ -555,6 +547,44 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   padding: 6px 12px 6px 60px;
   font-size: var(--fs-12);
   color: var(--muted-2);
+}
+/* 视图下的编组节点（视图 → 编组 → 成员三级树）：行样式复用 sub-item，
+   左缩进在二级（60px）与成员（再进一层）之间；组名后随成员计数。 */
+.tm-sidebar-sub-group-row {
+  cursor: pointer;
+  padding-right: 8px;
+}
+.tm-sidebar-sub-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 编组成员子列表（第三级）：在编组行缩进上再进一层，展开/收拢与二级同款
+   grid-rows 过渡。注意只命中嵌套 wrap 里的成员行——编组行自己是二级单元，
+   必须与同时钟等其它组件同一条垂直线（60px）。 */
+.tm-sidebar-sub-group > .tm-sidebar-sub-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+  /* layout-anim: ok 编组成员子列表折叠（grid-rows 0fr→1fr，#89 视图折叠同款手法） */
+  transition:
+    grid-template-rows var(--dur-fx, 0.2s) var(--ease-out),
+    opacity var(--dur-fx, 0.2s) var(--ease-out);
+}
+.tm-sidebar-sub-group > .tm-sidebar-sub-wrap.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+}
+.tm-sidebar-sub-group > .tm-sidebar-sub-wrap > .tm-sidebar-sub {
+  overflow: hidden;
+  min-height: 0;
+}
+.tm-sidebar-sub-group > .tm-sidebar-sub-wrap .tm-sidebar-sub-item {
+  padding-left: 78px;
 }
 /* 灵动岛「杂项」磁贴的第三级（面板组件列表）：在二级缩进上再进一层。 */
 .tm-sidebar-sub2 .tm-sidebar-sub-item {
@@ -580,7 +610,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   padding: 32px 40px;
   overflow-y: auto;
   /* 切页轻淡入（pageDepth 收敛版重引入）：key={page} 重挂时仅 opacity
-     超短淡入、无位移——旧 A3 pageDepth（8px 位移 + 页面深度曲线）因
+     超短淡入、无位移——旧 pageDepth（8px 位移 + 页面深度曲线）因
      「切页一直跳」整体移除；纯 opacity 只消解瞬切的生硬，无移动感。 */
   animation: tm-content-swap var(--dur-fx-fast, 0.15s) var(--ease-out) backwards;
 }
@@ -589,7 +619,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
     opacity: 0;
   }
 }
-/* A3 页面深度转场已移除：切页即时呈现（用户反馈切页一直跳）；
+/* 页面深度转场已移除：切页即时呈现（用户反馈切页一直跳）；
    tm-page-in keyframes 保留供首开入场（settings-window / 内嵌首帧）消费。 */
 @keyframes tm-page-in {
   from {
@@ -625,14 +655,10 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   gap: 12px;
   margin-bottom: 12px;
 }
-.tm-preset-grid.row-2 {
-  grid-template-columns: repeat(5, 1fr);
-}
-.tm-preset-grid.row-2 .tm-preset-card:first-child {
-  grid-column: 2;
-}
+/* .tm-preset-grid.row-2 起始列偏移两条已删——预设宫格改单行布局，
+   row-2 修饰符全语料 0 引用。 */
 .tm-preset-card {
-  /* B7：改为 <button> 语义（键盘可达），重置按钮默认样式保持原视觉。 */
+  /* 改为 <button> 语义（键盘可达），重置按钮默认样式保持原视觉。 */
   appearance: none;
   font: inherit;
   color: inherit;
@@ -689,7 +715,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   position: relative;
   overflow: hidden;
 }
-/* B3 实时预览层：hover/选中时叠加在静态缩略图上——中性 token 按当前
+/* 实时预览层：hover/选中时叠加在静态缩略图上——中性 token 按当前
    themeMode 解析（--pv-* 由 TSX 内联注入），accent 为用户当前主色，
    即「切到这张卡实际会得到」的迷你场景；呼吸点让预览有生命感，
    只在 hover/选中时运行动画（不驻留），reduce-motion 全局关停。 */
@@ -730,8 +756,11 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   background: var(--pv-accent);
   margin-bottom: 2px;
 }
-.tm-preset-card:hover .tm-preset-live-dot,
-.tm-preset-card.selected .tm-preset-live-dot {
+/* 预设卡呼吸点是纯氛围循环（selected 态可长时间
+   驻留），受「特效管理→氛围动效」总闸门控（theme-engine 在全部窗口把关闭
+   项写入 html[data-fx-off]，与 widget 窗 cd-ring / music-dot 同口径）。 */
+html:not([data-fx-off~="ambientMotion"]) .tm-preset-card:hover .tm-preset-live-dot,
+html:not([data-fx-off~="ambientMotion"]) .tm-preset-card.selected .tm-preset-live-dot {
   animation: tm-preset-live-breathe 1.6s ease-in-out infinite alternate;
 }
 @keyframes tm-preset-live-breathe {
@@ -845,6 +874,22 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
 }
 
 /* === 壁纸区（样式页）：缩略图条 + 当前壁纸勾徽 === */
+/* 堆叠行的头部行：标题/描述在左、次要操作（刷新）在右；与三段式设置行的
+   trailing 语义一致，但用于 column 布局的堆叠行。 */
+.tm-setting-row-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.tm-wallpaper-refresh {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+}
 .tm-wallpaper-strip {
   display: flex;
   flex-wrap: wrap;
@@ -903,7 +948,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   color: var(--muted-2, var(--muted));
 }
 
-/* === 设置行（B2 三段式：40px 圆角图标芯片 + title/subtitle + trailing 控件，
+/* === 设置行（三段式：40px 圆角图标芯片 + title/subtitle + trailing 控件，
    行高 56 —— 参照三段式设置行规范） === */
 .tm-setting-row {
   display: flex;
@@ -913,11 +958,35 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   min-height: 56px;
   padding: 0 8px;
   border-bottom: 1px solid var(--line-soft, rgba(255, 255, 255, 0.06));
-  /* A4 状态层：hover 统一为 8% On 色叠加（替代手调 hover 底色），
+  /* 状态层：hover 统一为 8% On 色叠加（替代手调 hover 底色），
      行本身不是可点容器，不设 pressed 档（按压反馈由内部控件自理）。 */
   position: relative;
   isolation: isolate;
   --state-layer: 0;
+}
+/* 搜索命中行级定位（settings-jump）：滚动到行后主色底光脉冲回落一次，
+   让「跳到的那一行」一眼可辨。两档减少动态下退化为静态淡底（1.8s 后
+   随类移除一起消失）。 */
+.tm-setting-row.tm-row-flash {
+  animation: tm-row-flash 1.8s var(--ease-out, ease) 1 both;
+}
+@keyframes tm-row-flash {
+  0% {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+  100% {
+    background: transparent;
+  }
+}
+html[data-reduce-motion="1"] .tm-setting-row.tm-row-flash {
+  animation: none;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .tm-setting-row.tm-row-flash {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
 }
 .tm-setting-row::after {
   content: "";
@@ -1044,13 +1113,32 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   border-radius: var(--radius-ctl);
   border: 1px solid var(--line-strong);
   cursor: pointer;
-  transition:
-    transform var(--dur-fx-fast, 0.15s) var(--ease-out),
-    box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+  /* ④：transition 于此被后段 3330 行同特异度整条重定义（超集，含
+     background-color），此处不再声明。 */
 }
 .tm-color-picker:hover .tm-color-swatch {
   transform: scale(1.08);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+/* hex 精确输入（ColorRow）：等宽小号文本框，Enter/失焦提交，非法回退。 */
+.tm-color-hex {
+  width: 76px;
+  padding: 5px 8px;
+  font-family: var(--font-label, "Geist Mono", Consolas, monospace);
+  font-size: var(--fs-12-5, 12.5px);
+  letter-spacing: 0.02em;
+  color: var(--muted-3);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  outline: none;
+  transition:
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-color-hex:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-soft));
 }
 .tm-btn-reset {
   padding: 6px 14px;
@@ -1152,13 +1240,9 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
 .tm-select-wrap {
   position: relative;
 }
-/* 设置行是 isolate 的层叠上下文（A4 状态层需要），菜单的 z-index 出不了行：
-   DOM 靠后的行/分区会整行画在展开的菜单上面，点击也被它们截走——外点
-   监听随即关菜单，表现为「下拉选不上」。展开期间（含 120ms 退场）把承载
-   行抬到相邻 auto 层级之上。 */
-.tm-setting-row:has(.tm-select-menu) {
-  z-index: 3;
-}
+/* 菜单 portal 到 document.body 后不再处于设置行
+   的层叠上下文内，此前的「展开期间抬行」补丁（:has(.tm-select-menu) 的
+   z-index:3）随之失效且无必要——fixed 菜单天然出得了 isolate 行。 */
 .tm-dropdown {
   display: flex;
   align-items: center;
@@ -1189,12 +1273,15 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
 .tm-dropdown svg.open {
   transform: rotate(180deg);
 }
+/* portal 到 document.body + fixed——left/top 与
+   min-width（触发器宽度下限，fixed 的百分比包含块是视口）由 JS 内联写入
+   （布局单位，锚点 gBCR÷uiZoom 快照），CSS 只留视觉与 transform-origin
+   （data-side 翻到上方时原点跟底缘）。此前 absolute + top:calc(100%+6px)
+   内联于 .tm-select-wrap 下，触发行贴近 .tm-content（overflow-y:auto）
+   可视底缘时菜单下半被整页滚动容器裁剪。 */
 .tm-select-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
+  position: fixed;
   z-index: 60;
-  min-width: 100%;
   max-height: 260px;
   overflow: auto;
   padding: 6px;
@@ -1210,8 +1297,12 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
     0 12px 32px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 0 color-mix(in srgb, var(--ink) 6%, transparent);
   animation: tm-menu-in var(--dur-fx-fast, 0.15s) var(--ease-out) both;
-  /* D3：关闭态退场（与 tm-menu-in 入场对称）。 */
+  /* 关闭态退场（与 tm-menu-in 入场对称）。 */
   transform-origin: top center;
+}
+/* 翻到触发器上方时，入场缩放原点跟底缘。 */
+.tm-select-menu[data-side="top"] {
+  transform-origin: bottom center;
 }
 .tm-select-menu.is-closing {
   animation: tm-menu-out var(--dur-fx-xfast, 0.12s) var(--ease-in) forwards;
@@ -1239,7 +1330,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   color: var(--ink);
   border-radius: var(--rad-6);
   cursor: pointer;
-  /* A4 状态层：hover .08 / pressed .12 叠 On 色（选中态底色在层下，不受影响） */
+  /* 状态层：hover .08 / pressed .12 叠 On 色（选中态底色在层下，不受影响） */
   position: relative;
   isolation: isolate;
   --state-layer: 0;
@@ -1265,12 +1356,12 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-/* B11 键盘导航高亮（方向键移动的候选项，与 hover 视觉一致）。 */
+/* 键盘导航高亮（方向键移动的候选项，与 hover 视觉一致）。 */
 .tm-select-item.kb-focus {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-/* B9/B12 步进器：越界禁用态 + 非法输入 shake。 */
+/* 步进器：越界禁用态 + 非法输入 shake。 */
 .tm-stepper-btn:disabled {
   opacity: 0.35;
   cursor: default;
@@ -1339,6 +1430,54 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
   margin-top: 12px;
   font-size: var(--fs-13);
   color: var(--accent);
+}
+/* 失败反馈红色（成功保持 accent）；4s 自动清除由组件负责。 */
+.tm-monitor-msg.is-error {
+  color: var(--danger);
+}
+/* 显示器标题旁的手动刷新（事件通道丢播的人工兜底）。 */
+.tm-monitor-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: 8px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-soft);
+  color: var(--muted-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-monitor-refresh:hover {
+  color: var(--accent);
+  border-color: var(--line-strong);
+}
+/* 视图/小组件页标题旁的「作用于哪块屏」徽标（多屏才显示）。 */
+.tm-managed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  padding: 3px 9px;
+  font-size: var(--fs-12);
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition:
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-managed-chip:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 /* 显示器卡片右侧按钮组（在此显示器显示 / 管理此屏小组件）。 */
 .tm-monitor-actions {
@@ -1442,7 +1581,7 @@ body.tm-settings-layer:has(.tm-settings-window[data-theme="light"]) {
 }
 
 /* === 诊断：崩溃日志 === */
-/* 启动耗时分段（P4 诊断区）。等宽字体让阶段名与毫秒数纵向对齐，
+/* 启动耗时分段（诊断区）。等宽字体让阶段名与毫秒数纵向对齐，
    条形宽度按该阶段占总耗时的比例，一眼看出瓶颈段。 */
 .tm-bootprofile {
   display: flex;
@@ -1584,7 +1723,7 @@ html[data-reduce-motion="1"] .tm-bootprofile-bar > i {
   word-break: break-all;
 }
 
-/* 运行日志（S1）：日志行较长，允许横向滚动而不是折行，保持时间戳对齐可读 */
+/* 运行日志：日志行较长，允许横向滚动而不是折行，保持时间戳对齐可读 */
 .tm-runtimelog {
   display: flex;
   flex-direction: column;
@@ -1880,9 +2019,50 @@ button.tm-view-switch {
 .tm-view-del:focus-visible {
   color: var(--muted-2);
 }
-.tm-view-del:hover {
+/* 升到 0,3,0（行内删除钮自身悬停）压过上方 .tm-view-row:hover
+   .tm-view-del 的 muted-2——位序在后同特异度胜出，替代 !important 救济。 */
+.tm-view-row .tm-view-del:hover {
   background: color-mix(in srgb, var(--danger) 14%, transparent);
-  color: var(--danger) !important;
+  color: var(--danger);
+}
+/* 拖拽排序——被拖行半透明示「已在手上」，其余行保持可投放。 */
+.tm-view-row.dragging {
+  opacity: 0.45;
+}
+/* 上移/下移（拖拽的键盘等价物）。与删除按钮同款「悬停行时浮现」。 */
+.tm-view-move {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.tm-view-move button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-view-row:hover .tm-view-move button,
+.tm-view-move button:focus-visible {
+  color: var(--muted-2);
+}
+/* 同款——升特异度压过 .tm-view-row:hover .tm-view-move button。 */
+.tm-view-row .tm-view-move button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+.tm-view-move button:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 .tm-view-actions {
@@ -2348,7 +2528,7 @@ button.tm-shortcut-combo.is-conflict {
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
-/* === 邮件多账户管理（W-134） === */
+/* === 邮件多账户管理 === */
 .tm-email-account-list {
   display: flex;
   flex-direction: column;
@@ -2377,7 +2557,7 @@ button.tm-shortcut-combo.is-conflict {
   white-space: nowrap;
 }
 
-/* === 系统栏显示项编辑器（W-154） === */
+/* === 系统栏显示项编辑器 === */
 .sysbar-items {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -2736,6 +2916,17 @@ button.tm-shortcut-combo.is-conflict {
   color: var(--muted-2);
 }
 
+/* 特效管理 · 非增强档弱化：动效模式不是「增强」时这些开关不生效（desc 有
+   文字说明），整区降透明度让"暂不生效"一眼可见；保留交互——允许用户
+   预先配置，切到增强档后立即按此生效。标题行不弱化（分组语义仍在）。 */
+.tm-fx-manage[data-fx-inactive="1"] .tm-setting-row {
+  opacity: 0.55;
+  transition: opacity var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.tm-fx-manage[data-fx-inactive="1"] .tm-setting-row:focus-within {
+  opacity: 0.9;
+}
+
 /* === 许可证页 === */
 .tm-license-particles {
   margin: 6px 0 14px;
@@ -2915,9 +3106,9 @@ html[data-reduce-motion="1"] .tm-donate-card {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 14px;
+  /* ⑤：gap/padding 由后段图库 M3 改版区（12px/8px 12px）覆盖，此处
+     删除死声明；min-height 等未重定义项保留。 */
   min-height: 64px;
-  padding: 13px 16px;
   background: var(--surface-soft);
   border: 1px solid var(--line);
   border-radius: var(--rad-14);
@@ -3047,11 +3238,13 @@ html[data-reduce-motion="1"] .tm-donate-card {
   transition: opacity var(--dur-fx, 0.2s) var(--ease-fx, ease);
 }
 
-/* #78 恢复中遮罩：覆盖整个设置窗，淡入后阻断误操作直到 reload */
+/* 恢复中遮罩：覆盖整个设置窗，淡入后阻断误操作直到 reload */
 .data-restore-overlay {
   position: fixed;
   inset: 0;
-  z-index: 90;
+  /* 窗口级阻断遮罩走 --z-blockout（原裸 90 反被选择器 400 盖住——
+     恢复期必须压过窗口内一切层，含 toast 与模态）。 */
+  z-index: var(--z-blockout);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3065,7 +3258,7 @@ html[data-reduce-motion="1"] .tm-donate-card {
   animation: rb-fade-slide var(--anim-dur, 0.25s) var(--ease-out) backwards;
 }
 
-/* #91 data-message 超时退场：200ms 淡出后再卸载 */
+/* data-message 超时退场：200ms 淡出后再卸载 */
 .data-message.is-closing {
   animation: data-msg-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
 }
@@ -3076,13 +3269,34 @@ html[data-reduce-motion="1"] .tm-donate-card {
   }
 }
 
-/* #81 导入/导出反馈条退场（成功/失败共用） */
+/* #设置反馈条基础样式：此前全仓只有动画规则（feature-animations.css 的
+   fx 门控入场 + 下方退场），没有颜色 / 字号 / 占行——错误文本不红、成功
+   文本不绿，且裸 span 默认 inline 与行内控件挤在同一行。此处补齐基础层，
+   全部既有用点（开关报错 / 导入导出反馈 / 快捷键冲突 / 连接页账号错误等）
+   随之生效；动画层照旧叠加。 */
+.tm-setting-saved,
+.tm-setting-error {
+  display: block;
+  font-size: var(--fs-13);
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.tm-setting-saved {
+  color: var(--success);
+}
+
+.tm-setting-error {
+  color: var(--danger-ink);
+}
+
+/* 导入/导出反馈条退场（成功/失败共用） */
 .tm-setting-saved.is-closing,
 .tm-setting-error.is-closing {
   animation: data-msg-out var(--dur-fx, 0.2s) var(--ease-fx, ease) forwards;
 }
 
-/* #82 Stepper 数值弹跳：wrap 一次 scale 弹跳（input 不重挂载、不打断输入）；
+/* Stepper 数值弹跳：wrap 一次 scale 弹跳（input 不重挂载、不打断输入）；
    聚焦时 text-align / padding-left 的变化补 .15s 过渡 */
 .tm-stepper-input-wrap.num-pop {
   animation: tm-stepper-pop var(--dur-fx, 0.2s) var(--ease-spring);
@@ -3104,16 +3318,16 @@ html[data-reduce-motion="1"] .tm-donate-card {
   transition: padding-left var(--dur-fx-fast, 0.15s) var(--ease-out);
 }
 
-/* #83 --pct 可插值属性注册与 .tm-slider-eased 已随 [POLISH] 滑条 v2 迁至 feature-polish.css */
+/* --pct 可插值属性注册与 .tm-slider-eased 已随 [POLISH] 滑条 v2 迁至 feature-polish.css */
 
-/* #84 独立设置窗口首开：窗口体一次轻量淡入上移（内嵌模式已有 tm-window-in） */
+/* 独立设置窗口首开：窗口体一次轻量淡入上移（内嵌模式已有 tm-window-in） */
 body.tm-settings-layer .tm-settings-body {
   animation: tm-page-in var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
 }
 
-/* #85 图库分类退场动画已随图库 M3 改版（分类芯片过滤）移除。 */
+/* 图库分类退场动画已随图库 M3 改版（分类芯片过滤）移除。 */
 
-/* #86 色块：颜色替换走 .25s 过渡；应用生效瞬间一次 scale 脉冲 */
+/* 色块：颜色替换走 .25s 过渡；应用生效瞬间一次 scale 脉冲 */
 .tm-color-swatch {
   transition:
     background-color var(--anim-dur, 0.25s) var(--ease-fx, ease),
@@ -3135,7 +3349,7 @@ body.tm-settings-layer .tm-settings-body {
   }
 }
 
-/* #89 视图折叠子列表：常驻挂载 + grid-rows 展开/收拢（收起侧补齐过渡） */
+/* 视图折叠子列表：常驻挂载 + grid-rows 展开/收拢（收起侧补齐过渡） */
 .tm-sidebar-sub-wrap {
   display: grid;
   grid-template-rows: 0fr;
@@ -3155,9 +3369,9 @@ body.tm-settings-layer .tm-settings-body {
   overflow: hidden;
   min-height: 0;
 }
-/* #90 侧栏共享指示条已随 M3 药丸激活态移除（激活项自带 accent 淡底）。 */
+/* 侧栏共享指示条已随 M3 药丸激活态移除（激活项自带 accent 淡底）。 */
 
-/* #92 启动耗时「复制↔已复制」：文字切换淡入（成功态着色） */
+/* 启动耗时「复制↔已复制」：文字切换淡入（成功态着色） */
 .tm-copied-label {
   display: inline-block;
   /* 四.3：字重常驻 600——原 .on 才切 600，复制瞬间「变粗 + 变绿」会把同行
@@ -3170,7 +3384,7 @@ body.tm-settings-layer .tm-settings-body {
   color: var(--success);
 }
 
-/* #93 崩溃日志清空：列表收拢淡出后再移除 */
+/* 崩溃日志清空：列表收拢淡出后再移除 */
 .tm-crashlog-list.is-clearing {
   animation: tm-list-collapse var(--dur-fx, 0.2s) var(--ease-in) forwards;
   pointer-events: none;
@@ -3182,13 +3396,13 @@ body.tm-settings-layer .tm-settings-body {
   }
 }
 
-/* #94 动画预览提示文案：随设置切换 4px 上滑淡入（key 重建触发） */
+/* 动画预览提示文案：随设置切换 4px 上滑淡入（key 重建触发） */
 .tm-preview-hint-bottom > span {
   display: inline-block;
   animation: rb-fade-slide var(--dur-fx, 0.2s) var(--ease-out) backwards;
 }
 
-/* #95 许可证三行信息错落淡入（行内 animation-delay 递增） */
+/* 许可证三行信息错落淡入（行内 animation-delay 递增） */
 .tm-license-item {
   animation: rb-fade-slide var(--dur-fx-slow, 0.3s) var(--ease-out) backwards;
 }
@@ -3229,7 +3443,7 @@ body.tm-settings-layer .tm-settings-body {
   color: var(--ink);
 }
 
-/* #14 内嵌设置面板关闭对称退场：遮罩淡出 + 窗口下坠缩出（220ms ease-in） */
+/* 内嵌设置面板关闭对称退场：遮罩淡出 + 窗口下坠缩出（220ms ease-in） */
 .tm-settings-overlay.is-closing {
   animation: tm-overlay-out var(--dur-fx, 0.2s) var(--ease-in) forwards;
 }
@@ -3248,7 +3462,7 @@ body.tm-settings-layer .tm-settings-body {
   }
 }
 
-/* #95 许可证行错落改 --sti 变量驱动（TSX 注入序号），替代行内 delay */
+/* 许可证行错落改 --sti 变量驱动（TSX 注入序号），替代行内 delay */
 .tm-license-item {
   animation-delay: calc(min(var(--sti, 0), 2) * 40ms);
 }
@@ -3293,7 +3507,7 @@ body.tm-settings-layer .tm-settings-body {
   color: var(--muted);
   padding: 4px 8px 10px;
 }
-/* 运行状态条（F-10）：色点 + 状态词 + 一句话建议，右侧任务栏类型 / 路径 / 协议摘要。 */
+/* 运行状态条：色点 + 状态词 + 一句话建议，右侧任务栏类型 / 路径 / 协议摘要。 */
 .tm-tb-status {
   display: flex;
   align-items: center;
@@ -3366,7 +3580,7 @@ body.tm-settings-layer .tm-settings-body {
   align-items: center;
   gap: 6px;
 }
-/* 状态卡（F-3）：命中态 accent 描边高亮，随 taskbar:state-changed 切换。 */
+/* 状态卡：命中态 accent 描边高亮，随 taskbar:state-changed 切换。 */
 .tm-tb-card {
   margin-top: 10px;
   padding: 4px 14px 10px;
@@ -3430,7 +3644,7 @@ body.tm-settings-layer .tm-settings-body {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-/* 规则列表（F-4）：卡内二级区块，左侧竖线分层。 */
+/* 规则列表：卡内二级区块，左侧竖线分层。 */
 .tm-tb-sub {
   margin-top: 6px;
   padding-left: 10px;
@@ -3469,6 +3683,15 @@ body.tm-settings-layer .tm-settings-body {
   flex: 1;
   min-width: 160px;
 }
+/* 空匹配值规则恒不命中——输入框弱化 + 就地徽标，避免用户误以为规则生效。 */
+.tm-tb-rule-head .tm-text-input.tm-tb-rule-pattern-empty {
+  border-color: var(--warn, #d29922);
+}
+.tm-tb-rule-hint {
+  font-size: var(--fs-10);
+  color: var(--warn, #d29922);
+  white-space: nowrap;
+}
 .tm-tb-rule-actions {
   display: flex;
   gap: 4px;
@@ -3503,7 +3726,7 @@ body.tm-settings-layer .tm-settings-body {
 .tm-tb-add {
   margin-top: 8px;
 }
-/* 忽略窗口三组标签（F-5）：行内输入 + 追加，chips 复用附加城市样式。 */
+/* 忽略窗口三组标签：行内输入 + 追加，chips 复用附加城市样式。 */
 .tm-tb-tags {
   padding-bottom: 6px;
 }
@@ -3515,7 +3738,7 @@ body.tm-settings-layer .tm-settings-body {
 .tm-tb-tags-input .tm-text-input {
   width: 200px;
 }
-/* 共存说明（F-15）：页尾静态文案。 */
+/* 共存说明：页尾静态文案。 */
 .tm-tb-note {
   margin-top: 14px;
   padding: 10px 12px;
@@ -3527,7 +3750,7 @@ body.tm-settings-layer .tm-settings-body {
   color: var(--muted);
 }
 
-/* ---- BentoDesk 借鉴 #5：自动整理分组建议面板（AutoOrganizeEditor）。 ---- */
+/* ---- 自动整理分组建议面板（AutoOrganizeEditor）。 ---- */
 .ao-suggest-group {
   display: flex;
   flex-direction: column;
@@ -3769,7 +3992,7 @@ body.tm-settings-layer .tm-settings-body {
 }
 
 /* ------------------------------------------------------------------ */
-/*  更新通道 / 回滚列表 / 版本历史（借鉴 ClassSoftwareHub #6/#7）        */
+/*  更新通道 / 回滚列表 / 版本历史        */
 /* ------------------------------------------------------------------ */
 
 .tm-update-rollback {
@@ -3832,7 +4055,7 @@ body.tm-settings-layer .tm-settings-body {
 }
 
 /* ------------------------------------------------------------------ */
-/*  在线预设画廊（借鉴 ClassSoftwareHub #9）                            */
+/*  在线预设画廊                            */
 /* ------------------------------------------------------------------ */
 
 .tm-gallery-list {
@@ -3877,9 +4100,26 @@ body.tm-settings-layer .tm-settings-body {
   color: var(--muted-3);
   font-variant-numeric: tabular-nums;
 }
+/* 已安装标记：与画廊包同名的本地样式预设已存在（导入同名跳过），按钮
+   置灰防无效重复点击。 */
+.tm-gallery-installed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  padding: 1px 8px;
+  font-size: var(--fs-10-5);
+  color: var(--success);
+  background: var(--success-soft);
+  border-radius: var(--radius-pill);
+}
+.tm-gallery-card .tm-btn-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 
 /* ------------------------------------------------------------------ */
-/*  从图片提取色板（借鉴 ClassSoftwareHub #12）                          */
+/*  从图片提取色板                          */
 /* ------------------------------------------------------------------ */
 
 .tm-palette-strip {
@@ -3927,7 +4167,7 @@ body.tm-settings-layer .tm-settings-body {
 }
 
 /* ================================================================== */
-/* FocusTimer 借鉴：专注自动化规则编辑器（planner.tsx）                */
+/* 专注自动化规则编辑器（planner.tsx） */
 /* ================================================================== */
 .auto-rule {
   display: flex;

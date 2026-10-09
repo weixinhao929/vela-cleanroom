@@ -48,7 +48,7 @@ pub mod imp {
         pub mem_total_gb: f32,
     }
 
-    /// BUG-1（审计）：单块适配器的采样结果。`luid` 为 PDH 实例里的
+    /// 单块适配器的采样结果。`luid` 为 PDH 实例里的
     /// `0xHHHHHHHH_0xLLLLLLLL` 键，用于与 DXGI 名称目录对齐取型号名。
     #[derive(Clone, Debug)]
     pub struct GpuSample {
@@ -145,13 +145,13 @@ pub mod imp {
 
     /// Pre-parses raw PDH instance names into `(adapter_luid, value)` pairs so
     /// downstream aggregation never re-runs the per-name string parse per pass
-    /// (F-10 / F-12).
+    /// ().
     fn parse_items(items: &[(String, f64)]) -> Vec<(String, f64)> {
         items.iter().map(|(n, v)| (adapter_luid(n), *v)).collect()
     }
 
     /// Sums values whose instance belongs to `luid`; `items` must already be
-    /// `parse_items` output. BUG-1（审计）：改为严格匹配、去掉"无匹配回退全
+    /// `parse_items` output. ：改为严格匹配、去掉"无匹配回退全
     /// 部求和"——多卡场景把 A 卡显存记到 B 卡是错误的；单卡主机行为不变。
     fn sum_for_luid(items: &[(String, f64)], luid: &str) -> f64 {
         items
@@ -244,7 +244,7 @@ pub mod imp {
         }
 
         /// One non-blocking collect + read. `None` until the second call
-        /// (rate counters require a baseline sample). BUG-1（审计）：返回
+        /// (rate counters require a baseline sample). ：返回
         /// 每块适配器一条样本（引擎∪内存计数器里出现过的 LUID），空闲的
         /// dGPU 也能被看到，不再只报"最忙的一块"。
         pub fn read(&mut self) -> Option<Vec<GpuSample>> {
@@ -351,7 +351,7 @@ pub mod imp {
         })
     }
 
-    /// BUG-1（审计）：DXGI 枚举全部显示适配器，键为与 PDH 实例一致的小写
+    /// DXGI 枚举全部显示适配器，键为与 PDH 实例一致的小写
     /// `0x{high:08x}_0x{low:08x}` 形式。进程内只枚举一次（适配器热插拔在
     /// 桌面场景极罕见；未命中名称的 LUID 由前端回退占位名）。
     pub fn gpu_display_names() -> &'static HashMap<String, String> {

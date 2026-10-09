@@ -1,9 +1,9 @@
-/* 应用内 toast 栈（#99）——从 widget-anim.css 拆出（C-10）：ToastHost 在
+/* 应用内 toast 栈（#99）——从 widget-anim.css 拆出：ToastHost 在
    哪个窗口挂载，样式就跟到哪个窗口（由 ToastHost.tsx 直接 import），
    snip/super-panel 等精简入口窗口不再为此背负整份 widget-anim.css。
    规则本体原样迁移，未做任何改写。 */
 
-/* #99 应用内 toast：右上角固定栈，入 250ms / 停 4s / 出 200ms，最多 3 条 */
+/* 应用内 toast：右上角固定栈，入 250ms / 停 4s / 出 200ms，最多 3 条 */
 .app-toast-stack {
   position: fixed;
   top: 16px;
@@ -24,7 +24,7 @@
   background: var(--paper-solid);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35);
   overflow: hidden;
-  /* fill 用 backwards（原 widget-anim.css 头 G-4）：末帧即自然值，不因
+  /* fill 用 backwards（原 widget-anim.css 头 ）：末帧即自然值，不因
      forwards/both 给常驻 toast 保留持久合成层。入/出时长走 --anim-dur /
      --dur-fx（时长双轨制收口），与 ToastHost exitLingerMs 同源，随
      设置→动效 速度档缩放。 */
@@ -87,7 +87,7 @@
 .app-toast.kind-error .app-toast-bar {
   background: var(--danger);
 }
-/* B8：类型图标 + 关闭/动作按钮。 */
+/* 类型图标 + 关闭/动作按钮。 */
 .app-toast-ico {
   flex: none;
   align-self: center;
@@ -127,7 +127,7 @@
   color: var(--ink);
   background: var(--surface-hover);
 }
-/* A4 按压态：state-layer pressed 一档（ctx-item:active 同范式）。 */
+/* 按压态：state-layer pressed 一档（ctx-item:active 同范式）。 */
 .app-toast-close:active {
   background: color-mix(in srgb, var(--ink) var(--state-layer-pressed, 0.12), transparent);
 }

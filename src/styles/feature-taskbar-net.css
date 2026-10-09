@@ -1,4 +1,4 @@
-/* P2-8 任务栏网速条窗口（taskbar-net.html 独立入口）。
+/* 任务栏网速条窗口（taskbar-net.html 独立入口）。
    自 widget.css 拆出：该窗口是零交互常驻小窗，走精简入口（不加载
    widget.css 的其余 250KB），只带这一屏样式。 */
 .taskbar-net {

@@ -1,4 +1,4 @@
-//! 主进程死亡监视——F-9 恢复线 2（被 kill 时的唯一恢复保障）。
+//! 主进程死亡监视——恢复线 2（被 kill 时的唯一恢复保障）。
 //!
 //! 管道每次握手成功后 [`retarget`]：经 `GetNamedPipeServerProcessId` 取主进程
 //! PID → `OpenProcess(SYNCHRONIZE)` → 独立线程 `WaitForSingleObject(INFINITE)`。
@@ -66,7 +66,12 @@ pub fn retarget(server_pid: u32) {
     let handle = crate::util::SendCell(handle);
     let spawned = std::thread::Builder::new()
         .stack_size(64 * 1024)
-        .spawn(move || watch_thread_main(handle, server_pid, generation));
+        .spawn(move || {
+            // 守望线程静默死亡 = 主进程死后任务栏不再自恢复。
+            crate::util::run_guarded("parent-watch", move || {
+                watch_thread_main(handle, server_pid, generation)
+            })
+        });
     if spawned.is_err() {
         // 线程起不来：释放句柄，放弃监视（管道断连路径仍能恢复）。
         let _ = unsafe { CloseHandle(raw) };

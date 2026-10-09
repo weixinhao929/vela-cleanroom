@@ -4,26 +4,26 @@
  *
  * - 磁贴内容：`meta.MiniComponent`（懒加载独立 chunk，Suspense 兜底）→ 否则
  *   GenericMiniTile = meta.icon + meta.name（+ 可选 miniSummary 一行摘要）。
- *   所有 registry 类型都能入岛，只是有无富形态（F-1）。
+ *   所有 registry 类型都能入岛，只是有无富形态。
  * - 点击：expand-store 单值互斥，id = dock:<tile.id>（dock-logic.dockTileExpandId）；
  *   已展开再点 = 收起。原矩形由 DockShell 在展开瞬间从按钮 rect 采集。
  * - 展开内容 DockTileExpanded：内置三面板（时钟 / 番茄钟 / 通知，与 2.0 前
  *   完全一致）→ `meta.ExpandedComponent`（音乐沉浸页 / 天气站 / 任务全览）→
  *   完整 `meta.component` 装进 WidgetExpandOverlay（尺寸取面板内）。
- * - 右键 / 长按 600ms 松手（ISLAND-CFG · F-7）→ ContextMenu：配置 / 从灵动岛移除
+ * - 右键 / 长按 600ms 松手（ISLAND-CFG · ）→ ContextMenu：配置 / 从灵动岛移除
  *   （可撤销 toast）/ 在画布中定位（有 instanceId：选中 + 脉冲 1.2s）/ 更多设置
  *   （有 instanceId 跳实例页，否则跳「灵动岛」页；pending-nav 双通道同 WidgetCard）。
- *   「配置」弹层锚定磁贴矩形：有 instanceId 直接用 B1 的 WidgetConfigPopover（读写
+ *   「配置」弹层锚定磁贴矩形：有 instanceId 直接用 的 WidgetConfigPopover（读写
  *   该实例 widget-config，画布卡片同步）；无 instanceId 用本文件的
  *   DockTileConfigPopover——同一套 QUICK_CONFIG_FIELDS / 控件 / .wcfg-* 样式，只是
  *   读写 DockTile.config（setDockTileConfig，随 dock 配置按屏落盘）。长按期间指针
  *   位移 > 4px 即取消——与 DockTiles（SORT）的手势叠而不撞：非编辑模式 300ms 先
  *   起拖（磁贴微抬），继续按住到 600ms 原地松手则弹菜单，拖开则只排序不弹菜单。
- *   拖动排序 / 键盘操作（F-3 / F-12）由 SORT 会话在 DockTiles 内补齐。
+ *   拖动排序 / 键盘操作由 SORT 会话在 DockTiles 内补齐。
  */
 import {
+  memo,
   Suspense,
-  lazy,
   useCallback,
   useEffect,
   useReducer,
@@ -35,6 +35,8 @@ import { Crosshair, Pause, Play, RotateCcw, Settings, SlidersHorizontal, Trash2,
 import { useT } from "../../i18n-lite";
 import { isTauri, openSettingsWindow } from "../../lib/tauri";
 import { flipReorder } from "../../lib/anim";
+import { makeResettableLazy } from "../../lib/make-resettable-lazy";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useNow } from "../../lib/use-now";
 import { openContextMenu } from "../../components/ContextMenu";
 import { pushAppToast } from "../../components/ToastHost";
@@ -42,10 +44,18 @@ import { useAppStore } from "../../store/app-store";
 import { useSettingsStore } from "../../store/settings-store";
 import { QUICK_CONFIG_FIELDS } from "../quick-config-fields";
 import { useWidgetExpand } from "../expand-store";
-import { getWidgetMeta } from "../registry";
-import { currentScreenId, useWidgetStore, type DockTile as DockTileModel } from "../widget-store";
+import { getWidgetMeta, resetWidgetLazy } from "../registry";
+import { widgetDisplayName } from "../display-name";
+import {
+  currentScreenId,
+  useWidgetStore,
+  cancelDockTileDataRemoval,
+  finalizeDockTileDataRemoval,
+  type DockTile as DockTileModel
+} from "../widget-store";
 import { locateInstanceOnCanvas } from "../locate-widget";
 import { WidgetConfigPopover, type PopoverAnchor } from "../WidgetConfigPopover";
+import { WidgetErrorBoundary } from "../WidgetErrorBoundary";
 import { NotificationCenterList } from "../notifications/NotificationCenterList";
 import { PomodoroRing, usePomodoroView } from "../widgets/mini/PomodoroMini";
 import {
@@ -63,6 +73,20 @@ export function dockTileTitle(tile: DockTileModel): string {
   return getWidgetMeta(tile.type)?.name ?? tile.type;
 }
 
+/** 磁贴显示名（口径统一，返回值已过 tr）：绑定实例跟随实例显示名（重命名后
+ *  tooltip/aria/面板卡标题/移除与入岛 toast 处处同步），无实例维持 registry
+ *  类型名。DockTile 自身的 title 订阅、DockPanel 的卡标题与圆点、DockTiles 的
+ *  toast 都走这一份——避免「磁贴叫 A、面板与 toast 叫时钟」。 */
+export function dockTileDisplayName(
+  tile: DockTileModel,
+  instances: { id: string; type: string; label?: string }[],
+  tr: (s: string) => string
+): string {
+  if (tile.instanceId) return widgetDisplayName(tile.type, tile.instanceId, instances, tr);
+  const meta = getWidgetMeta(tile.type);
+  return meta ? tr(meta.name) : tile.type;
+}
+
 /* ------------------------------------------------------------------ *
  * 通用磁贴：无富形态的类型显示 图标 + 名称（+ 摘要）
  * ------------------------------------------------------------------ */
@@ -77,11 +101,11 @@ function GenericMiniTile({ icon: Icon, name, summary }: { icon?: LucideIcon; nam
 }
 
 /* ------------------------------------------------------------------ *
- * 右键 / 长按菜单（F-7）
+ * 右键 / 长按菜单
  * ------------------------------------------------------------------ */
 
-/** 长按呼出菜单阈值（F-7）：P3 单点化，常量收进 dock-logic（TILE_MENU_LONG_PRESS_MS）
- *  ——此前与 DockTiles 的拖动长按（300ms）同名不同值，极易误引。取消位移与
+/** 长按呼出菜单阈值：单点化，常量收进 dock-logic（TILE_MENU_LONG_PRESS_MS）
+ *  此前与 DockTiles 的拖动长按（300ms）同名不同值，极易误引。取消位移与
  *  DockTiles 编辑模式起拖阈值同为 4px——一旦算作拖动就不再算长按，排序与菜单
  *  永不同帧触发。 */
 const LONG_PRESS_MS = TILE_MENU_LONG_PRESS_MS;
@@ -114,29 +138,55 @@ type Props = {
   tile: DockTileModel;
   /** 接管层可见期间磁贴层整体隐藏：磁贴不可聚焦、迷你形态 active=false。 */
   takeoverActive: boolean;
+  /** 岛体收合（自动隐藏）：磁贴退出 Tab 序（岛根 aria-hidden 下的可聚焦
+   *  子元素是非法焦点链，与视图箭头同口径）。缺省 false。 */
+  tucked?: boolean;
   isOpen: boolean;
   registerRef: (tileId: string, el: HTMLButtonElement | null) => void;
   onOpen: (tile: DockTileModel) => void;
 };
 
-export function DockTile({ tile, takeoverActive, isOpen, registerRef, onOpen }: Props) {
+/* memo——DockTiles 因 expandedId / 排序等自身订阅重渲时逐磁贴比对 props：
+ *  未变的 tile 对象引用稳定（setDockTileConfig 只换被编辑那枚）、isOpen 只在
+ *  新旧两张展开面间翻转、registerRef / onOpen 是父链上的 useCallback，
+ *  其余磁贴全部跳过重渲。 */
+export const DockTile = memo(function DockTile({ tile, takeoverActive, tucked, isOpen, registerRef, onOpen }: Props) {
   const tr = useT();
   const collapseIf = useWidgetExpand((s) => s.collapseIf);
   const removeDockTile = useWidgetStore((s) => s.removeDockTile);
   const addDockTile = useWidgetStore((s) => s.addDockTile);
   const meta = getWidgetMeta(tile.type);
   const id = dockTileExpandId(tile.id);
-  const title = meta ? tr(meta.name) : tile.type;
-  /* G8：摘要数据源订阅——miniSummary 是渲染期同步快照，按 registry 登记的
+  /* 绑定实例的磁贴名跟随实例显示名（重命名后 tooltip/aria 即时同步），
+     无实例磁贴维持类型名。派生字符串订阅——名字没变不重渲（memo 纪律
+     同 DockTiles 其余订阅）；口径统一到 dockTileDisplayName（面板卡标题 /
+     圆点 / toast 与本订阅同一份）。 */
+  const title = useWidgetStore((s) => dockTileDisplayName(tile, s.instances, tr));
+  /* 摘要数据源订阅——miniSummary 是渲染期同步快照，按 registry 登记的
      订阅函数挂变更通知，数据变化时 bump 一拍让本磁贴重算；未登记的类型
-     不订阅（摘要随其它重渲自然刷新，行为与旧版一致）。 */
+     不订阅（摘要随其它重渲自然刷新，行为与旧版一致）。
+     instanceId 统一走 dockTileInstanceId（绑定实例用实例 id，无实例用
+     合成 id）——与展开面同口径，磁贴私有配置（落种到合成键）对折叠态摘要
+     同样生效。 */
+  const tileInstanceId = dockTileInstanceId(tile);
+  /* 无实例磁贴的 tile.config 落种到合成键须先于下方摘要 / Mini 的首次
+     读取（GenericTileExpanded 同款两段式：首渲同步落种不广播，tile 变化时
+     effect 重种并广播让已挂载组件重读）。 */
+  const seededRef = useRef(false);
+  if (!seededRef.current) {
+    seededRef.current = true;
+    seedDockTileConfig(tile, false);
+  }
+  useEffect(() => {
+    seedDockTileConfig(tile, true);
+  }, [tile]);
   const [, bumpSummary] = useReducer((x: number) => x + 1, 0);
   useEffect(() => {
     const subscribe = meta?.miniSummarySubscribe;
     if (!subscribe) return;
-    return subscribe(tile.instanceId, bumpSummary);
-  }, [meta, tile.instanceId, bumpSummary]);
-  const summary = meta?.miniSummary?.(tile.instanceId);
+    return subscribe(tileInstanceId, bumpSummary);
+  }, [meta, tileInstanceId, bumpSummary]);
+  const summary = meta?.miniSummary?.(tileInstanceId);
   const label = summary ? `${title} · ${summary}` : title;
   const Mini = meta?.MiniComponent;
 
@@ -185,12 +235,23 @@ export function DockTile({ tile, takeoverActive, isOpen, registerRef, onOpen }: 
             action: {
               label: tr("撤销"),
               run: () => {
-                const restore = () => addDockTile(tile, index < 0 ? undefined : index);
+                /* 先取消延迟清理，磁贴私有用户数据（合成键 + 数据桶）
+                   随 undo 完整恢复；无实例磁贴才有清理任务，有实例时 no-op。 */
+                cancelDockTileDataRemoval(tile.id);
+                const restore = () => {
+                  addDockTile(tile, index < 0 ? undefined : index);
+                  /* 恢复被入岛去重拦截时显式反馈（DockTiles 同款）。 */
+                  if (!useWidgetStore.getState().dock.tiles.some((t) => t.id === tile.id)) {
+                    pushAppToast(tr("无法恢复"), tr("同类型小组件已在灵动岛上"), "info");
+                  }
+                };
                 const c = btnRef.current?.closest<HTMLDivElement>(".dock-tiles") ?? null;
                 if (c) flipReorder(c, DOCK_FLIP_SELECTOR, restore);
                 else restore();
               }
-            }
+            },
+            /* 撤销窗口关闭（超时 / 手动 × / 被挤出）：立即执行未取消的数据清理。 */
+            onDismiss: () => finalizeDockTileDataRemoval(tile.id)
           });
         }
       }
@@ -203,19 +264,21 @@ export function DockTile({ tile, takeoverActive, isOpen, registerRef, onOpen }: 
      可能根本收不到，一次性标记会残留并误吞下一次正常点击。 */
   const press = useRef<{ x: number; y: number; timer: number; fired: boolean } | null>(null);
   const suppressClickUntil = useRef(0);
-  const [armed, setArmed] = useState(false);
   /* 五.3 按住过程反馈：按下即挂 is-pressing（CSS 600ms 渐进压下），就位时
      is-armed 接管 0.94——此前按住 0–600ms 零反馈、缩放提示在触发那一刻才出现。
      注意走命令式 classList 而非 React state：is-drag-source/is-sorting 也是
-     命令式加的，若 pressing 进 className 模板，按住移动超阈值的一帧
-     （pressing 翻转 → React 重写完整 className）会把拖拽态类一并抹掉。 */
+     命令式加的，若 pressing/armed 进 className 模板，按住 600ms 的状态翻转
+     （React 重写完整 className）会把拖拽态类一并抹掉（双影缺陷）。 */
   const setPressing = (on: boolean) => {
     btnRef.current?.classList.toggle("is-pressing", on);
+  };
+  const setArmedCls = (on: boolean) => {
+    btnRef.current?.classList.toggle("is-armed", on);
   };
   const clearPress = useCallback(() => {
     if (press.current) window.clearTimeout(press.current.timer);
     press.current = null;
-    setArmed(false);
+    setArmedCls(false);
     setPressing(false);
   }, []);
   useEffect(() => clearPress, [clearPress]);
@@ -227,14 +290,17 @@ export function DockTile({ tile, takeoverActive, isOpen, registerRef, onOpen }: 
     const timer = window.setTimeout(() => {
       if (press.current) {
         press.current.fired = true;
-        setArmed(true);
+        setArmedCls(true);
       }
     }, LONG_PRESS_MS);
     press.current = { x: e.clientX, y: e.clientY, timer, fired: false };
   };
   const onPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const p = press.current;
-    if (!p || p.fired) return;
+    if (!p) return;
+    /* fired 后拖开同样取消——600ms 武装发生在 DockTiles 的 300ms 起拖之后，
+       此前 fired 后移动不再取消，拖拽松手会同时完成排序 + 弹菜单（文件头声明
+       的「拖开只排序不弹菜单」从未成立）。原地松手（≤4px）不受影响。 */
     if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > LONG_PRESS_CANCEL_PX) clearPress();
   };
   const onPointerUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
@@ -257,7 +323,7 @@ export function DockTile({ tile, takeoverActive, isOpen, registerRef, onOpen }: 
           btnRef.current = el;
           registerRef(tile.id, el);
         }}
-        className={`dock-tile dock-tile-${tile.type}${isOpen ? " is-open" : ""}${Mini ? "" : " is-generic"}${armed ? " is-armed" : ""}`}
+        className={`dock-tile dock-tile-${tile.type}${isOpen ? " is-open" : ""}${Mini ? "" : " is-generic"}`}
         onClick={onClick}
         onContextMenu={openMenu}
         onPointerDown={onPointerDown}
@@ -269,42 +335,52 @@ export function DockTile({ tile, takeoverActive, isOpen, registerRef, onOpen }: 
         aria-label={label}
         aria-expanded={isOpen}
         aria-keyshortcuts="Control+ArrowLeft Control+ArrowRight Delete"
-        tabIndex={takeoverActive ? -1 : 0}
+        tabIndex={takeoverActive || tucked ? -1 : 0}
         data-interactive
       >
         {Mini ? (
           <Suspense fallback={<span className="dock-tile-loading" aria-hidden="true" />}>
-            <Mini instanceId={tile.instanceId} active={!takeoverActive} />
+            {/* 统一传 dockTileInstanceId（无实例磁贴 = dock-tile-<id> 合成 id，
+                配置已在上方落种）——此前传原始 undefined，无实例磁贴的折叠态
+                永远拿不到 tile.config（秒表 00:00 / 倒计时「—」/ °F 无效）。 */}
+            <Mini instanceId={tileInstanceId} active={!takeoverActive} />
           </Suspense>
         ) : (
           <GenericMiniTile icon={meta?.icon} name={title} summary={summary} />
         )}
       </button>
-      {/* 配置弹层：绑定实例 → B1 弹层（实例 widget-config）；否则磁贴私有配置。 */}
-      {tile.instanceId ? (
-        <WidgetConfigPopover
-          instanceId={tile.instanceId}
-          widgetType={tile.type}
-          anchor={anchor}
-          open={configOpen}
-          onClose={closeConfig}
-        />
-      ) : (
-        hasPrivateFields && (
-          <DockTileConfigPopoverGate tile={tile} anchor={anchor} open={configOpen} onClose={closeConfig} />
-        )
-      )}
+      {/* 配置弹层：绑定实例 → 弹层（实例 widget-config，锚点要求**布局**
+          单位——anchor 是磁贴 gBCR 的视觉快照，这里除回 uiZoom）；否则磁贴
+          私有配置（DockTileConfigPopover 自行做视觉→布局换算，原样传入）。 */}
+      {tile.instanceId
+        ? (() => {
+            const z = uiZoom();
+            return (
+              <WidgetConfigPopover
+                instanceId={tile.instanceId}
+                widgetType={tile.type}
+                anchor={{ x: anchor.x / z, y: anchor.y / z, w: anchor.w / z, h: anchor.h / z }}
+                open={configOpen}
+                onClose={closeConfig}
+              />
+            );
+          })()
+        : hasPrivateFields && (
+            <DockTileConfigPopoverGate tile={tile} anchor={anchor} open={configOpen} onClose={closeConfig} />
+          )}
     </>
   );
-}
+});
 
 /* ------------------------------------------------------------------ *
  * 无实例磁贴的私有配置弹层（DockTileConfigPopover.tsx）的懒加载壳：实现
  * chunk 静态依赖 config-schemas（zod schema 全家）与 M3Slider（→ motion），
  * 首次 open 翻真才拉取（与 WidgetConfigPopover 壳同范式）。
+ * 可重置 lazy——拉取失败弃缓存，重开配置弹层即重新 import。
  * ------------------------------------------------------------------ */
-const DockTileConfigPopoverLazy = lazy(() =>
-  import("./DockTileConfigPopover").then((m) => ({ default: m.DockTileConfigPopover }))
+const DockTileConfigPopoverLazy = makeResettableLazy(
+  () => import("./DockTileConfigPopover").then((m) => ({ default: m.DockTileConfigPopover })),
+  "DockTileConfigPopover"
 );
 function DockTileConfigPopoverGate({
   tile,
@@ -324,7 +400,7 @@ function DockTileConfigPopoverGate({
   if (!armed) return null;
   return (
     <Suspense fallback={null}>
-      <DockTileConfigPopoverLazy tile={tile} anchor={anchor} open={open} onClose={onClose} />
+      <DockTileConfigPopoverLazy.Component tile={tile} anchor={anchor} open={open} onClose={onClose} />
     </Suspense>
   );
 }
@@ -351,8 +427,19 @@ function PomodoroPanel() {
   const { remainingSeconds, isRunning, mode, progress, idle } = usePomodoroView();
   const toggle = useAppStore((s) => s.togglePomodoro);
   const reset = useAppStore((s) => s.resetPomodoro);
+  const awaitingActivity = useAppStore((s) => s.pomodoro.awaitingActivity);
   const [hint, setHint] = useState("");
-  const label = isRunning ? (mode === "focus" ? tr("正在专注") : tr("休息中")) : idle ? tr("空闲") : tr("暂停");
+  /* 等待回座态（awaitingActivity，满额待命）此前被判 idle 显示「空闲」，
+     与主面板「休息结束——等你回来」的提示矛盾。 */
+  const label = isRunning
+    ? mode === "focus"
+      ? tr("正在专注")
+      : tr("休息中")
+    : awaitingActivity
+      ? tr("等你回来")
+      : idle
+        ? tr("空闲")
+        : tr("暂停");
   const onToggle = () => {
     const ok = toggle();
     setHint(ok ? "" : tr("请先在番茄钟小组件中选择一个专注事件。"));
@@ -390,20 +477,38 @@ function NotificationPanel({ active }: { active: boolean }) {
 }
 
 /**
- * 磁贴展开内容分派（F-1）：内置面板 → ExpandedComponent → 完整组件。
+ * 磁贴展开内容分派：内置面板 → ExpandedComponent → 完整组件。
  * 后两者为懒加载 chunk，Suspense 兜底（首展由遮罩几何动画掩盖加载）。
  */
 /** 「杂项」面板：需要整个 tile（布局存在 tile.config.items），不走 ExpandedComponent 的 instanceId 契约。 */
-const MiscBoardPanel = lazy(() => import("../widgets/misc/MiscBoardPanel"));
+const MiscBoardPanel = makeResettableLazy(() => import("../widgets/misc/MiscBoardPanel"), "MiscBoardPanel");
 
 export function DockTileExpanded({ tile, active }: { tile: DockTileModel; active: boolean }) {
+  /* 逐卡错误边界——此前内容抛错会沿 DockShell 外层边界（fallback=null）
+     把整条岛静默卸载且无重试；默认 fallback 带重试按钮，爆炸半径缩到单卡。
+     重试经 onRetry 弃缓存该类型的全部懒 chunk（沉浸 / 迷你 / 杂项正主）。 */
+  return (
+    <WidgetErrorBoundary
+      instanceId={dockTileInstanceId(tile)}
+      type={`dock-expand:${tile.type}`}
+      onRetry={() => {
+        resetWidgetLazy(tile.type);
+        MiscBoardPanel.reset();
+      }}
+    >
+      <DockTileExpandedInner tile={tile} active={active} />
+    </WidgetErrorBoundary>
+  );
+}
+
+function DockTileExpandedInner({ tile, active }: { tile: DockTileModel; active: boolean }) {
   if (tile.type === "clock") return <ClockPanel active={active} />;
   if (tile.type === "pomodoro") return <PomodoroPanel />;
   if (tile.type === "notifications") return <NotificationPanel active={active} />;
   if (tile.type === "misc") {
     return (
       <Suspense fallback={null}>
-        <MiscBoardPanel tile={tile} active={active} />
+        <MiscBoardPanel.Component tile={tile} active={active} />
       </Suspense>
     );
   }
@@ -441,7 +546,11 @@ function GenericTileExpanded({ tile, active }: { tile: DockTileModel; active: bo
   return (
     <div className="dock-panel dock-panel-full">
       <Suspense fallback={null}>
-        <Full instanceId={instanceId} />
+        {/* Full 兜底组件不接收 active（WidgetComponent 契约只有 instanceId），
+            且展开内容常驻挂载（mountedIds）——收起即卸载（对齐 MiscBoardPanel
+            的取舍），否则系统监视器/剪贴板/蓝牙等约 20 个无 ExpandedComponent
+            的类型在 display:none 下永久轮询。 */}
+        {active ? <Full instanceId={instanceId} /> : null}
       </Suspense>
     </div>
   );

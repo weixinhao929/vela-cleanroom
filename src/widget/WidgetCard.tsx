@@ -2,12 +2,12 @@
  * 单个小组件卡片：实例渲染外壳 + 编辑态交互。
  *
  * 职责：绝对定位/尺寸/透明度样式；拖拽移动（组内多选刚性平移、网格吸附、
- * 对齐参考线）与 8 向缩放（PERF-1/F-2：rAF 节流 + 位移直写 DOM transform、
- * 会话期挂起跨窗口广播，pointerup 一次性 commit）；就地配置弹层（B1：悬浮
+ * 对齐参考线）与 8 向缩放（PERF-1：rAF 节流 + 位移直写 DOM transform、
+ * 会话期挂起跨窗口广播，pointerup 一次性 commit）；就地配置弹层（悬浮
  * 工具条与右键菜单的「配置」不再跳设置窗口）、置顶/底层、复制、穿透开关、
  * 右键删除。内部组件经 registry 懒加载并包错误边界。
  */
-import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowDownToLine,
@@ -20,8 +20,13 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { getWidgetMeta, preloadExpanded } from "./registry";
+import { getWidgetMeta, preloadExpanded, resetWidgetLazy } from "./registry";
 import { createDockTile, useWidgetStore, GRID, MAX_Z } from "./widget-store";
+import { findMergeTargetAt, type MergeTarget } from "./widget-groups";
+import { computeAlignAdjust, ALIGN_THRESHOLD_PX } from "./align-guides";
+import { RESIZE_HANDLES } from "./resize-handles";
+import { isEditChromeTarget, isWidgetControlTarget } from "./edit-chrome";
+import { uiZoom } from "../lib/ui-zoom";
 import { useWidgetExpand } from "./expand-store";
 import { useFileDragStore } from "./file-drag-store";
 import { setWidgetsSyncSuspended } from "../lib/cross-window";
@@ -30,16 +35,20 @@ import { useSettingsStore } from "../store/settings-store";
 import { useT } from "../i18n-lite";
 import { openContextMenu } from "../components/ContextMenu";
 import { pushAppToast } from "../components/ToastHost";
+import { promptRenameInstance } from "./rename";
 import { pickSpatialEase, prefersReducedMotion, useDelayedUnmount } from "../lib/anim";
+import { makeResettableLazy } from "../lib/make-resettable-lazy";
 import { animDurations } from "../lib/durations";
 import { useSafeTimeout } from "../lib/use-safe-timeout";
 import { WidgetErrorBoundary } from "./WidgetErrorBoundary";
 import { WidgetConfigPopover } from "./WidgetConfigPopover";
 
-/* C1 沉浸遮罩层懒加载：连其 CSS（feature-immersive.css）一起进独立 chunk，
+/* 沉浸遮罩层懒加载：连其 CSS（feature-immersive.css）一起进独立 chunk，
    首次展开（或悬停「展开」按钮预热）才加载，主 bundle 不背负沉浸样式。
-   挂载即播 origin→沉浸矩形 的入场相位（见 WidgetExpandOverlay 相位机）。 */
-const WidgetExpandOverlay = lazy(() => import("./WidgetExpandOverlay"));
+   挂载即播 origin→沉浸矩形 的入场相位（见 WidgetExpandOverlay 相位机）。
+   改用可重置 lazy（默认导出直接透传）——chunk 拉取失败后错误边界
+   「重试」（onRetry 接 reset）重新 import，不再永久失效。 */
+const WidgetExpandOverlayLazy = makeResettableLazy(() => import("./WidgetExpandOverlay"), "WidgetExpandOverlay");
 
 type Props = {
   id: string;
@@ -67,59 +76,36 @@ type ResizeState = {
 
 /* ------------------------------------------------------------------ */
 /*  边缘缩放区域：细长条覆盖整个边缘，任意位置均可拖动调整大小           */
-/*  角落保持小块以便同时调整两个方向。                                  */
+/*  角落保持小块以便同时调整两个方向（手柄定义见 resize-handles.ts，    */
+/*  GroupCard 缩放共用同一组手柄）。                                    */
 /* ------------------------------------------------------------------ */
-/* A14（可用性）：命中区从 6px/2px 加宽到 10px/8px——2px 边在高 DPI 与
-   zoom≠100% 下几乎无法命中，新用户也发现不了卡片可缩放。视觉仍由 CSS
-   控制（默认透明、悬停浮现），这里只是不可见的命中范围。 */
-const HS = 10; // corner handle size
-const EDGE = 8; // edge thickness
-
-interface HandleDef {
-  id: string;
-  cursor: string;
-  /** 读屏标签：手柄本身无文字，键盘缩放由 Shift+方向键承担。 */
-  label: string;
-  style: React.CSSProperties;
-}
-
-// 更细的引导条，紧贴悬浮窗边缘，四角与四条边相连形成全封闭的缩放框。
-const HANDLES: HandleDef[] = [
-  // 四角（小块，允许同时拖拽两个方向）
-  { id: "nw", cursor: "nw-resize", label: "缩放：左上角", style: { top: 0, left: 0, width: HS, height: HS } },
-  { id: "ne", cursor: "ne-resize", label: "缩放：右上角", style: { top: 0, right: 0, width: HS, height: HS } },
-  { id: "se", cursor: "se-resize", label: "缩放：右下角", style: { bottom: 0, right: 0, width: HS, height: HS } },
-  { id: "sw", cursor: "sw-resize", label: "缩放：左下角", style: { bottom: 0, left: 0, width: HS, height: HS } },
-  // 四条边：细长条覆盖边缘，与四角相接形成封闭框
-  { id: "n", cursor: "n-resize", label: "缩放：上边缘", style: { top: 0, left: HS, right: HS, height: EDGE } },
-  { id: "s", cursor: "s-resize", label: "缩放：下边缘", style: { bottom: 0, left: HS, right: HS, height: EDGE } },
-  { id: "w", cursor: "w-resize", label: "缩放：左边缘", style: { left: 0, top: HS, bottom: HS, width: EDGE } },
-  { id: "e", cursor: "e-resize", label: "缩放：右边缘", style: { right: 0, top: HS, bottom: HS, width: EDGE } }
-];
 
 /* ------------------------------------------------------------------ */
 /*  工具函数                                                          */
 /* ------------------------------------------------------------------ */
 const snap = (v: number) => Math.round(v / GRID) * GRID;
 
-/** 对齐吸附阈值（px）：拖拽中的边/中线与目标线距离小于该值时吸附。 */
-const ALIGN_THRESHOLD = 8;
+/** 对齐吸附阈值（收敛到 align-guides 共享常量）。 */
+const ALIGN_THRESHOLD = ALIGN_THRESHOLD_PX;
 
-/** 拖拽合并（BentoDesk 借鉴 #2）命中：光标所在、未被拖拽、未编组的
-    卡片里取 z 最高者——即投放点可见的最上层卡；堆叠卡片只命中露出者。 */
-function mergeTargetAt(
-  instances: { id: string; x: number; y: number; w: number; h: number; z: number; groupId?: string }[],
+/**
+ *  合并投放命中：指针点优先，未命中时回退到被拖卡片预览
+ * 矩形的中心——按住卡片角落拖放时指针常在目标之外，而"卡片压在目标上"
+ * 时中心必然落在目标内，两个探测点合起来覆盖两种投放手感。
+ * 坐标系：clientX/Y 是视觉坐标（界面缩放下 = 布局 × zoom），实例/组几何是
+ * 画布布局单位——指针必须先除回 uiZoom 再参与命中；预览矩形本来就是布局
+ * 单位，直接用。候选含编组容器（findMergeTargetAt），拖到组上也能并入。
+ */
+function mergeTargetFor(
   cx: number,
   cy: number,
-  draggedIds: string[]
-) {
-  let best: (typeof instances)[number] | null = null;
-  for (const i of instances) {
-    if (draggedIds.includes(i.id) || i.groupId) continue;
-    if (cx < i.x || cx > i.x + i.w || cy < i.y || cy > i.y + i.h) continue;
-    if (!best || i.z > best.z) best = i;
-  }
-  return best;
+  draggedIds: string[],
+  previewRect: { x: number; y: number; w: number; h: number } | null
+): MergeTarget | null {
+  const st = useWidgetStore.getState();
+  const z = uiZoom();
+  const fallback = previewRect ? [{ x: previewRect.x + previewRect.w / 2, y: previewRect.y + previewRect.h / 2 }] : [];
+  return findMergeTargetAt(st.instances, st.groups, { x: cx / z, y: cy / z }, draggedIds, fallback);
 }
 
 function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadge }: Props) {
@@ -149,7 +135,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     s.opacityPreview && s.opacityPreview.id === id ? s.opacityPreview.value : null
   );
   const editMode = useWidgetStore((s) => s.editMode);
-  // P2（审计修复）：订阅派生布尔而非原始 selectedId/selectedIds 引用——原始
+  // 订阅派生布尔而非原始 selectedId/selectedIds 引用——原始
   // 值订阅下任一选择变化（框选逐个命中、Ctrl+点击）都会让全部 N 张 memo 卡片
   // 重渲染（memo 只挡 props，挡不住 hook 变化）。
   const isSelected = useWidgetStore((s) => s.selectedId === id || s.selectedIds.includes(id));
@@ -171,7 +157,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
   const entering = useWidgetStore((s) => s.enteringIds.includes(id));
   const pulsing = useWidgetStore((s) => s.pulseIds.includes(id));
   const posAnim = useWidgetStore((s) => s.posAnimIds.includes(id));
-  /* A3 小增量降档：pos-anim（批量对齐 / #76 越界 clamp）的一次性 left/top 过渡
+  /* 小增量降档：pos-anim（批量对齐 / #76 越界 clamp）的一次性 left/top 过渡
      按本次提交的位移量选档——≤20px 走 elementMove 快档（350ms），更大位移走
      cardReflow 默认档（500ms）。渲染期用 prevPos（上一提交位置）算 delta，选档
      结果与新坐标同帧内联，过渡才会以所选曲线起步；posLatched 把声明保留到
@@ -195,25 +181,26 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
      组内每张卡每帧 reconcile（dragPreview[id] 订阅随之移除）。 */
   /* 缩放瞬态预览矩形：只有正在缩放的卡片读到非空值；其余卡片恒为 null。 */
   const resizeRect = useWidgetStore((s) => (s.resizePreview && s.resizePreview.id === id ? s.resizePreview : null));
-  /* #74 开启鼠标穿透时的确认反馈：卡片短暂降透明 + 角标。 */
+  /* 开启鼠标穿透时的确认反馈：卡片短暂降透明 + 角标。 */
   const [ctFlash, setCtFlash] = useState(false);
   const [dragging, setDragging] = useState(false);
   /* [DROP] 松手命中灵动岛后卡片不提交位移、回原位：挂 .dock-drop-back 播 160ms 回弹。 */
   const [dockSpring, setDockSpring] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
-  /* B1 就地配置弹层：悬浮工具条/右键菜单的「配置」打开，不再跳设置窗口。 */
+  /* 就地配置弹层：悬浮工具条/右键菜单的「配置」打开，不再跳设置窗口。 */
   const [configOpen, setConfigOpen] = useState(false);
   const closeConfig = useCallback(() => setConfigOpen(false), []);
-  /* C1 展开态：expandedId 单值互斥（expand-store）；expandedOnce 后遮罩常驻
+  /* 展开态：expandedId 单值互斥（expand-store）；expandedOnce 后遮罩常驻
      （active=false → display:none，内容层不重建）。派生布尔订阅，非展开卡
      恒 false，memo 不受其他卡展开影响。 */
   const hasExpanded = !!meta?.ExpandedComponent;
-  /* A1 文件拖拽显形：OS 拖文件进入屏幕时，
+  /* 文件拖拽显形：OS 拖文件进入屏幕时，
      可接收文件的本类型卡片亮出投放提示。派生布尔订阅——非接收类型的卡片
      恒 false，拖拽会话的置位/复位不会让它们重渲。 */
-  const fileDropTarget = useFileDragStore((s) => s.active && !!meta?.acceptsOsFiles);
-  /* BentoDesk #2 合并投放目标：派生布尔订阅——非目标的卡片恒 false，
+  const fileDropCandidate = useFileDragStore((s) => s.active && !!meta?.acceptsOsFiles);
+  const fileDropTarget = fileDropCandidate;
+  /* 同类桌面整理工具 #2 合并投放目标：派生布尔订阅——非目标的卡片恒 false，
      拖拽移动中目标切换只重渲新旧两张卡。 */
   const isMergeTarget = useWidgetStore((s) => s.mergeTargetId === id);
   const expandedActive = useWidgetExpand((s) => s.expandedId === id);
@@ -233,18 +220,55 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     dy: number;
     engaged: boolean;
     group: { id: string; x: number; y: number }[];
+    /* 混合拖动：选中集合里的组随卡片刚性平移（成员卡不渲染，整组壳一起
+       走 --drag-dx/dy 预览，松手经 commitDragMove 按 id 同池提交位移）。 */
+    dragGroups: { id: string; x: number; y: number }[];
   } | null>(null);
   const resize = useRef<ResizeState | null>(null);
   const raf = useRef(0);
   const safeTimeout = useSafeTimeout();
 
-  /* 卸载时清理所有挂起的定时器，避免组件移除后仍触发 setState / 导航。 */
+  /* 卸载时清理所有挂起的定时器，避免组件移除后仍触发 setState / 导航。
+     拖拽/缩放会话进行中实例被移出内存态（切视图快捷键、跨窗整包替换、
+     撤销等）时 pointerup 永不到达——挂起闸是非计数布尔，必须在此复位，
+     否则跨窗广播与穿透命中采集双双挂起，直到其它卡片完成一次完整编辑。 */
   useEffect(() => {
     return () => {
       if (hoverHideTimer.current) window.clearTimeout(hoverHideTimer.current);
       cancelAnimationFrame(raf.current);
+      if (drag.current?.engaged || resize.current) {
+        drag.current = null;
+        resize.current = null;
+        setWidgetsSyncSuspended(false);
+        resumeHitRects();
+        useWidgetStore.getState().setResizePreview(null);
+        /* 拖拽中切视图（Ctrl+1/2/3）卸载本卡时，
+           画布瞬态也要就地复位——Esc 监听随组件消失，残留的对齐参考线 /
+           合并提示环会挂到下一次拖拽，dockDrag 残留则让灵动岛投放态悬空
+           （cancelDrag 的三连复位在此补齐）。 */
+        const st = useWidgetStore.getState();
+        st.setMergeTargetId(null);
+        st.setAlignGuides([], []);
+        st.clearDockDrag();
+      }
     };
   }, []);
+
+  /* 编辑模式中途退出（Esc / 跨窗 widget:edit-mode
+     事件）时缩放手柄随 {editMode && ...} 条件卸载、pointer capture 静默丢失，
+     而 onPointerMove/onPointerUp 无 editMode 门控——resize.current 残留会让
+     非编辑模式下鼠标划过卡片继续改几何（下次点击还把光标停处的预览落盘），
+     widgetsSyncSuspended 也恒挂起。editMode 翻假即终结会话，走丢弃路径
+     （清预览不 commit，回到 resize 前几何）：退出编辑视为放弃本次未确认
+     的缩放，与卸载清理同款内容。 */
+  useEffect(() => {
+    if (editMode || !resize.current) return;
+    cancelAnimationFrame(raf.current);
+    resize.current = null;
+    setWidgetsSyncSuspended(false);
+    resumeHitRects();
+    useWidgetStore.getState().setResizePreview(null);
+  }, [editMode]);
 
   /* pos-anim 选档配套：提交后记录位置供下次算 delta；有选档结果时 latch 声明，
      到期按序号清理（560ms 内连续两次对齐时旧定时器不得清掉新声明）。 */
@@ -269,7 +293,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     useWidgetExpand.getState().collapseIf(id);
   }, [editMode, id]);
 
-  /* C1 卸载清理：卡片移除/视图切换时清掉展开与挂载记录，避免 expandedId
+  /* 卸载清理：卡片移除/视图切换时清掉展开与挂载记录，避免 expandedId
      指向已消失的实例（互斥状态机悬死、Esc 失效）。 */
   useEffect(() => () => useWidgetExpand.getState().forget(id), [id]);
   /* 卸载时同步清掉在途的 hover 置顶 dwell 定时器（迟到的 bringToFront 不应
@@ -290,7 +314,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
       hoverHideTimer.current = null;
     }
   };
-  /* F5（写放大治理）：hover 置顶走 140ms dwell。鼠标扫过 N 张部分堆叠的卡，
+  /* （写放大治理）：hover 置顶走 140ms dwell。鼠标扫过 N 张部分堆叠的卡，
      逐张即时置顶 = N 次 store 写 → 整表 sync:widgets 广播 + 全表落盘（此前的
      唯一纯 hover 高频写源）；dwell 让「扫过」不写、短暂停留才抬升。双击与
      右键「置顶显示」仍即时。 */
@@ -334,6 +358,12 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
       const typing =
         target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (typing || e.ctrlKey || e.altKey || e.metaKey) return;
+      /* 焦点在编辑铬件（工具栏 / 弹层 / 各类菜单）或**其它卡片的内部控件**上
+         时不接管键盘：工具栏上按方向键是 ARIA 导航、Delete 是编辑操作；焦点
+         在 select/slider 等控件上时方向键归控件原生行为（此前的
+         preventDefault 会吞掉它们）。与 GroupCard 共用同一判定
+         （edit-chrome.ts），两侧口径一致。 */
+      if (isEditChromeTarget(target) || isWidgetControlTarget(target)) return;
       const arrow: Record<string, [number, number] | null> = {
         ArrowUp: [0, -GRID],
         ArrowDown: [0, GRID],
@@ -349,17 +379,23 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
         moveSelectedBy(delta[0], delta[1]);
       } else if (e.key === "Delete") {
         e.preventDefault();
-        removeAnimated(useWidgetStore.getState().selectedIds);
+        // 选中集合可混装实例与组（id 同池），统一走分流删除。
+        useWidgetStore.getState().removeSelectionAnimated();
+      } else if (e.key === "F2") {
+        /* 重命名（资源管理器习惯，应用内任务面板同款）——与右键菜单/
+           设置页同一共享入口。 */
+        e.preventDefault();
+        void promptRenameInstance(id, tr);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editMode, isPrimarySelection, isSelected, id, moveSelectedBy, removeAnimated, resizeSelectedBy]);
+  }, [editMode, isPrimarySelection, isSelected, id, moveSelectedBy, resizeSelectedBy, tr]);
 
-  /* #62 编辑 UI 退场：退出编辑模式后延迟 150ms 播 .is-closing 淡出再卸载。
+  /* 编辑 UI 退场：退出编辑模式后延迟 150ms 播 .is-closing 淡出再卸载。
      （必须在早期 return 之前调用，遵守 Rules of Hooks） */
   const editUiVisible = useDelayedUnmount(editMode, animDurations().fxFastMs);
-  /* 穿透角标退场窗口（P2 三轮，见 JSX 处注释）。 */
+  /* 穿透角标退场窗口（三轮，见 JSX 处注释）。 */
   const ctBadgeVisible = useDelayedUnmount(!!clickThrough && ctBadge !== false, animDurations().fxXfastMs);
   const showEditUi = editMode || editUiVisible;
   const editUiClosing = !editMode && editUiVisible;
@@ -367,7 +403,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
   /* 快捷操作条退场：hover 结束后保留 150ms 播缩放淡出（入场 qa-in 已有）。
      就地配置弹层打开期间隐藏操作条：弹层锚在卡片上方，两者会重叠，且弹层
      自身已是配置会话，操作条没有保留意义。沉浸展开期间同理（遮罩已置顶）。
-     F9 补全 pinned 语义：双击置顶后操作条保持常显（pin 不随 mouseleave 清除，
+     补全 pinned 语义：双击置顶后操作条保持常显（pin 不随 mouseleave 清除，
      再双击才解除）——否则图钉环只是一个悬停期高亮，锁不住任何东西。 */
   const quickOpen = (hovered || pinned) && !clickThrough && !configOpen && !expandedActive;
   const quickVisible = useDelayedUnmount(quickOpen, animDurations().fxFastMs);
@@ -387,8 +423,12 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
        卡片从松手处弹回原位（对齐 GroupCard 吸附回弹 / DockTiles Esc 语义），
        此前是 removeProperty 瞬移。reduce-motion 或位移 <1px 直接清。 */
     const reduce = prefersReducedMotion();
-    for (const g of session.group) {
-      const el = document.querySelector<HTMLElement>(`[data-widget-id="${g.id}"]`);
+    /* FLIP 回弹覆盖随行选中组（与实例同一会话、同一位移语义）。 */
+    const flipEls = [
+      ...session.group.map((g) => document.querySelector<HTMLElement>(`[data-widget-id="${g.id}"]`)),
+      ...session.dragGroups.map((g) => document.querySelector<HTMLElement>(`[data-group-id="${g.id}"]`))
+    ];
+    for (const el of flipEls) {
       if (!el) continue;
       const cs = getComputedStyle(el);
       const dx = Number.parseFloat(cs.getPropertyValue("--drag-dx")) || 0;
@@ -425,7 +465,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     return () => window.removeEventListener("keydown", onKey, true);
   }, [dragging, cancelDrag]);
 
-  /* ---- J-2 溢出可发现性：卡体内容高出视口时挂 has-more-below（CSS 底缘
+  /* ---- 溢出可发现性：卡体内容高出视口时挂 has-more-below（CSS 底缘
      渐隐提示可滚动）。卡体盒子定高，RO 观察盒子 + 内容根（首个元素子节点）
      ——内容长高才是滚动高度变化的信号；Suspense 懒加载会替换内容根，用
      MutationObserver 转挂。滚动中即时同步（滚到底渐隐消失）。须在
@@ -462,13 +502,21 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     };
   }, [syncMoreBelow]);
 
+  /* 重命名标签（instance.label）优先：卡片标题与组标签/花瓣/设置页同一显示名
+     口径，改名一处、处处同步（派生标量订阅，label 不变不重渲）。 */
+  const customLabel = useWidgetStore((s) => {
+    const l = s.instances.find((i) => i.id === id)?.label;
+    return typeof l === "string" && l.trim() ? l : null;
+  });
+
   if (!meta) return null;
   const Content = meta.component;
   const Expanded = meta.ExpandedComponent;
-  /* 显示名：序号追加在翻译后的名称上（en 用户得到 Shortcuts2 而非 快捷方式2）。 */
-  const displayName = instanceIndex >= 0 ? `${tr(meta.name)}${instanceIndex + 1}` : tr(meta.name);
+  /* 显示名：重命名优先；自动名序号追加在翻译后的名称上（en 用户得到
+     Shortcuts2 而非 快捷方式2）。 */
+  const displayName = customLabel ?? (instanceIndex >= 0 ? `${tr(meta.name)}${instanceIndex + 1}` : tr(meta.name));
 
-  /* ---- C1 展开 / 收起 ----
+  /* ---- 展开 / 收起 ----
      展开：登记 expand-store（互斥，其余自动收起）+ 置顶本卡。悬停「展开」
      按钮即预热沉浸组件与遮罩两个 chunk，消除首展骨架。 */
   const openExpanded = () => {
@@ -504,7 +552,21 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
       .getState()
       .instances.filter((i) => sel.includes(i.id))
       .map((i) => ({ id: i.id, x: i.x, y: i.y }));
-    drag.current = { startX: e.clientX, startY: e.clientY, origX: x, origY: y, dx: 0, dy: 0, engaged: false, group };
+    const dragGroups = useWidgetStore
+      .getState()
+      .groups.filter((g) => sel.includes(g.id))
+      .map((g) => ({ id: g.id, x: g.x, y: g.y }));
+    drag.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: x,
+      origY: y,
+      dx: 0,
+      dy: 0,
+      engaged: false,
+      group,
+      dragGroups
+    };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
 
@@ -522,44 +584,23 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     cancelAnimationFrame(raf.current);
     raf.current = requestAnimationFrame(() => {
       const d = drag.current!;
-      let nx = Math.max(0, snap(d.origX + (e.clientX - d.startX)));
-      let ny = Math.max(0, snap(d.origY + (e.clientY - d.startY)));
-      /* 智能对齐：仅以主单元与其它「非本组」组件/视口边界吸附。 */
-      const guideXs: number[] = [];
-      const guideYs: number[] = [];
-      const others = useWidgetStore.getState().instances.filter((i) => !d.group.some((g) => g.id === i.id));
-      const myXs = [nx, nx + w / 2, nx + w];
-      const myYs = [ny, ny + h / 2, ny + h];
-      let bestX: { delta: number; line: number } | null = null;
-      let bestY: { delta: number; line: number } | null = null;
-      for (const o of others) {
-        for (const ox of [o.x, o.x + o.w / 2, o.x + o.w]) {
-          for (const mx of myXs) {
-            const diff = ox - mx;
-            if (Math.abs(diff) <= ALIGN_THRESHOLD && (!bestX || Math.abs(diff) < Math.abs(bestX.delta))) {
-              bestX = { delta: diff, line: ox };
-            }
-          }
-        }
-        for (const oy of [o.y, o.y + o.h / 2, o.y + o.h]) {
-          for (const my of myYs) {
-            const diff = oy - my;
-            if (Math.abs(diff) <= ALIGN_THRESHOLD && (!bestY || Math.abs(diff) < Math.abs(bestY.delta))) {
-              bestY = { delta: diff, line: oy };
-            }
-          }
-        }
-      }
-      if (!bestX && nx <= ALIGN_THRESHOLD) bestX = { delta: -nx, line: 0 };
-      if (!bestY && ny <= ALIGN_THRESHOLD) bestY = { delta: -ny, line: 0 };
-      if (bestX) {
-        nx += bestX.delta;
-        guideXs.push(bestX.line);
-      }
-      if (bestY) {
-        ny += bestY.delta;
-        guideYs.push(bestY.line);
-      }
+      /* 指针位移是视觉坐标（含 uiZoom），实例几何是布局单位——先除回，
+         否则界面缩放 ≠100% 时卡片以 zoom 倍速脱离指针（ui-zoom.ts 模型）。 */
+      const zoom = uiZoom();
+      let nx = Math.max(0, snap(d.origX + (e.clientX - d.startX) / zoom));
+      let ny = Math.max(0, snap(d.origY + (e.clientY - d.startY) / zoom));
+      /* 智能对齐（收敛到 align-guides 共享纯函数，编组容器拖拽同源）：
+         候选 = 非本拖拽组的实例 ∪ 全部编组容器（排除随行的选中组——它们跟着
+         走，不是吸附锚），与视口零线的贴边吸附同在纯函数内。 */
+      const others: { x: number; y: number; w: number; h: number }[] = [
+        ...useWidgetStore.getState().instances.filter((i) => !d.group.some((g) => g.id === i.id)),
+        ...useWidgetStore.getState().groups.filter((g) => !d.dragGroups.some((x) => x.id === g.id))
+      ];
+      const adj = computeAlignAdjust(nx, ny, w, h, others, ALIGN_THRESHOLD);
+      nx = adj.x;
+      ny = adj.y;
+      const guideXs = adj.guideXs;
+      const guideYs = adj.guideYs;
       // 主单元已吸附。预览位移直写各卡 --drag-dx/--drag-dy（不写 instances、不落盘、
       // 拖拽期间不进 store）——逐帧 setDragPreview 会给组内每张卡每帧生成新
       // {dx,dy} 引用，React 逐帧 reconcile；直写 CSS 变量只碰合成器 transform
@@ -579,17 +620,32 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
           el.style.setProperty("--drag-dy", `${dy}px`);
         }
       }
+      // 混合拖动：随行的选中组壳同样直写变量（GroupCard 根节点订阅 dragging
+      // 态的 transform 组合，变量名与卡片同源）。
+      for (const g of d.dragGroups) {
+        const el = document.querySelector<HTMLElement>(`[data-group-id="${g.id}"]`);
+        if (el) {
+          el.style.setProperty("--drag-dx", `${dx}px`);
+          el.style.setProperty("--drag-dy", `${dy}px`);
+        }
+      }
       // 对齐参考线只在数值变化时写 store：参考线层无需逐帧 reconcile。
       const guides = useWidgetStore.getState().alignGuides;
       if (guides.xs.join() !== guideXs.join() || guides.ys.join() !== guideYs.join()) {
         useWidgetStore.getState().setAlignGuides(guideXs, guideYs);
       }
-      // 合并投放目标高亮：光标下的候选卡（非本组、未编组）实时亮出提示。
-      const target = mergeTargetAt(
-        useWidgetStore.getState().instances,
+      // 合并投放目标高亮：主卡预览矩形（指针点 + 卡中心两路探测）下的候选
+      // 卡/编组容器实时亮出提示，与松手判定同函数，高亮即落点。
+      const target = mergeTargetFor(
         e.clientX,
         e.clientY,
-        d.group.map((g) => g.id)
+        d.group.map((g) => g.id),
+        {
+          x: d.origX + dx,
+          y: d.origY + dy,
+          w,
+          h
+        }
       );
       useWidgetStore.getState().setMergeTargetId(target?.id ?? null);
       /* [DROP] 岛拖入：每帧只写指针视口坐标，零几何——命中判定（岛矩形外扩 24px）
@@ -622,30 +678,55 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     setDragging(false);
     setWidgetsSyncSuspended(false);
     resumeHitRects();
+    /* [DROP] 松手同帧补写最终指针：拖动期的指针写在 rAF 里，pointerup 与最后一次
+       pointermove 同帧到达时，首行的 cancelAnimationFrame 已把未落帧的最终位置
+       丢掉（起拖即甩的极端情形 store 里甚至还没有 dockDrag）——overIsland/
+       insertIndex 判定会停在上一帧（快速甩动 ≈16ms 行程，足以跨过 24px 命中
+       边缘）。用松手坐标补写一次，DockDropZone 的同步订阅链会即时修正
+       overIsland/insertIndex，下方 getState 读取即最新。 */
+    if (wasDragging && e?.type === "pointerup") {
+      const dd = useWidgetStore.getState().dockDrag;
+      useWidgetStore.getState().setDockDrag({
+        pointer: { x: e.clientX, y: e.clientY },
+        overIsland: dd?.overIsland ?? false,
+        insertIndex: dd?.insertIndex ?? 0
+      });
+    }
     const st = useWidgetStore.getState();
     st.setMergeTargetId(null);
     if (dragSession) {
       const finalPreview: Record<string, { dx: number; dy: number }> = {};
       for (const g of dragSession.group) finalPreview[g.id] = { dx: dragSession.dx, dy: dragSession.dy };
+      // 随行选中组的位移进同一份 preview（id 同池），commitDragMove 分别写回两张表。
+      for (const g of dragSession.dragGroups) finalPreview[g.id] = { dx: dragSession.dx, dy: dragSession.dy };
       st.setDragPreview(finalPreview);
-      for (const g of dragSession.group) {
-        const el = document.querySelector<HTMLElement>(`[data-widget-id="${g.id}"]`);
-        if (el) {
-          el.style.removeProperty("--drag-dx");
-          el.style.removeProperty("--drag-dy");
-        }
+      const draggedEls = [
+        ...dragSession.group.map((g) => document.querySelector<HTMLElement>(`[data-widget-id="${g.id}"]`)),
+        ...dragSession.dragGroups.map((g) => document.querySelector<HTMLElement>(`[data-group-id="${g.id}"]`))
+      ];
+      for (const el of draggedEls) {
+        if (!el) continue;
+        el.style.removeProperty("--drag-dx");
+        el.style.removeProperty("--drag-dy");
       }
     }
-    /* [DROP] F-2 入口 a：松手命中岛 → 本卡成为岛磁贴（D1 默认复制：磁贴绑定本实例、
+    /* [DROP] 入口 a：松手命中岛 → 本卡成为岛磁贴（默认复制：磁贴绑定本实例、
        卡片留在画布回原位；Alt = 移动：实例再走既有回收站可撤销路径），不提交拖拽
        位移。pointercancel（Alt-Tab / 系统手势接管）与缩放松手不视为投放。 */
     const overIsland = wasDragging && e?.type === "pointerup" && !!st.dockDrag?.overIsland;
-    /* BentoDesk 借鉴 #2：岛之外的投放若落在另一张卡上（取 z 最高的命中卡，
-       与用户所见一致）→ 合并编组，同样不提交位移。 */
+    /* 岛之外的投放若压到另一张卡或编组容器上 → 合并编组，
+       同样不提交位移。命中与拖拽期高亮同一函数（指针点 + 预览矩形中心）。
+       注意用 dragSession 里的位移而不是 e 坐标差算预览矩形——pointercancel
+       之后不会走到这里，pointerup 的 clientX/Y 只用于指针点探测。 */
     let merged: { groupId: string; appendedIds: string[] } | null = null;
     if (wasDragging && e?.type === "pointerup" && !overIsland) {
-      const target = mergeTargetAt(st.instances, e.clientX, e.clientY, draggedIds);
-      if (target) merged = st.mergeIntoGroup(draggedIds, target.id);
+      const target = mergeTargetFor(
+        e.clientX,
+        e.clientY,
+        draggedIds,
+        dragSession ? { x: dragSession.origX + dragSession.dx, y: dragSession.origY + dragSession.dy, w, h } : null
+      );
+      if (target) merged = st.mergeIntoGroup(draggedIds, target);
       if (merged) {
         st.setDragPreview({});
         st.setAlignGuides([], []);
@@ -655,7 +736,9 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
             label: tr("撤销"),
             run: () => {
               const s = useWidgetStore.getState();
-              for (let k = appendedIds.length - 1; k >= 0; k--) s.removeGroupMember(groupId, appendedIds[k]);
+              // 静默摘除：撤销动作本身不再逐成员弹「已移出编组」toast。
+              for (let k = appendedIds.length - 1; k >= 0; k--)
+                s.removeGroupMember(groupId, appendedIds[k], { feedback: false });
             }
           }
         });
@@ -701,7 +784,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     e.stopPropagation();
     selectWidget(id);
     resize.current = { handle, startX: e.clientX, startY: e.clientY, origX: x, origY: y, origW: w, origH: h };
-    // PERF-1/F-2：缩放与拖拽同属「编辑会话」，期间只写瞬态 resizePreview，
+    // PERF-1：缩放与拖拽同属「编辑会话」，期间只写瞬态 resizePreview，
     // 挂起跨窗口广播，pointerup 解除时一次性 commit + 补发最终快照。
     setWidgetsSyncSuspended(true);
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -713,8 +796,10 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     raf.current = requestAnimationFrame(() => {
       const r = resize.current!;
       if (!r) return;
-      const dx = e.clientX - r.startX;
-      const dy = e.clientY - r.startY;
+      /* 同拖拽：缩放位移是视觉坐标，几何是布局单位，除回 uiZoom。 */
+      const zoom = uiZoom();
+      const dx = (e.clientX - r.startX) / zoom;
+      const dy = (e.clientY - r.startY) / zoom;
       const { handle, origX, origY, origW, origH } = r;
       const minW = meta.minSize.w;
       const minH = meta.minSize.h;
@@ -776,7 +861,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     onResizeEnd();
   };
 
-  /* G13 键盘选中：编辑模式下卡片可 Tab 聚焦（非编辑模式不进 Tab 序——卡片
+  /* 键盘选中：编辑模式下卡片可 Tab 聚焦（非编辑模式不进 Tab 序——卡片
      内容控件已各自可聚焦，壳层再加一站只会污染遍历顺序）。聚焦壳层即选中
      （与指针按下选中同语义），选中后方向键微移 / Shift+方向键缩放 / Delete
      删除（见上方 Keyboard nudge）随之可用；e.target 校验保证焦点来自壳层
@@ -799,6 +884,9 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
       // 编辑模式下「编辑布局」是冗余项（已经在编辑了）。
       ...(editMode ? [] : [{ label: tr("编辑布局"), icon: <Pencil size={15} />, onSelect: () => setEditMode(true) }]),
       { label: tr("配置"), icon: <Settings size={15} />, onSelect: () => setConfigOpen(true) },
+      /* 独立卡片的重命名入口（与编组标签双击/设置页同一实现）——label
+         渲染层早已支持，此前只有编组成员改得了名。 */
+      { label: tr("重命名"), icon: <Pencil size={15} />, onSelect: () => void promptRenameInstance(id, tr) },
       ...(hasExpanded
         ? [{ label: tr("展开沉浸视图"), icon: <Maximize2 size={15} />, onSelect: () => openExpanded() }]
         : []),
@@ -808,7 +896,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
         icon: <MousePointerClick size={15} />,
         onSelect: () => {
           update(id, { clickThrough: !clickThrough });
-          /* #74 开启瞬间：降透明回弹确认，角标随状态淡入。 */
+          /* 开启瞬间：降透明回弹确认，角标随状态淡入。 */
           if (!clickThrough) {
             setCtFlash(true);
             safeTimeout(() => setCtFlash(false), 600);
@@ -825,7 +913,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     ]);
   };
 
-  /* ---- B1 就地配置弹层 ----
+  /* ---- 就地配置弹层 ----
      「配置」不再跳设置窗口：悬浮工具条与右键菜单都打开锚定在卡片上方的
      WidgetConfigPopover（常用项就地改，「更多设置」再跳深度页）。open 无需
      防抖——setState 幂等，pointerdown 与 click 双触发无害。 */
@@ -852,7 +940,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
       onPointerDown={editMode ? onDragStart : undefined}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      /* P1（审计修复）：Windows 上拖拽/缩放中 Alt-Tab 或系统手势接管会派发
+      /* Windows 上拖拽/缩放中 Alt-Tab 或系统手势接管会派发
          pointercancel 而非 pointerup——不处理会让 drag/resize ref 残留、
          widgetsSyncSuspended 永久为 true，此后所有布局编辑不再同步到其他窗口。
          cancel 的收尾语义与 up 完全一致（提交已预览的位移、解除挂起）。 */
@@ -861,7 +949,9 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
       onFocus={onCardFocus}
       tabIndex={editMode ? 0 : undefined}
       role={editMode ? "group" : undefined}
-      aria-label={editMode ? `${displayName}（${tr("已选中，方向键移动，Shift+方向键缩放，Delete 删除")}）` : undefined}
+      aria-label={
+        editMode ? `${displayName}（${tr("已选中，方向键移动，Shift+方向键缩放，Delete 删除，F2 重命名")}）` : undefined
+      }
       onMouseEnter={() => {
         cancelHide();
         if (!editMode && !clickThrough) {
@@ -881,16 +971,17 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
     >
       <div className="widget-card-body" ref={bodyRef} onScroll={syncMoreBelow}>
         {/* Suspense 在 ErrorBoundary 内层：chunk 加载失败时由错误边界兜住，
-            显示可重试的错误卡片而不是让整个画布白屏（P4 懒加载配套）。 */}
-        <WidgetErrorBoundary instanceId={id} type={type}>
+            显示可重试的错误卡片而不是让整个画布白屏（懒加载配套）。
+            重试经 onRetry 先弃缓存的 rejected import（真重试）。 */}
+        <WidgetErrorBoundary instanceId={id} type={type} onRetry={() => resetWidgetLazy(type)}>
           <Suspense fallback={<div className="widget-skeleton" aria-busy="true" />}>
             <Content instanceId={id} />
           </Suspense>
         </WidgetErrorBoundary>
       </div>
 
-      {/* #74 鼠标穿透开启时的角落角标（实例级 ctBadge=false 可关闭显示）。
-          P2 三轮补退场：关闭穿透时保留一拍播淡出再卸载（与开启的 flash 补偿
+      {/* 鼠标穿透开启时的角落角标（实例级 ctBadge=false 可关闭显示）。
+          三轮补退场：关闭穿透时保留一拍播淡出再卸载（与开启的 flash 补偿
           对称，此前瞬消）。 */}
       {ctBadgeVisible && (
         <span className={`widget-ct-badge${clickThrough && ctBadge !== false ? "" : " is-closing"}`}>{tr("穿透")}</span>
@@ -949,7 +1040,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
 
       {/* 8 个缩放手柄（编辑模式）：无文字，标签供读屏；键盘缩放走 Shift+方向键。 */}
       {editMode &&
-        HANDLES.map((h) => (
+        RESIZE_HANDLES.map((h) => (
           <div
             key={h.id}
             data-resize-handle={h.id}
@@ -988,7 +1079,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
           >
             <span className="widget-quick-name">{displayName}</span>
             <span className="widget-quick-divider" />
-            {/* C1 展开入口：仅登记了 ExpandedComponent 的类型显示（悬浮工具条第五键）。 */}
+            {/* 展开入口：仅登记了 ExpandedComponent 的类型显示（悬浮工具条第五键）。 */}
             {hasExpanded && (
               <button
                 className="quick-btn"
@@ -1055,7 +1146,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
           document.body
         )}
 
-      {/* B1 就地配置弹层：非编辑模式常挂载（内部自管延迟卸载），锚定卡片矩形。
+      {/* 就地配置弹层：非编辑模式常挂载（内部自管延迟卸载），锚定卡片矩形。
           弹层虽 Portal 到 body，React 合成事件仍沿组件树冒泡回卡片——弹层容器
           已对 pointerdown/click/contextmenu/doubleclick stopPropagation，不会
           误触发卡片的拖拽/右键/双击钉住。 */}
@@ -1069,7 +1160,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
         />
       )}
 
-      {/* C1 沉浸展开遮罩：首次展开后常驻挂载（expandedOnce），收起只切
+      {/* 沉浸展开遮罩：首次展开后常驻挂载（expandedOnce），收起只切
           active（遮罩 display:none + 内容暂停），重开不重建。Portal 到 body
           脱离卡片 overflow 裁剪；外层 Suspense 兜遮罩 chunk，内层兜沉浸组件
           chunk（骨架在面板内显示），错误边界隔离沉浸组件崩溃。 */}
@@ -1078,14 +1169,16 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
         createPortal(
           <Suspense fallback={null}>
             {/* 遮罩外壳自身抛错也要兜住（内层边界只包沉浸组件）：崩溃即收起展开态，
-              否则 expand-store 里仍是展开、Esc 由已崩溃的遮罩接管、整窗白屏。 */}
+              否则 expand-store 里仍是展开、Esc 由已崩溃的遮罩接管、整窗白屏。
+              重试同时弃缓存遮罩 chunk 的 rejected import。 */}
             <WidgetErrorBoundary
               instanceId={id}
               type={`${type}:expand-overlay`}
               fallback={null}
               onError={closeExpanded}
+              onRetry={WidgetExpandOverlayLazy.reset}
             >
-              <WidgetExpandOverlay
+              <WidgetExpandOverlayLazy.Component
                 active={expandedActive}
                 origin={{ x, y, w, h }}
                 title={displayName}
@@ -1093,7 +1186,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
                 sizeKey={`widget:${type}`}
                 floating={!!meta?.expandFloating}
               >
-                <WidgetErrorBoundary instanceId={id} type={type}>
+                <WidgetErrorBoundary instanceId={id} type={type} onRetry={() => resetWidgetLazy(type)}>
                   <Suspense
                     fallback={
                       <div className="widget-skeleton" aria-busy="true" style={{ position: "absolute", inset: 16 }} />
@@ -1102,7 +1195,7 @@ function WidgetCardBase({ id, type, x, y, w, h, z, opacity, clickThrough, ctBadg
                     <Expanded instanceId={id} active={expandedActive} />
                   </Suspense>
                 </WidgetErrorBoundary>
-              </WidgetExpandOverlay>
+              </WidgetExpandOverlayLazy.Component>
             </WidgetErrorBoundary>
           </Suspense>,
           document.body

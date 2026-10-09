@@ -20,6 +20,7 @@
  * 过渡范围即「设置全页面」。prefers-reduced-motion 或引擎不可用时
  * playThemeInk 返回 false，调用方兜底立即上色。
  */
+import { mixRgb } from "./color";
 
 /** 武装记录：点击落点（视口坐标）+ 时间戳（过期防串扰）。 */
 interface InkArm {
@@ -99,11 +100,15 @@ function hexRgb(hex: string): [number, number, number] | null {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-/** 两种 hex 色按 t 插值（墨缘 = 底色掺墨的沉积色）。 */
+/** 两种 hex 色按 t 插值（墨缘 = 底色掺墨的沉积色）。
+ *  通道插值共用 lib/color 的 mixRgb；不直接复用其字符串级 mixHex——两者
+ *  差异是刻意的：本侧解析更宽容（3 位 hex 展开）、非法输入回退黑/白而非
+ *  原样透传、输出 rgb() 而非 #hex（canvas 描边直接可用）。 */
 function mixHex(a: string, b: string, t: number): string {
   const A = hexRgb(a) ?? hexRgb("#000000")!;
   const B = hexRgb(b) ?? hexRgb("#ffffff")!;
-  return `rgb(${A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(",")})`;
+  const mixed = mixRgb({ r: A[0], g: A[1], b: A[2] }, { r: B[0], g: B[1], b: B[2] }, t);
+  return `rgb(${Math.round(mixed.r)},${Math.round(mixed.g)},${Math.round(mixed.b)})`;
 }
 
 function rgbaOf(hex: string, a: number): string {
@@ -135,6 +140,8 @@ export interface ThemeInkOptions {
   colors: ThemeInkColors;
   /** 设置窗不透明度（0-1）：画布整体 alpha 跟随，避免实墨盖在半透窗上。 */
   opacity?: number;
+  /** 晕开时长（ms）：不传按窗口尺寸自适应（1250–1700）；设置页滑条注入。 */
+  durationMs?: number;
   /** 覆盖满整窗的瞬间回调（此处回放 applySettings 换肤）。 */
   onCovered: () => void;
   /** 过渡完全结束（沉降淡出、画布移除）后的回调。 */
@@ -178,7 +185,10 @@ export function playThemeInk(opts: ThemeInkOptions): boolean {
   canvas.style.height = "100%";
   canvas.style.borderRadius = "inherit";
   canvas.style.pointerEvents = "none";
-  canvas.style.zIndex = "9999";
+  /*z 值消费阶梯令牌（--z-fx-band：装饰特效层，低于一切 fixed
+     浮层）——原裸 9999 恰与 --z-float-menu 同值属巧合，无关联保证；测试
+     环境读不到令牌时回退原值。 */
+  canvas.style.zIndex = getComputedStyle(document.documentElement).getPropertyValue("--z-fx-band").trim() || "9999";
   canvas.style.opacity = String(clamp(opts.opacity ?? 1, 0, 1));
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   container.appendChild(canvas);
@@ -190,7 +200,8 @@ export function playThemeInk(opts: ThemeInkOptions): boolean {
 
   /* 覆盖半径与时长：墨缘须漫过最远的窗角。时长放慢（用户反馈偏快），
      缓动 easeOutCubic 前快后慢，网格覆盖检测（见下）保证真正盖满即换肤，
-     不空等缓动尾段。 */
+     不空等缓动尾段。durationMs（设置页滑条）注入时直接采用（安全钳制
+     300–4000），否则按窗口尺寸自适应。 */
   const corners: [number, number][] = [
     [0, 0],
     [W, 0],
@@ -199,19 +210,11 @@ export function playThemeInk(opts: ThemeInkOptions): boolean {
   ];
   const maxCorner = Math.max(...corners.map(([cx, cy]) => Math.hypot(cx - origin.x, cy - origin.y)));
   const rFinal = maxCorner * 1.02 + 16;
-  const duration = clamp(950 + rFinal * 0.38, 1250, 1700);
-  const settleMs = 500;
-
-  /* 卫星飞溅墨点：骑在主墨缘前后的窄带内绽开、被吞没。 */
-  const satellites = Array.from({ length: 9 }, () => {
-    const ang = Math.random() * Math.PI * 2;
-    return {
-      ang,
-      dist: rFinal * (0.5 + Math.random() * 0.47),
-      r: 5 + Math.random() * 17,
-      ph: { a: Math.random() * 7, b: Math.random() * 7, c: Math.random() * 7 }
-    };
-  });
+  const autoDur = clamp(950 + rFinal * 0.38, 1250, 1700);
+  const duration = opts.durationMs !== undefined ? clamp(opts.durationMs, 300, 4000) : autoDur;
+  /* 沉降（收尾淡晕）随播放时长等比缩放：快速档（如 300ms）后跟固定
+     500ms 沉降会显得头快尾拖；钳 150–500 保持至少一次可感知的渐隐。 */
+  const settleMs = clamp(duration * 0.35, 150, 500);
 
   const phase = { a: Math.random() * 7, b: Math.random() * 7, c: Math.random() * 7 };
   const supportsFilter = (() => {
@@ -340,26 +343,8 @@ export function playThemeInk(opts: ThemeInkOptions): boolean {
     ctx.stroke();
     ctx.restore();
 
-    /* 卫星墨点：只在墨缘经过其位置前后的窄带内可见。 */
-    for (const s of satellites) {
-      const appear = clamp((r - (s.dist - s.r * 12)) / (s.r * 7), 0, 1);
-      const cover = clamp(1 - (r - s.dist - s.r) / (s.r * 7), 0, 1);
-      const alpha = 0.95 * Math.min(appear, cover);
-      if (alpha <= 0.01) continue;
-      const sx = origin.x + Math.cos(s.ang) * s.dist;
-      const sy = origin.y + Math.sin(s.ang) * s.dist;
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = body;
-      ctx.beginPath();
-      ctx.arc(sx, sy, s.r * (0.55 + 0.45 * appear), 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = alpha * 0.5;
-      ctx.strokeStyle = rim;
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
-      ctx.restore();
-    }
+    /* 卫星飞溅墨点已移除（用户反馈「切换时会出现小圆点」）：晕开只保留
+       光晕渗染 + 软过渡 + 墨身 + 墨缘沉积的整片扩散，无离散圆点。 */
 
     /* 覆盖检测：抽样点全部落入墨缘（含 12px 外扩余量）即换肤，不等缓动尾段。 */
     let coveredNow = true;

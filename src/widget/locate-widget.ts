@@ -35,7 +35,9 @@ export const SOURCE_TO_WIDGET: Partial<Record<string, string>> = {
   countdown: "countdown",
   email: "email",
   weather: "weather",
-  bluetooth: "bluetooth"
+  bluetooth: "bluetooth",
+  /* 便签提醒（sourceNotify("note")）可定位到便签组件（类型名 notes）。 */
+  note: "notes"
 };
 
 const LOCATE_PULSE_MS = 1200;
@@ -50,18 +52,30 @@ export function locateInstanceOnCanvas(instanceId: string): void {
   }
   requestAnimationFrame(() => {
     const s = useWidgetStore.getState();
-    if (!s.instances.some((i) => i.id === instanceId)) return;
-    s.selectWidget(instanceId);
-    s.bringToFront(instanceId);
+    const inst = s.instances.find((i) => i.id === instanceId);
+    if (!inst) return;
+    /* 编组成员：定位打到组容器上——切到该成员标签 + 组置顶 + 组壳脉冲
+       （成员在编组期间没有卡片 DOM，直接找 data-widget-id 会一无所获）。 */
+    const ownerGroup = inst.groupId ? s.groups.find((g) => g.id === inst.groupId) : undefined;
+    const targetId = ownerGroup?.id ?? instanceId;
+    if (ownerGroup) {
+      if (ownerGroup.activeId !== instanceId) s.switchGroupTab(ownerGroup.id, instanceId);
+      s.bringGroupToFront(ownerGroup.id);
+    } else {
+      s.selectWidget(instanceId);
+      s.bringToFront(instanceId);
+    }
     useWidgetStore.setState((x) => ({
-      pulseIds: x.pulseIds.includes(instanceId) ? x.pulseIds : [...x.pulseIds, instanceId]
+      pulseIds: x.pulseIds.includes(targetId) ? x.pulseIds : [...x.pulseIds, targetId]
     }));
     const el = document.querySelector<HTMLElement>(`[data-widget-id="${instanceId}"]`);
-    if (el && typeof el.scrollIntoView === "function") {
-      el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    const groupEl = document.querySelector<HTMLElement>(`[data-group-id="${targetId}"]`);
+    const hit = ownerGroup ? (groupEl ?? el) : el;
+    if (hit && typeof hit.scrollIntoView === "function") {
+      hit.scrollIntoView({ block: "nearest", inline: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
     }
     window.setTimeout(() => {
-      useWidgetStore.setState((x) => ({ pulseIds: x.pulseIds.filter((id) => id !== instanceId) }));
+      useWidgetStore.setState((x) => ({ pulseIds: x.pulseIds.filter((id) => id !== targetId) }));
     }, LOCATE_PULSE_MS);
   });
 }

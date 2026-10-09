@@ -1,14 +1,14 @@
-//! 状态机线程（TB-STATE 主装配）：事件合并 → CORE 纯函数求值 → 防抖输出。
+//! 状态机线程（主装配）：事件合并 → 纯函数求值 → 防抖输出。
 //!
 //! 数据流：win_event（窗口事件）+ start（IAppVisibility）+ search/taskview
 //! （ShellViewCoordinator）+ battery（win_watcher 电源广播）全部经无界
 //! std mpsc 汇入本线程；[`Engine`] 独占持有全部状态（**无锁**，天然规避
 //! §1.4 的虚拟桌面重入陷阱——会泵消息的查询只发生在本线程，钩子回调在
-//! 别的线程），每条消息后走 150ms 合并防抖（F-14），到期对每显示器调
+//! 别的线程），每条消息后走 150ms 合并防抖，到期对每显示器调
 //! CORE 的 [`crate::taskbar::resolve_active_state`]，与上次结果比较
 //! （state / appearance / matchedRule 任一变化才算），变化才 emit
-//! `taskbar:state-changed` 并触发 apply 回调（本会话默认实现为
-//! log::debug；TB-INJECT 合入后接管实际外观下发）。
+//! `taskbar:state-changed` 并触发 apply 回调（默认实现为
+//! log::debug；注入引擎就绪后接管实际外观下发）。
 
 pub mod battery;
 pub mod search;
@@ -28,7 +28,7 @@ use crate::taskbar::{
     MonitorInputs, StateInputs, StateResolution, TaskbarAppearance, TaskbarStateKey, WindowInfo,
 };
 
-/// 合并防抖窗口（F-14：≤200ms 上限取 150ms；状态切换端到端 ≤300ms 的
+/// 合并防抖窗口（≤200ms 上限取 150ms；状态切换端到端 ≤300ms 的
 /// 预算 = 事件传播 + 150ms + 求值）。
 pub const DEBOUNCE: Duration = Duration::from_millis(150);
 /// 无待处理事件时的唤醒轮询上限（也是 stop() 的退出延迟上界）。
@@ -52,7 +52,7 @@ pub enum EngineMsg {
     /// 全量重建（显示器拓扑变化 / explorer 重启 / 任务栏窗口建毁）。
     Rebuild,
     /// 配置变更（apply）：清去重缓存、按当前输入对全部显示器重求值并全量
-    /// 重发（F-6：逐屏生效配置变了，各屏状态未变也要重发新外观）。
+    /// 重发（逐屏生效配置变了，各屏状态未变也要重发新外观）。
     Reevaluate,
 }
 
@@ -120,7 +120,7 @@ pub trait StateOutput: Send + Sync {
     );
 }
 
-/// 生产输出：emit `taskbar:state-changed`（F-14）+ info 日志（手测脚本
+/// 生产输出：emit `taskbar:state-changed`+ info 日志（手测脚本
 /// 的对照证据）+ apply 回调。
 struct EmitterOutput;
 
@@ -137,7 +137,7 @@ impl StateOutput for EmitterOutput {
     }
 }
 
-/// apply 回调（CORE 契约位：TB-INJECT 接管实际外观下发；本会话默认
+/// apply 回调（契约位：注入引擎接管实际外观下发；默认
 /// 实现为 log::debug）。
 pub type ApplyCallback = Arc<dyn Fn(u32, &StateResolution) + Send + Sync>;
 
@@ -204,7 +204,7 @@ pub struct Engine {
 }
 
 /// Shell UI（开始 / 搜索类）可见性翻转的公共路径：开 → 归属前台显示器
-///（标杆口径）；关 → 清空。返回是否变化。
+///；关 → 清空。返回是否变化。
 fn set_ui_slot(visible: bool, slot: &mut Option<isize>) -> bool {
     let new = if visible { shell_ui_monitor() } else { None };
     if new == *slot {
@@ -215,8 +215,8 @@ fn set_ui_slot(visible: bool, slot: &mut Option<isize>) -> bool {
     }
 }
 
-/// Shell UI（开始 / 搜索）所在显示器：标杆口径 = 事件回调后 Sleep(5) +
-/// `MonitorFromWindow(GetForegroundWindow())`（hpp:236-247）。**已知不
+/// Shell UI（开始 / 搜索）所在显示器：事件回调后 Sleep(5) +
+/// `MonitorFromWindow(GetForegroundWindow())`。**已知不
 /// 精确**：开动画未完成时前台可能尚未切到 shell 宿主；关事件时前台往往
 /// 已是别的窗口——关侧只用 None 清空，不受影响。
 fn shell_ui_monitor() -> Option<isize> {
@@ -243,6 +243,21 @@ impl Engine {
 
     /// 处理一条事件；返回是否需要重求值（dirty）。
     pub fn handle(&mut self, msg: EngineMsg) -> bool {
+        // 模块关闭时轻量化。Insert/Remove 是 LOCATIONCHANGE/
+        // NAMECHANGE/SHOW/REORDER 的全量映射，每次入表判定要 GetClassName +
+        // OpenProcess + 进程名查询 + DWM + COM 虚拟桌面查询；关闭状态下求值层
+        // 已不输出（evaluate 的 enabled 门槛），但表层原先仍在全量刷新——拖动
+        // 窗口时每像素级事件都白烧一轮 Win32/COM。关闭期间直接丢弃增删（表会
+        // 陈旧，重开时的 Rebuild/Reevaluate 路径全量重建补齐）；前台/UI 槽位/
+        // 重建类事件量小且重开时需要最新值，保留。
+        if !crate::taskbar::current_config().enabled
+            && matches!(
+                msg,
+                EngineMsg::Win(WinEventMsg::Insert(_)) | EngineMsg::Win(WinEventMsg::Remove(_))
+            )
+        {
+            return false;
+        }
         match msg {
             EngineMsg::Win(WinEventMsg::Insert(hwnd)) => self.insert_window(hwnd),
             EngineMsg::Win(WinEventMsg::Remove(hwnd)) => self.table.remove(hwnd),
@@ -291,7 +306,7 @@ impl Engine {
     }
 
     /// 单窗口判定入表（judge 内部先快照后判定；虚拟桌面查询最后做）。
-    /// F-6：忽略列表**不在表层剔窗**——过滤在逐屏求值
+    /// 忽略列表**不在表层剔窗**——过滤在逐屏求值
     /// （[`crate::taskbar::resolve_active_state`]）内按该屏生效列表进行，
     /// 否则逐屏覆盖无法解除统一忽略（覆盖 = 整体替换）。
     fn insert_window(&mut self, hwnd: isize) -> bool {
@@ -300,7 +315,7 @@ impl Engine {
         self.table.insert(hwnd, judgment)
     }
 
-    /// 全量重建（显示器 + 窗口集合；对齐标杆 ResetState 的枚举路径）。
+    /// 全量重建（显示器 + 窗口集合）。
     /// 同时清去重缓存：重建后（explorer 重启 / 热插拔 / 任务栏建毁）DLL 侧
     /// 是新的或显示器集变了，每屏都必须重发一次当前外观。
     fn rebuild(&mut self) {
@@ -335,7 +350,11 @@ impl Engine {
             return;
         }
         let fg_info = if self.fg != 0 {
-            window::window_info(self.fg)
+            // 前台必须过用户窗口七条件——表层 insert 只收
+            // 用户窗口（is_user 门槛），表成员资格即判定；前台是桌面
+            // （Progman/WorkerW）等非用户窗口时返回 None，其 class/title 不再
+            // 误命中 Title/Class 规则。
+            self.table.user_window_info(self.fg)
         } else {
             None
         };
@@ -359,7 +378,7 @@ impl Engine {
         };
         let inputs = assemble_inputs(&snap);
         for (index, entry) in self.monitors.iter().enumerate() {
-            // F-6 每屏入口：按该屏稳定槽位的生效配置（统一 / 覆盖）求值。
+            // 每屏入口：按该屏稳定槽位的生效配置（统一 / 覆盖）求值。
             let res =
                 crate::taskbar::resolve_active_state_for_slot(&config, &inputs, index, entry.slot);
             let key = LastResolution {
@@ -443,7 +462,6 @@ pub fn assemble_inputs(snap: &EngineSnapshot) -> StateInputs {
 
 #[cfg(windows)]
 mod win32 {
-    use std::collections::HashSet;
     use std::time::Duration;
 
     use windows::Win32::Foundation::{HWND, LPARAM, RECT};
@@ -481,7 +499,7 @@ mod win32 {
         }
     }
 
-    /// Shell UI 显示器归属（标杆 Sleep(5) 口径，见上层注释）。
+    /// Shell UI 显示器归属（Sleep(5) 启发式，见上层注释）。
     pub fn shell_ui_monitor() -> Option<isize> {
         std::thread::sleep(Duration::from_millis(5));
         let fg = crate::taskbar::window::foreground_hwnd();
@@ -562,21 +580,29 @@ mod win32 {
     /// 几何 → 槽位（纯函数，可测）：先把 (hmonitor, 几何) 与 tauri 枚举
     /// （monitor.rs resolve_monitor_slots 的 (slot, 位置, 尺寸)）对齐；
     /// tauri 不可用 / 未命中的按 (top, left) 排序补位。
+    /// 克隆/同几何双屏原先会让多个 HMONITOR 都命中**第一个**
+    /// 同几何 tauri 槽位（find 取首），随后按槽位去重直接丢屏——被丢屏的任务栏
+    /// 只收到基础配置，逐屏覆盖静默失效。改为槽位**占用即消耗**（每匹配一个
+    /// 就从候选移除），同几何屏依次吃到各自的真实槽位；tauri 侧不够用时溢出
+    /// 屏走补位路径拿新槽位。
     fn slot_by_geometry(raw: Vec<(isize, i32, i32, i32, i32)>) -> Vec<MonitorEntry> {
-        let tauri_slots: Vec<(u32, i32, i32, u32, u32)> =
+        let mut free: Vec<(u32, i32, i32, u32, u32)> =
             std::panic::catch_unwind(tauri_monitor_geometry).unwrap_or_default();
         let mut entries: Vec<MonitorEntry> = Vec::with_capacity(raw.len());
         let mut unmatched: Vec<(isize, i32, i32)> = Vec::new();
         for (hmon, l, t, r, b) in raw {
             let (w, h) = (r - l, b - t);
-            match tauri_slots
-                .iter()
-                .find(|(_, x, y, tw, th)| *x == l && *y == t && *tw as i32 == w && *th as i32 == h)
-            {
-                Some((slot, ..)) => entries.push(MonitorEntry {
-                    hmonitor: hmon,
-                    slot: *slot,
-                }),
+            let hit = free.iter().position(|(_, x, y, tw, th)| {
+                *x == l && *y == t && *tw as i32 == w && *th as i32 == h
+            });
+            match hit {
+                Some(pos) => {
+                    let (slot, ..) = free.remove(pos);
+                    entries.push(MonitorEntry {
+                        hmonitor: hmon,
+                        slot,
+                    });
+                }
                 None => unmatched.push((hmon, t, l)),
             }
         }
@@ -591,11 +617,6 @@ mod win32 {
             }
         }
         entries.sort_by_key(|e| e.slot);
-        if entries.windows(2).any(|w| w[0].slot == w[1].slot) {
-            // 病理重复（同几何双屏同名）：去重保槽位唯一，后续按序生效。
-            let mut seen = HashSet::new();
-            entries.retain(|e| seen.insert(e.slot));
-        }
         entries
     }
 
@@ -679,7 +700,7 @@ impl crate::taskbar::win_watcher::SystemEventCallback for WatcherBridge {
 /// 自己仍是活动代际才清 0（compare_exchange）。只有单个 RUNNING 布尔时存在
 /// 停启竞态：stop → 紧接 start 立起新引擎后，旧引擎退出路径的无条件
 /// `RUNNING.store(false)` 会打掉新引擎的运行标志、迟到的 WM_QUIT 会误杀新的
-/// 源线程（T-10）。代际让两件事都只作用于"自己那一代"。
+/// 源线程。代际让两件事都只作用于"自己那一代"。
 static ACTIVE_GEN: AtomicU64 = AtomicU64::new(0);
 /// 代际发生器（每次 start 尝试递增；与 ACTIVE_GEN 分开，避免 CAS 竞争交织）。
 static NEXT_GEN: AtomicU64 = AtomicU64::new(0);
@@ -700,7 +721,7 @@ fn unregister_sources_thread(tid: u32) {
     }
 }
 /// 引擎线程收件箱的发送端（引擎存活期内有效）：INJECT 在配置变更后经
-/// [`request_reevaluate`] 触发全量重求值（F-6 每屏入口的外部触发点）。
+/// [`request_reevaluate`] 触发全量重求值（每屏入口的外部触发点）。
 /// 带代际标签：旧代退出只清属于自己的那份——stop → 紧接 start 时新一代已
 /// 登记新 Sender，旧代无条件置 None 会把它抹掉，此后 request_reevaluate 恒 false。
 static ENGINE_TX: Mutex<Option<(u64, Sender<EngineMsg>)>> = Mutex::new(None);
@@ -738,7 +759,7 @@ struct SourceGuards {
 /// windowsudk.shellcommon.dll 内部访问冲突（NULL handler 同样崩 → 与
 /// sink 实现无关）；STA 线程内订阅返回 S_OK。事件回调经 STA 消息泵
 /// 送达 sink → 无界 channel → 引擎线程。AppVisibility 的 Advise 同样
-/// 挂在此线程（对齐标杆 worker 线程单 STA 模型）。
+/// 挂在此线程（单 STA 线程模型）。
 fn spawn_sources_thread(tx: Sender<EngineMsg>, gen: u64) {
     // 线程耗尽时 spawn 失败：此前 expect 直接在引擎线程 panic（连锁触发 panic
     // hook）。降级为记日志——没有 shell 源线程只是状态探测不到，不应拖垮引擎。
@@ -763,6 +784,13 @@ fn run_sources(tx: Sender<EngineMsg>, gen: u64) {
             log::warn!("taskbar state sources: CoInitializeEx(STA) failed: {hr}");
             return;
         }
+        // tid 在 watch 创建**之前**登记。四个 watch 的创建含跨套间 COM
+        // 调用（最长可达秒级），此窗口内 stop_state_detection 只向「已登记」
+        // 线程投 WM_QUIT——晚登记 = 退出信号丢失，源线程的 GetMessageW 泵从
+        // 此无人能停（连同全部 COM 订阅泄漏到进程退出）。先登记后创建，
+        // watch 失败的逐项降级不影响登记；线程退出路径的 unregister 按 tid
+        // 精确清理，不会误伤新一代。
+        register_sources_thread(gen, windows::Win32::System::Threading::GetCurrentThreadId());
         let guards = SourceGuards {
             _start: start::watch_start(tx.clone()).map_err(warn_source).ok(),
             _search: search::watch_shell_view(
@@ -783,10 +811,15 @@ fn run_sources(tx: Sender<EngineMsg>, gen: u64) {
                 .map_err(warn_source)
                 .ok(),
         };
-        register_sources_thread(gen, windows::Win32::System::Threading::GetCurrentThreadId());
         log::info!("taskbar state sources: STA thread pumping (gen {gen})");
         let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+        // （漏网）：GetMessageW 出错返回 -1，as_bool() 对 -1 为真会让
+        // 本 STA 泵忙旋转（COM 回调不再送达、状态源线程死转）。0 与 -1 都退出，
+        // 走注销与线程收尾（ACTIVE_GEN 由线程最外层兜底清理）。
+        while {
+            let r = GetMessageW(&mut msg, None, 0, 0);
+            r.0 != 0 && r.0 != -1
+        } {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -842,7 +875,7 @@ pub fn start_state_detection_with_output(output: Arc<dyn StateOutput>) -> bool {
 
 /// 停止状态检测（幂等；引擎线程 ≤250ms、源线程随 WM_QUIT 退出）。WM_QUIT 只
 /// 投给与被停代际同代的源线程——stop 与紧接的 start 竞态下，新一代的消息泵
-/// 不被误杀（T-10）。
+/// 不被误杀。
 pub fn stop_state_detection() {
     let stopped_gen = ACTIVE_GEN.swap(0, Ordering::SeqCst);
     if stopped_gen == 0 {
@@ -924,8 +957,19 @@ fn run_engine(output: Arc<dyn StateOutput>, gen: u64) {
         let wait = gate.next_wait(now).map(|d| d.min(POLL)).unwrap_or(POLL);
         match rx.recv_timeout(wait) {
             Ok(msg) => {
-                if engine.handle(msg) {
-                    gate.on_event(Instant::now());
+                // 逐拍 catch_unwind（对齐 system.rs / net_history.rs /
+                // monitor.rs / process_watch.rs 的采样线程基线）——handle/
+                // evaluate 走 window.rs 的 Win32/COM 查询，panic 直接让线程
+                // 退出而 ACTIVE_GEN 清位（函数尾 compare_exchange）不执行，
+                // start_state_detection 永远返回 false：一次 panic = 任务栏
+                // 动态状态冻结到应用重启。兜住后记日志继续下一拍。
+                let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if engine.handle(msg) {
+                        gate.on_event(Instant::now());
+                    }
+                }));
+                if tick.is_err() {
+                    log::error!("taskbar state: engine handle panicked; recovered");
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -933,7 +977,12 @@ fn run_engine(output: Arc<dyn StateOutput>, gen: u64) {
         }
         if gate.due(Instant::now()) {
             gate.clear();
-            engine.evaluate();
+            let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                engine.evaluate();
+            }));
+            if tick.is_err() {
+                log::error!("taskbar state: engine evaluate panicked; recovered");
+            }
         }
     }
     // 引擎侧 COM（虚拟桌面管理器）先于 CoUninitialize 释放。
@@ -946,7 +995,7 @@ fn run_engine(output: Arc<dyn StateOutput>, gen: u64) {
     }
     drop(engine);
     // 钩子线程的归属：新一代已起（ACTIVE_GEN 已换成新值）时，它经 start() 换绑
-    // 归新一代所有，本代退出不得再投 WM_QUIT 误杀（T-10 同型的第三处竞态）。
+    // 归新一代所有，本代退出不得再投 WM_QUIT 误杀（同型的第三处竞态）。
     // 显式 stop_state_detection 已自行投递 WM_QUIT，此处 ACTIVE_GEN 为 0 亦跳过。
     if ACTIVE_GEN.load(Ordering::SeqCst) == gen {
         win_event::stop();
@@ -955,7 +1004,7 @@ fn run_engine(output: Arc<dyn StateOutput>, gen: u64) {
         win32::co_uninit();
     }
     // 只清自己持有的代际：stop → 紧接 start 已立起新一代时，运行标志归新一代
-    //（T-10：无条件清 0 会把新引擎在下一轮循环就打下线）。
+    //（无条件清 0 会把新引擎在下一轮循环就打下线）。
     let _ = ACTIVE_GEN.compare_exchange(gen, 0, Ordering::SeqCst, Ordering::SeqCst);
     log::info!("taskbar state: engine stopped (gen {gen})");
 }
@@ -1168,7 +1217,7 @@ mod tests {
         }
     }
 
-    /// F-6：引擎未运行时 request_reevaluate 安全返回 false（调用方即时基线
+    /// 引擎未运行时 request_reevaluate 安全返回 false（调用方即时基线
     /// 已覆盖，不 panic 不阻塞）。
     #[test]
     fn request_reevaluate_without_engine_is_false() {

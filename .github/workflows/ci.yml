@@ -2,16 +2,37 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
   # 仅供手动触发 release-verify 与 e2e（这两个 job 以 if 门控，push/PR 不会跑）
   workflow_dispatch:
+  # E-9：nightly 定时触发（UTC 20:00 ≈ 北京时间次日 04:00）——e2e 仍保持
+  # 手动起步能力，但每晚自动跑一轮，失败在 Actions 页可观测（否则纯手动
+  # 起步的实验性 job 可能数周无人跑、坏了也没人知道）。
+  schedule:
+    - cron: "0 20 * * *"
+
+# P3-27（审查第二轮 N-9 留档）：本仓库尚无 git 远端——本文件全部 job 在配置
+# 远端并首次 push 之前从未真实运行，「CI 绿灯」是纸面能力；在此之前提交前请
+# 跑 `npm run ci:local`（run-local-ci.mjs 与本文件逐步对齐，含泄漏门）。
+# P3-27：全部 third-party action 钉扎到 commit SHA（tag 可变，被劫持时静默换
+# 代码）。SHAs 于 2026-10-07 经 GitHub API 解析；升级时按 release note 换新
+# SHA 并保留 # 注释里的版本线索。
 
 # 同一分支的新推送取消仍在跑的旧 run，避免排队堆积
+# P3-29：group 加入 event_name——此前 nightly schedule 与 push/PR 共用
+# `ci-<ref>` 分组，凌晨 nightly e2e 会把同分支刚推的 CI（或反之）取消掉，
+# 事件类型分开后互不抢占（schedule 的 ref 也是默认分支，仍会取消旧 nightly）。
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
+
+# P3-30：最小权限原则——workflow 顶层只读 contents；各 job 无 GitHub 写需求
+# （checkout 拉代码、上传 artifact 走各自 action 的 job 级 token 场景），缺省
+# 的 read/write 令牌只会放大被劫持 action 的 blast radius。
+permissions:
+  contents: read
 
 jobs:
   frontend:
@@ -20,11 +41,11 @@ jobs:
     timeout-minutes: 30
     defaults:
       run:
-        # 仓库根即项目根（git toplevel 就是本目录）
+        # 仓库根即项目根（git toplevel 就是本目录，不存在 vela-cleanroom/ 子层）
         working-directory: .
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 tag head（2026-10-07 API 解析）
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
@@ -36,12 +57,21 @@ jobs:
       - run: npm run lint:anim
       - run: npm run lint:tokens
       - run: npm run lint:i18n
+      # Q-6b（第四轮审查修复）：IME 组合期 Enter 守卫门禁（keydown 裸判 Enter
+      # 缺 isComposing 即拦——中文输入法「回车选字」被误当作提交）。
+      - run: npm run lint:ime
       - run: npm run lint:api
       - run: npm run lint:sizes
-      # A-1/A-5：分层硬边界 + 窗口闸门清单（advisory，清单非空仍 0 退出）
+      # A-1/A-5：分层硬边界 + 窗口闸门清单（E-18 起为硬门禁：清单非空即
+      # exit 1；EN-4（第七轮审查）：修正本行旧注释的 advisory 表述）。
       - run: npm run lint:layering
       - run: npm run lint:window-gates
-      - run: npm test
+      # SEC-3（第七轮审查）：CSP 形态锁（tauri.conf.json 为严格 JSON 不能
+      # 带注释，说明与防线都在 scripts/check-csp-lock.mjs 头注）。
+      - run: npm run lint:csp
+      # T-17：带覆盖率阈值跑测试——vite.config.ts 的 thresholds（实测-2pt 棘轮）
+      # 在此机器强制，裸 vitest 不会校验阈值，coverage 数字无从守门。
+      - run: npm run test:coverage
       - run: npm run build
 
   backend:
@@ -54,53 +84,129 @@ jobs:
       run:
         working-directory: src-tauri
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 tag head（2026-10-07 API 解析）
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
       - run: cargo fmt --check
+      # E-3：根包（含 [package] 的非虚拟 workspace 默认只作用根包）之外，
+      # 三个 workspace 成员显式 -p 覆盖——velatap 是注入 explorer 的原生 DLL
+      # （全仓风险最高代码），此前没有任何 clippy -D warnings / test 在 CI 跑。
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets -p velatap -p taskbar_common -p vela-symbolize -- -D warnings
       # B-8：windows crate feature 面可见性——不硬门禁（依赖升级天然带来合法
       # 变化），但每次 CI 把展开面留档到日志，膨胀可回溯。
       - name: Feature surface snapshot (visibility only)
         run: cargo tree -e features --workspace
       # --lib 含 ts-rs 导出测试：会把最新绑定写回 ../src/types/bindings
       - run: cargo test --lib
+      - run: cargo test --lib -p velatap -p taskbar_common -p vela-symbolize
       - name: Bindings drift gate (ts-rs export must match committed files)
         shell: bash
         working-directory: .
-        run: git diff --exit-code -- src/types/bindings
+        # ZE-4：git diff 只看已跟踪文件——新增导出类型生成 untracked 绑定，
+        # 忘提交的 PR 此前绿灯（fresh clone 上永不触发）；补 status 非空即 fail。
+        run: |
+          git diff --exit-code -- src/types/bindings
+          test -z "$(git status --porcelain -- src/types/bindings)"
 
-  # e2e（手动起步，实验性）：前置条件重——需先 tauri:build 出 release 产物，
-  # 且本机 WebView2 与 msedgedriver 大版本需匹配（见 e2e/README.md）。跑失败
-  # 不阻塞主链路；待驱动链稳定后再评估入 push/PR。
-  e2e:
-    name: e2e (manual, experimental)
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 60
+  # E-10：依赖漏洞扫描（advisory，先告警不阻塞主链）。全部步骤 `|| true` /
+  # continue-on-error——job 永不红，结果只进日志供回溯；跑一段时间后按需把
+  # 高危（RustSec 未修复 / npm prod 高危）转硬门禁。E-21 已把 vitest 升到
+  # ^4.1.11 并 `npm audit fix` 收敛全量 0 漏洞（2026-10-07 基线 6 条 → 0）；
+  # 本 job 负责此后新出现的 advisory 可观测。
+  audit-advisory:
+    name: Dependency audit (advisory, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 tag head（2026-10-07 API 解析）
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      # 手写安装 + 运行（离线环境友好、不依赖第三方 action 的 check-run 权限）；
+      # 若安装耗时成为问题可换 rustsec/audit-check@v2（预编译二进制，更快）。
+      - name: Install cargo-audit (failure tolerated, advisory only)
+        run: cargo install cargo-audit --locked
+        continue-on-error: true
+      - name: cargo audit (RustSec advisories vs src-tauri/Cargo.lock)
+        working-directory: src-tauri
+        shell: bash
+        # P3-29：安装失败（上一步 continue-on-error）时显式打 annotation——
+        # 此前工具不存在会让 cargo audit 失败被 || true 吞掉，advisory job
+        # 输出为空仍绿，「可观测」退化为「日志里什么都没有也算观测」。
+        run: |
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            echo "::warning::cargo-audit 安装失败——本次 RustSec 扫描被跳过（日志里没有扫描结果 ≠ 依赖干净），请排查上一步"
+            exit 0
+          fi
+          cargo audit || true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: npm audit --omit=dev (prod deps, advisory only)
+        run: npm audit --omit=dev || true
+      - name: npm audit (full, for the record — vitest chain knowns tracked in E-21)
+        run: npm audit || true
+
+  # e2e（手动起步 + nightly 定时，实验性）：前置条件重——需先 tauri:build 出
+  # release 产物，且本机 WebView2 与 msedgedriver 大版本需匹配（见 e2e/README.md）。
+  # E-9：依赖安装失败必须红（continue-on-error 已移除——装不上依赖的 e2e
+  # 必然全红，静默跳过只会掩盖环境问题）；nightly 定时触发让失败可观测。
+  e2e:
+    name: e2e (manual + nightly, experimental)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: windows-latest
+    # P3-34：60 → 90——冷缓存首轮（cargo 全量编译 tauri-driver + release 构建）
+    # 按 pessimistic 预估放宽；首轮 nightly 实测后回收到实测值 + 余量。
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 tag head（2026-10-07 API 解析）
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
       - run: npm ci
       - run: npm --prefix e2e ci --no-save
-        continue-on-error: true
       - name: Build release binary for e2e
         run: npm run tauri:build
+      # N-10：驱动链前置（此前缺失——wdio 连不上 4444 必然失败，被下方
+      # continue-on-error 转绿 = 每晚恒定环境噪音淹没真实回归信号）。
+      # 三步对齐 e2e/README.md 的本地前置：tauri-driver、与本机 WebView2
+      # Runtime 同版本的 msedgedriver（azureedge 端点已弃用，走 microsoft）、
+      # 4444 后台服务。
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+      - name: Download msedgedriver matching installed WebView2 runtime
+        shell: pwsh
+        run: |
+          $pv = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}').pv
+          if (-not $pv) { throw 'WebView2 Runtime 版本读取失败（注册表键不存在）' }
+          Write-Host "WebView2 runtime: $pv"
+          $zip = Join-Path $env:RUNNER_TEMP 'edgedriver_win64.zip'
+          $dir = Join-Path $env:RUNNER_TEMP 'edgedriver'
+          Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$pv/edgedriver_win64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          if (-not (Test-Path (Join-Path $dir 'msedgedriver.exe'))) { throw 'msedgedriver.exe 解压后不存在' }
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+      - name: Start tauri-driver on 4444
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath (Get-Command tauri-driver).Source -ArgumentList @('--port','4444') -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          if ($p.HasExited) { throw "tauri-driver 启动即退出（exit $($p.ExitCode)）——检查 msedgedriver 版本匹配" }
+          Write-Host "tauri-driver running on :4444 (pid $($p.Id))"
       - name: Run e2e
         run: npm run test:e2e
-        continue-on-error: true # 实验性：结果先可观测，不作为门禁
+        # 实验性：结果先可观测，不作为门禁——待 msedgedriver/WebView2 驱动链
+        # 稳定后转硬门禁（届时删除本行 continue-on-error）。
+        continue-on-error: true
 
   # 发布校验链（docs/releasing.md）：完整打包 → SHA256SUMS → verify 必须通过 →
   # 篡改自测（对副本翻转一字节，断言 verify 非零退出）。打包耗时长，只手动触发。
@@ -114,14 +220,14 @@ jobs:
         working-directory: .
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 tag head（2026-10-07 API 解析）
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
       - run: npm ci
@@ -151,7 +257,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'tampered bundle passed verify - release chain is broken' }
           Write-Host "tamper self-test OK: verify exit code $LASTEXITCODE (non-zero as expected)"
       - name: Upload installers + manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vela-release-bundle
           path: |

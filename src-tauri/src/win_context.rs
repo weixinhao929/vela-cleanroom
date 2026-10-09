@@ -1,13 +1,13 @@
-//! 窗口上下文探针（ZTools 借鉴 #2 window 型指令的数据源）。
+//! 窗口上下文探针。
 //!
-//! uTools/ZTools 的「窗口匹配指令」按前台窗口出专属动作（在资源管理器里
+//! uTools/同类启动器 的「窗口匹配指令」按前台窗口出专属动作（在资源管理器里
 //! 给「复制当前文件夹路径」，在浏览器里给「读取当前页 URL」）。本模块补
 //! Vela 缺的两个读取面：
 //!  - [`read_explorer_path`]：枚举 Shell 窗口（IShellWindows）找到与前台
 //!    句柄一致的资源管理器窗口，读 LocationURL/LocationName；
 //!  - [`read_browser_url`]：UI Automation 找前台浏览器窗口的地址栏 Edit
 //!    控件，读 Value（Chromium 的「地址和搜索栏」/ Edge 地址栏同构）。
-//! 外加 [`open_terminal_at`]（在指定目录打开终端，ZTools open-terminal 同款）
+//! 外加 [`open_terminal_at`]
 //! 与 [`copy_text_to_clipboard`]（上下文动作「复制」的落点）。
 //!
 //! COM 线程模型：全部走 `spawn_blocking` + 调用线程 `CoInitializeEx(STA)`、
@@ -216,7 +216,7 @@ pub async fn read_browser_url(window: tauri::Window) -> Result<Option<String>, S
 /// 终端白名单（命令参数；单测覆盖）。
 pub const TERMINAL_KINDS: [&str; 3] = ["wt", "powershell", "cmd"];
 
-/// [CTX] 在指定目录打开终端窗口（ZTools open-terminal 同款）。目录不存在
+/// [CTX] 在指定目录打开终端窗口。目录不存在
 /// 或 kind 未知直接拒绝。起始目录经 `current_dir` 传递（无 shell 拼接面）；
 /// 子进程 detach（drop 句柄，系统收尸）。
 #[tauri::command]
@@ -247,7 +247,15 @@ fn open_terminal_blocking(path: &str, kind: &str) -> Result<(), String> {
     //（wt 对继承启动目录的语义不稳定）。
     let spawn = |mut cmd: std::process::Command| -> Result<(), String> {
         cmd.spawn()
-            .map(drop)
+            .map(|child| {
+                // RUST-4（范式，lib.rs open_log_dir 同款）：后台线程 wait
+                // 回收子进程句柄——常驻桌面进程长期运行，每次打开终端泄漏一个
+                // 未 join 的句柄直到进程退出。
+                std::thread::spawn(move || {
+                    let mut child = child;
+                    let _ = child.wait();
+                });
+            })
             .map_err(|e| format!("打开终端失败: {e}"))
     };
     match kind {

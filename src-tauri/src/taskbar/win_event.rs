@@ -1,5 +1,4 @@
-//! WinEvent 钩子线程（TB-STATE 感知层的事件入口，标杆
-//! taskbarattributeworker.cpp:1239-1270 钩子清单的 Rust 对应物）。
+//! WinEvent 钩子线程（状态感知层的事件入口）。
 //!
 //! 独立线程跑 `GetMessageW` 循环（`WINEVENT_OUTOFCONTEXT` 的交付要求），
 //! 挂九段 `SetWinEventHook`：PEEK(0x21/0x22)、CLOAK/UNCLOAK、
@@ -195,53 +194,58 @@ mod imp {
         if id_object != OBJID_WINDOW.0 || id_child != CHILDID_SELF as i32 {
             return;
         }
-        let raw = hwnd.0 as isize;
-        match event {
-            EVENT_SYSTEM_PEEKSTART => send(WinEventMsg::Peek(true)),
-            EVENT_SYSTEM_PEEKEND => send(WinEventMsg::Peek(false)),
-            EVENT_OBJECT_CLOAKED | EVENT_OBJECT_HIDE | EVENT_SYSTEM_MINIMIZESTART => {
-                send(WinEventMsg::Remove(raw))
-            }
-            EVENT_OBJECT_UNCLOAKED
-            | EVENT_OBJECT_SHOW
-            | EVENT_SYSTEM_MINIMIZEEND
-            | EVENT_OBJECT_REORDER
-            | EVENT_OBJECT_LOCATIONCHANGE
-            | EVENT_OBJECT_NAMECHANGE => send(WinEventMsg::Insert(raw)),
-            EVENT_SYSTEM_FOREGROUND => send(WinEventMsg::Foreground(raw)),
-            EVENT_OBJECT_CREATE => {
-                // 任务栏窗口创建 → 全量重建 + 转发；其余按普通窗口判定。
-                if is_tray_class(hwnd) {
-                    KNOWN_TRAY
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .push(raw);
-                    send(WinEventMsg::TrayCreated(raw));
-                } else {
-                    send(WinEventMsg::Insert(raw));
+        //panic 穿越 extern "system" 回调是 UB——本回调在 user32 派发
+        // 栈内执行（9 段 SetWinEventHook 的公共入口），对齐 global_input/widget
+        // 钩子已设防的基线，整个分类体包 catch_unwind。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let raw = hwnd.0 as isize;
+            match event {
+                EVENT_SYSTEM_PEEKSTART => send(WinEventMsg::Peek(true)),
+                EVENT_SYSTEM_PEEKEND => send(WinEventMsg::Peek(false)),
+                EVENT_OBJECT_CLOAKED | EVENT_OBJECT_HIDE | EVENT_SYSTEM_MINIMIZESTART => {
+                    send(WinEventMsg::Remove(raw))
                 }
-            }
-            EVENT_OBJECT_DESTROY => {
-                // 事件异步：窗口可能已失效，绝不查询，只按句柄处理；
-                // 在名单中 = 任务栏窗口销毁（转发 + 全量重建），否则普通移除。
-                let was_tray = {
-                    let mut known = KNOWN_TRAY.lock().unwrap_or_else(|p| p.into_inner());
-                    match known.iter().position(|&h| h == raw) {
-                        Some(i) => {
-                            known.swap_remove(i);
-                            true
-                        }
-                        None => false,
+                EVENT_OBJECT_UNCLOAKED
+                | EVENT_OBJECT_SHOW
+                | EVENT_SYSTEM_MINIMIZEEND
+                | EVENT_OBJECT_REORDER
+                | EVENT_OBJECT_LOCATIONCHANGE
+                | EVENT_OBJECT_NAMECHANGE => send(WinEventMsg::Insert(raw)),
+                EVENT_SYSTEM_FOREGROUND => send(WinEventMsg::Foreground(raw)),
+                EVENT_OBJECT_CREATE => {
+                    // 任务栏窗口创建 → 全量重建 + 转发；其余按普通窗口判定。
+                    if is_tray_class(hwnd) {
+                        KNOWN_TRAY
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .push(raw);
+                        send(WinEventMsg::TrayCreated(raw));
+                    } else {
+                        send(WinEventMsg::Insert(raw));
                     }
-                };
-                if was_tray {
-                    send(WinEventMsg::TrayDestroyed(raw));
-                } else {
-                    send(WinEventMsg::Remove(raw));
                 }
+                EVENT_OBJECT_DESTROY => {
+                    // 事件异步：窗口可能已失效，绝不查询，只按句柄处理；
+                    // 在名单中 = 任务栏窗口销毁（转发 + 全量重建），否则普通移除。
+                    let was_tray = {
+                        let mut known = KNOWN_TRAY.lock().unwrap_or_else(|p| p.into_inner());
+                        match known.iter().position(|&h| h == raw) {
+                            Some(i) => {
+                                known.swap_remove(i);
+                                true
+                            }
+                            None => false,
+                        }
+                    };
+                    if was_tray {
+                        send(WinEventMsg::TrayDestroyed(raw));
+                    } else {
+                        send(WinEventMsg::Remove(raw));
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        }
+        }));
     }
 
     /// 类名是否任务栏窗口（GetClassNameW 不发消息，回调内安全）。
@@ -312,7 +316,13 @@ mod imp {
             log::info!("taskbar win_event: hooks installed");
             loop {
                 let mut msg = MSG::default();
-                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                // （漏网）：GetMessageW 出错返回 -1，as_bool() 对 -1 为真
+                // 会拿旧 msg 紧密忙循环重派发（满核 + 陈旧事件灌引擎）。0 与 -1
+                // 都退出内层泵，走下方换绑判定/线程收尾。
+                while {
+                    let r = GetMessageW(&mut msg, None, 0, 0);
+                    r.0 != 0 && r.0 != -1
+                } {
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }

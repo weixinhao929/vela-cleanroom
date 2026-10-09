@@ -1,5 +1,4 @@
-//! TAP 站点与类厂——标杆 tapsite.cpp / module.cpp / simplefactory.hpp 的
-//! 等价物。
+//! TAP 站点与类厂。
 //!
 //! XAML Diagnostics 初始化时会 `LoadLibrary(本DLL)` + `DllGetClassObject`
 //! 拿 [`CLSID_VELATAP_SITE`] 的类厂，`CreateInstance` 出站点对象并
@@ -7,8 +6,8 @@
 //!
 //! 1. 装[`appearance`] 全局注册表（diag 接口来自 site）；
 //! 2. 起 VisualTreeWatcher；
-//! 3. 在**独立线程**上 `AdviseVisualTreeChange`（标杆注释：从独立线程调
-//!    用可避免某些挂起，VisualTreeWatcher 构造函数 :14-19）。
+//! 3. 在**独立线程**上 `AdviseVisualTreeChange`（从独立线程调
+//!    用可避免某些挂起）。
 
 use std::sync::OnceLock;
 
@@ -22,7 +21,7 @@ use crate::diag::{
 };
 use crate::watcher::VisualTreeWatcher;
 
-/// 唯一 watcher（标杆 s_VisualTreeWatcher weak_ref + 非法重入检查的简化版：
+/// 唯一 watcher（weak_ref + 非法重入检查的简化版：
 /// OnceLock 兜住二次 SetSite）。
 /// COM 指针本身不跨线程使用（回调只在任务栏 UI 线程），仅静态存放。
 struct WatcherCell(#[allow(dead_code)] windows_core::IUnknown);
@@ -77,8 +76,12 @@ impl IObjectWithSite_Impl for VelaTapSite_Impl {
             let advise_site = crate::util::SendCell(site.clone());
             match std::thread::Builder::new()
                 .stack_size(256 * 1024)
-                .spawn(move || advise_thread_main(advise_site, advise_watcher))
-            {
+                .spawn(move || {
+                    // Advise 线程静默死亡 = 可视树事件永远收不到。
+                    crate::util::run_guarded("advise", move || {
+                        advise_thread_main(advise_site, advise_watcher)
+                    })
+                }) {
                 Ok(_joined) => {}
                 Err(e) => {
                     crate::vlog!("failed to spawn advise thread: {e}");

@@ -1,14 +1,17 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   attachTranslations,
   buildTransTable,
   containsEitherWay,
   decodeEntities,
+  fetchLyrics,
   indexForTime,
+  isLyricsCacheMiss,
   isUsableTranslation,
   lyricsCacheKey,
   parseLrc,
-  readLyricsCache
+  readLyricsCache,
+  type LyricsCacheEntry
 } from "./lyrics";
 
 describe("lyrics.parseLrc（LRC 解析）", () => {
@@ -27,12 +30,12 @@ describe("lyrics.parseLrc（LRC 解析）", () => {
     expect(lines[1]).toEqual({ time: 40, text: "副歌" });
   });
 
-  it("[offset:±ms] 元数据整体平移，且不产生行；负偏移不出现负时间", () => {
+  it("[offset:±ms] 元数据整体平移（正值提前=时间戳减小），且不产生行；提前量超出时间戳不出现负时间", () => {
     const plus = parseLrc("[offset:+500]\n[00:10.00]a");
     expect(plus).toHaveLength(1);
-    expect(plus[0].time).toBeCloseTo(10.5, 6);
-    const minus = parseLrc("[offset:-20000]\n[00:10.00]a");
-    expect(minus[0].time).toBe(0);
+    expect(plus[0].time).toBeCloseTo(9.5, 6);
+    const clamp = parseLrc("[offset:+20000]\n[00:10.00]a");
+    expect(clamp[0].time).toBe(0);
   });
 
   it("分数位数按位解释：.5 与 .50 与 .500 都是 500ms；冒号分隔也接受", () => {
@@ -156,5 +159,51 @@ describe("lyrics.buildTransTable + attachTranslations（译文对齐）", () => 
     const trans = Array.from({ length: 50 }, (_, i) => `[00:${String(i + 1).padStart(2, "0")}.10]译${i}`).join("\n");
     const out = attachTranslations(parseLrc(src), buildTransTable(trans));
     out.forEach((l, i) => expect(l.translation).toBe(`译${i}`));
+  });
+});
+
+/* ══ 负缓存：无词曲目不重放全引擎链 ══ */
+
+/* mock 签名带 rest 参数：fetchJson 转发 ...args 时 spread 才能通过类型检查
+   （无参签名的 vi.fn 不接受 unknown[] 展开）。 */
+const fetchJsonMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => null));
+vi.mock("./network", () => ({ fetchJson: (...args: unknown[]) => fetchJsonMock(...args) }));
+vi.mock("./tauri", () => ({ isTauri: () => false, invoke: vi.fn() }));
+
+describe("lyrics 负缓存（miss 短期记忆）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    fetchJsonMock.mockReset();
+    fetchJsonMock.mockResolvedValue(null);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-07T12:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("全引擎无词 → miss 入缓存；TTL 内重试不再发网络请求", async () => {
+    const first = await fetchLyrics("artist", "no-lyrics");
+    expect(first).toBeNull();
+    expect(fetchJsonMock).toHaveBeenCalledTimes(2); // LRCLIB get + search
+    const entry = readLyricsCache("artist", "no-lyrics");
+    expect(entry && isLyricsCacheMiss(entry)).toBe(true);
+
+    // TTL 内第二次：直接吃负缓存，零网络。
+    const second = await fetchLyrics("artist", "no-lyrics");
+    expect(second).toBeNull();
+    expect(fetchJsonMock).toHaveBeenCalledTimes(2);
+
+    // TTL 过期（>10min）：重放引擎链。
+    vi.advanceTimersByTime(11 * 60_000);
+    await fetchLyrics("artist", "no-lyrics");
+    expect(fetchJsonMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("正缓存命中不经过 miss 分支；miss 条目不会伪装成正缓存", async () => {
+    const hit: LyricsCacheEntry = { lines: [{ time: 1, text: "词" }], at: Date.now(), source: "qq" };
+    localStorage.setItem("focus-desk.lyrics.cache.v2", JSON.stringify({ "a|hit": hit }));
+    const got = await fetchLyrics("a", "hit");
+    expect(got?.[0].text).toBe("词");
+    expect(fetchJsonMock).not.toHaveBeenCalled();
+    expect(isLyricsCacheMiss(hit)).toBe(false);
   });
 });

@@ -15,9 +15,9 @@ const LEGACY_AUTOSTART_NAMES: [&str; 1] = ["Focus Desk"];
 const DESKTOP_ICONS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
 const DESKTOP_ICONS_HIDDEN_VALUE: &str = "HideIcons";
 
-/// F-8：进程级复用的 HTTP 客户端（无自动重定向）。
+/// 进程级复用的 HTTP 客户端（无自动重定向）。
 ///
-/// P1（审计修复）：默认 Client 的重定向策略会自动跟随最多 10 跳且只对初始
+/// 默认 Client 的重定向策略会自动跟随最多 10 跳且只对初始
 /// URL 做过校验——公网 URL 可 302 到 127.0.0.1 击穿 reject_private_target
 /// （SSRF），更新下载可被重定向到任意主机击穿同域校验（SHA-256 校验形同虚设，
 /// 构成 RCE 链）。因此所有网络命令统一走 `send_guarded`：禁用自动重定向 +
@@ -27,18 +27,39 @@ fn guarded_client() -> &'static reqwest::blocking::Client {
     CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            // [UPD-CH]（借鉴 ClassSoftwareHub #6/#7）GitHub API 拒绝无
+            // [UPD-CH]GitHub API 拒绝无
             // User-Agent 的请求（403）；版本列表 / latest 探测都走本客户端。
             .user_agent(concat!("Vela/", env!("CARGO_PKG_VERSION")))
             .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            .unwrap_or_else(|e| {
+                // 兜底不能用 `Client::new()`——默认
+                // 客户端自动跟随最多 10 跳重定向，只对初始 URL 做守卫校验，
+                // builder 失败这条路径会静默击穿 send_guarded 的逐跳守卫
+                // （SSRF / 跨域下载全数复活）。改为显式带 `Policy::none()`
+                // 的再构建：任何路径下自动重定向都必须是关闭的。
+                log::error!(
+                    "guarded_client: builder failed ({e}); rebuilding with redirects disabled"
+                );
+                reqwest::blocking::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .unwrap_or_else(|e2| {
+                        // 两次构建都失败意味着 TLS/运行时子系统整体不可用
+                        // （`Client::new()` 在同一场合本身就是 panic）——此时
+                        // 不存在任何可用客户端，更不存在安全的降级客户端；
+                        // 显式 fail-fast 好过静默换回会跟随重定向的默认端。
+                        panic!(
+                            "guarded_client: cannot build a no-redirect HTTP client ({e} / {e2})"
+                        );
+                    })
+            })
     })
 }
 
 /// 重定向上限：正常更新源/日历订阅最多一两跳。
 const MAX_REDIRECTS: usize = 5;
 
-/// P1（审计修复）：手动跟随重定向的请求发送器。每一跳（含初始 URL）都执行
+/// 手动跟随重定向的请求发送器。每一跳（含初始 URL）都执行
 /// `guard` 校验，任一跳被拒立即终止；超过 MAX_REDIRECTS 视为循环重定向拒绝。
 fn send_guarded(
     url: &str,
@@ -72,7 +93,7 @@ fn send_guarded(
     Err("重定向次数过多，已中止".to_string())
 }
 
-/// C-3：返回用户配置的更新源（`extra.updateEndpoint`）的 host 小写形式。
+/// 返回用户配置的更新源（`extra.updateEndpoint`）的 host 小写形式。
 /// 下载地址必须与该 host 同域（或为其子域），否则拒绝 —— 把一个"任意 URL
 /// 下载 + 静默执行"的原语收口为"只能从用户已信任的更新源取包"。
 fn configured_update_host(app: &tauri::AppHandle) -> Option<String> {
@@ -99,10 +120,10 @@ fn host_allowed(host: &str, allowed: &str) -> bool {
     host == allowed || host.ends_with(&format!(".{allowed}"))
 }
 
-/// DeskOrder 借鉴 #9：GitHub Releases 资产下载固定 302 到官方 CDN
+/// GitHub Releases 资产下载固定 302 到官方 CDN
 /// （objects.githubusercontent.com，2024 年起新仓库逐步切到
 /// release-assets.githubusercontent.com）。仅当用户配置的更新源就是
-/// github.com 时放行这两个官方域；其它更新源维持严格同域（C-3 收口
+/// github.com 时放行这两个官方域；其它更新源维持严格同域（收口
 /// 不放松——这两个域只服务 GitHub Release 资产，信任随 github.com 走）。
 fn is_github_official_host(host: &str) -> bool {
     host == "github.com"
@@ -110,10 +131,10 @@ fn is_github_official_host(host: &str) -> bool {
         || host == "release-assets.githubusercontent.com"
 }
 
-/// DeskOrder 借鉴 #9：安装包下载到用户「下载」文件夹（KNOWNFOLDER API，
+/// 安装包下载到用户「下载」文件夹（KNOWNFOLDER API，
 /// 兼容 OneDrive 重定向），而不是临时目录——自动安装失败时用户可以找到
 /// 安装包手动运行。取不到时回退 %USERPROFILE%\Downloads，再回退临时目录。
-/// 子目录固定名 Vela-update，下载前清理旧包（C-18：目录内只保留最新一份）。
+/// 子目录固定名 Vela-update，下载前清理旧包（目录内只保留最新一份）。
 fn update_stage_dir() -> std::path::PathBuf {
     #[cfg(windows)]
     {
@@ -142,7 +163,7 @@ fn update_stage_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("vela-update"))
 }
 
-/// DeskOrder 借鉴 #9：GitHub API 匿名配额（60 次/小时）用尽时的兜底——
+/// GitHub API 匿名配额（60 次/小时）用尽时的兜底——
 /// 请求 `<repo>/releases/latest`，读取 302 Location 中的
 /// `/releases/tag/<tag>` 提取最新版本 tag。只做第一跳、不跟随（Location
 /// 本身就是答案），内网目标照常拒绝。
@@ -218,6 +239,80 @@ pub struct UpdateInfo {
     pub notes: String,
 }
 
+/// velatap.dll 完整性诊断——分发 DLL 与已解包副本的 SHA-256，供设置页
+/// 诊断区展示并与发布侧 SHA256SUMS 人工比对（安装包未签名期间的用户侧
+/// 校验通道）。运行时注入链另有 §5.4 的解包哈希校验，此处只读不判定。
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "../../src/types/bindings/")]
+pub struct VelatapDigest {
+    pub bundled_path: Option<String>,
+    pub bundled_sha256: Option<String>,
+    pub unpacked_path: Option<String>,
+    pub unpacked_sha256: Option<String>,
+    pub unpacked_matches_bundled: bool,
+}
+
+#[tauri::command]
+pub async fn get_velatap_digest(window: tauri::Window) -> Result<VelatapDigest, String> {
+    // 安装路径 + 文件哈希属敏感面，仅设置窗可读（口径）。
+    crate::require_settings_window(&window)?;
+    tauri::async_runtime::spawn_blocking(|| {
+        use sha2::{Digest, Sha256};
+        let sha256_hex = |p: &std::path::Path| -> Option<String> {
+            let bytes = std::fs::read(p).ok()?;
+            let digest = Sha256::digest(&bytes);
+            Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+        };
+        let show = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let bundled = crate::taskbar::injector::locate_dll();
+        let (bundled_path, bundled_sha256) = match &bundled {
+            Some(p) => (Some(show(p)), sha256_hex(p)),
+            None => (None, None),
+        };
+        // 已解包副本：tap 根下最新的 <hash>/velatap.dll（可能多版本并存，
+        // 取修改时间最新一份——旧 explorer 进程占用的旧目录无诊断意义）。
+        let mut unpacked: Option<(std::path::PathBuf, String)> = None;
+        if let Ok(entries) = std::fs::read_dir(crate::taskbar::injector::tap_root()) {
+            for e in entries.flatten() {
+                let dll = e.path().join("velatap.dll");
+                let Ok(meta) = std::fs::metadata(&dll) else {
+                    continue;
+                };
+                if !meta.is_file() {
+                    continue;
+                }
+                let mtime = meta.modified().ok();
+                let better = unpacked
+                    .as_ref()
+                    .and_then(|(p, _)| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                    .is_none_or(|prev| mtime.is_some_and(|t| t > prev));
+                if better {
+                    if let Some(hex) = sha256_hex(&dll) {
+                        unpacked = Some((dll, hex));
+                    }
+                }
+            }
+        }
+        let (unpacked_path, unpacked_sha256) = match unpacked {
+            Some((p, hex)) => (Some(show(&p)), Some(hex)),
+            None => (None, None),
+        };
+        let unpacked_matches_bundled = match (&bundled_sha256, &unpacked_sha256) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        Ok(VelatapDigest {
+            bundled_path,
+            bundled_sha256,
+            unpacked_path,
+            unpacked_sha256,
+            unpacked_matches_bundled,
+        })
+    })
+    .await
+    .map_err(|e| format!("诊断任务失败: {e}"))?
+}
+
 /// Controls whether the app auto-starts at Windows login by writing / removing
 /// an entry under the HKCU `Run` registry key.
 #[tauri::command]
@@ -259,26 +354,50 @@ pub fn set_autostart(window: tauri::Window, enabled: bool) -> Result<(), String>
 
 /// Reports whether auto-start is currently enabled.
 #[tauri::command]
-pub fn get_autostart() -> bool {
+pub fn get_autostart(window: tauri::Window) -> Result<bool, String> {
+    // 读 HKCU Run 并与 current_exe 比对——泄露安装路径，收 settings-only。
+    crate::require_settings_window(&window)?;
     #[cfg(windows)]
     {
         let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
-        match hkcu.open_subkey(AUTOSTART_KEY) {
-            Ok(run) => run.get_value::<String, _>(AUTOSTART_NAME).is_ok(),
-            Err(_) => false,
+        if let Ok(run) = hkcu.open_subkey(AUTOSTART_KEY) {
+            if let Ok(val) = run.get_value::<String, _>(AUTOSTART_NAME) {
+                // 键值存在但指向别的 exe（应用搬过目录 / 更新器换了安装位置）
+                // 时自启实际已失效：如实报 false（设置页显示关），用户重新打开
+                // 时 set_autostart 会以当前 exe 覆写完成自愈——不能只看键是否
+                // 存在，否则「显示为开、开机不自启」无从察觉。
+                return match std::env::current_exe() {
+                    // 拿不到当前路径时不误判，维持「键存在即开」的旧口径。
+                    Err(_) => Ok(true),
+                    Ok(cur) => Ok(run_value_matches_exe(&val, &cur)),
+                };
+            }
         }
+        Ok(false)
     }
     #[cfg(not(windows))]
     {
-        false
+        Ok(false)
     }
 }
 
-/// Placeholder update check. In a real deployment this would query a release
-/// endpoint (e.g. GitHub Releases) and drive `tauri-plugin-updater`. It reports
-/// the bundled version and "up to date" so the settings page has a live view.
+/// Run 值与当前 exe 是否指向同一文件：容忍 set_autostart 写入的成对引号与
+/// 正/反斜杠差异（Windows 路径大小写不敏感，比较前统一小写）。
+#[cfg(windows)]
+fn run_value_matches_exe(val: &str, cur: &std::path::Path) -> bool {
+    let stripped = val.trim().trim_matches('"');
+    let norm = |p: &str| p.replace('/', "\\").to_lowercase();
+    norm(stripped) == norm(&cur.to_string_lossy())
+}
+
+/// 本地版本状态快照（原 check_updates，改名：占位实现不联网，旧名暗示
+/// 「检查更新」会误导调用方/读者以为发生了网络查询）。真实部署后此命令查询
+/// release 端点并驱动 `tauri-plugin-updater`；当前返回打包版本与「已是最新」，
+/// 让设置页有一个可用的实时视图。网络链路由 update-flow 的
+/// resolve_latest_tag/download_update 承担。
 #[tauri::command]
-pub fn check_updates() -> Result<UpdateInfo, String> {
+pub fn get_update_info(window: tauri::Window) -> Result<UpdateInfo, String> {
+    crate::require_trusted(&window)?;
     let current = env!("CARGO_PKG_VERSION").to_string();
     Ok(UpdateInfo {
         current_version: current.clone(),
@@ -409,9 +528,9 @@ fn set_desktop_icons_blocking(show: bool) -> Result<(), String> {
     }
 }
 
-/// S2（审计）：拒绝指向本机/内网的 URL（SSRF 探测面）。
+/// 拒绝指向本机/内网的 URL（SSRF 探测面）。
 ///
-/// P1（审计修复）：改用 url::Url 解析 host（手写解析不识别十进制/十六进制/
+/// 改用 url::Url 解析 host（手写解析不识别十进制/十六进制/
 /// 八进制 IP 字面量，如 `http://2130706433/` == 127.0.0.1，可绕过判定），
 /// 并补齐数字字面量的归一化识别。"域名解析到内网 IP"的 rebinding 不在本次
 /// 防线内（需解析后二次校验，成本高且本命令仅受信窗口可达）。
@@ -529,7 +648,7 @@ fn parse_u32_radix(s: &str) -> Option<u32> {
     u32::from_str_radix(digits, radix).ok()
 }
 
-/// [GALLERY]（借鉴 ClassSoftwareHub #9）：在线预设画廊的包下载。
+/// [GALLERY]：在线预设画廊的包下载。
 /// 与 download_update 的差异：不限定更新源同域（画廊可指向任意公开站点），
 /// 但 **sha256 必填**——期望值缺失或校验失败一律删除半成品并报错；
 /// 逐跳内网拒绝照旧，先写 .part 校验通过再改名（CSH ContentUpdater 同款）。
@@ -549,6 +668,10 @@ pub async fn download_gallery_file(
     }
     reject_private_target(&url)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        // 此处有意保留 http://——完整性由必填 sha256（上方 64-hex
+        // 校验 + 流式比对、失败删 .part）封死，on-path 篡改最坏只损机密性
+        // （预置包是纯读取不解压的样式 JSON，无执行面）；不与更新链同钉
+        // https 是为了兼容仅 http 可达的自建源。收紧与否待后续按需评估。
         if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err("仅支持 http/https 链接".into());
         }
@@ -612,13 +735,13 @@ pub async fn download_gallery_file(
     .map_err(|e| format!("下载任务失败：{e}"))?
 }
 
-/// W-016/W-018 通用文本拉取：ICS 日历订阅与节假日 JSON 在 webview 里会被
+/// 通用文本拉取：ICS 日历订阅与节假日 JSON 在 webview 里会被
 /// CORS 拦截（Google/Outlook 不发 Access-Control-Allow-Origin），因此由 Rust
 /// 侧代理拉取。async + spawn_blocking，避免阻塞 IPC 线程；限制 2MB 与
 /// http/https scheme，防止被当作任意文件读取通道。
 #[tauri::command]
 pub async fn fetch_url_text(window: tauri::Window, url: String) -> Result<String, String> {
-    // S1/S2（审计）：代理拉取能力只开放给受信窗口，并拒绝内网目标。
+    // 代理拉取能力只开放给受信窗口，并拒绝内网目标。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
@@ -627,7 +750,7 @@ pub async fn fetch_url_text(window: tauri::Window, url: String) -> Result<String
         if !url.starts_with("https://") && !url.starts_with("http://") {
             return Err("仅支持 http/https 链接".to_string());
         }
-        // P1（审计修复）：每一跳重定向都重新执行内网拒绝校验。
+        // 每一跳重定向都重新执行内网拒绝校验。
         let mut resp = send_guarded(
             &url,
             std::time::Duration::from_secs(30),
@@ -672,7 +795,7 @@ pub async fn fetch_url_text(window: tauri::Window, url: String) -> Result<String
 /// QQ 音乐 / 网易云的公开接口不带 CORS 头，webview 直连必被拦。本命令只对
 /// 歌词引擎域名单放行，不构成开放代理；UA 固定桌面 Chrome（裸 UA 会被风控
 /// 拒答），可选 Referer（QQ 歌词接口要求）与 form POST（网易云搜索）。
-/// 刻意**不带** X-Real-IP 伪装头：NPS 时代用它绕地区限制，2026 实测该头
+/// 刻意**不带** X-Real-IP 伪装头：同类工具 时代用它绕地区限制，2026 实测该头
 /// 反而触发网易云的加密反爬响应（返回十六进制密文），裸 UA + Referer 直连
 /// 即为当前可用组合。
 /// 沿用 reject_private_target 的内网拒绝 + 流式限额读取（1MB，歌词远小于此）。
@@ -683,7 +806,7 @@ pub struct LyricPage {
     pub body: String,
 }
 
-/// 歌词代理 UA（NPS 同款）：无 UA 的请求会被两家接口直接拒答。
+/// 歌词代理 UA：无 UA 的请求会被两家接口直接拒答。
 const LYRIC_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 /// 歌词引擎域名白名单（https + 精确主机）：子域伪装 / 明文 http / 内网
 /// 一律不在名单内——重定向跳到这些目标时由每跳校验拦下。
@@ -707,7 +830,7 @@ pub async fn fetch_lyric_page(
     referer: Option<String>,
     post_body: Option<String>,
 ) -> Result<LyricPage, String> {
-    // S1/S2（审计）：同 fetch_url_text —— 受信窗口 + 内网目标拒绝，另加域名白名单。
+    // 同 fetch_url_text —— 受信窗口 + 内网目标拒绝，另加域名白名单。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
@@ -805,7 +928,7 @@ pub async fn net_speed_probe(
     url: String,
     max_bytes: u64,
 ) -> Result<(u64, u64), String> {
-    // S1/S2（审计）：同 fetch_url_text —— 受信窗口 + 内网目标拒绝。
+    // 同 fetch_url_text —— 受信窗口 + 内网目标拒绝。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
@@ -816,7 +939,7 @@ pub async fn net_speed_probe(
         }
         let max_bytes = max_bytes.clamp(1, 32 * 1024 * 1024);
         let started = std::time::Instant::now();
-        // P1（审计修复）：每一跳重定向都重新执行内网拒绝校验。
+        // 每一跳重定向都重新执行内网拒绝校验。
         let mut resp = send_guarded(
             &url,
             std::time::Duration::from_secs(30),
@@ -842,10 +965,59 @@ pub async fn net_speed_probe(
     .map_err(|e| format!("网络任务失败：{e}"))?
 }
 
+/// 网速探测兜底（上行）：webview 里 XHR 上传会被 CORS / 代理拦截导致"测不出
+/// 来"，此命令由 Rust 侧直连 POST 不可压缩伪随机体到测速端点，返回
+/// (发送字节, 耗时毫秒)。与 net_speed_probe 同一安全约束（受信窗口 +
+/// 内网目标拒绝 + 8MB 上限）。耗时含建连与完整请求体送出，是单窗口均值。
+#[tauri::command]
+pub async fn net_upload_probe(
+    window: tauri::Window,
+    url: String,
+    bytes: u64,
+) -> Result<(u64, u64), String> {
+    // 同 net_speed_probe —— 受信窗口 + 内网目标拒绝。
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
+    reject_private_target(&url)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            return Err("仅支持 http/https 链接".to_string());
+        }
+        let size = bytes.clamp(1, 8 * 1024 * 1024) as usize;
+        // LCG 伪随机体：不可压缩，防中间层透明压缩把负载压小、虚高速率。
+        let mut body = Vec::with_capacity(size);
+        let mut x: u32 = 0x1234_5678;
+        while body.len() < size {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            body.extend_from_slice(&x.to_le_bytes());
+        }
+        body.truncate(size);
+        let started = std::time::Instant::now();
+        let client = guarded_client();
+        // __up 端点不重定向；guarded_client 已禁自动重定向，若服务端真回 3xx
+        // 这里按非成功处理，不跟随（目标 URL 已过 reject_private_target）。
+        let resp = client
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(30))
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(body)
+            .send()
+            .map_err(|e| format!("上传失败：{e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        Ok((size as u64, started.elapsed().as_millis() as u64))
+    })
+    .await
+    .map_err(|e| format!("网络任务失败：{e}"))?
+}
+
 /// Reports whether the native desktop icons are currently visible.
 #[tauri::command]
-pub fn get_desktop_icons() -> bool {
-    desktop_icons_visible()
+pub fn get_desktop_icons(window: tauri::Window) -> Result<bool, String> {
+    crate::require_settings_window(&window)?;
+    Ok(desktop_icons_visible())
 }
 
 /// Explorer records the toggle in the registry; the window tree cannot answer
@@ -866,8 +1038,8 @@ fn desktop_icons_visible() -> bool {
     }
 }
 
-/// E1 应用内自动更新：把安装包下载到用户「下载」文件夹的 Vela-update
-/// 子目录（DeskOrder 借鉴 #9，自动安装失败时用户可手动运行），返回本地路径。
+/// 应用内自动更新：把安装包下载到用户「下载」文件夹的 Vela-update
+/// 子目录，返回本地路径。
 ///
 /// 进度通过 `update:progress` 事件上报（已下载字节 / 总字节），前端可据此
 /// 渲染进度条。要求更新源返回的 `url` 指向可直接下载的安装包（NSIS .exe）。
@@ -879,19 +1051,38 @@ pub async fn download_update(
     app: tauri::AppHandle,
     url: String,
     expected_sha256: Option<String>,
+    allow_unsigned_sidecar: Option<bool>,
 ) -> Result<String, String> {
-    // P1（审计修复）：RCE 级命令必须与全库其它高危命令一致地挂窗口闸门
-    // （C-7/C-8 的收口漏网之鱼）。
+    // RCE 级命令必须与全库其它高危命令一致地挂窗口闸门
+    // （的收口漏网之鱼）。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
+    // 无签名清单缺省拒绝（fail-closed）。同源 `.sha256`
+    // sidecar 与安装包同源，只防损坏不防「更新源被攻破后连哈希一起换」
+    // （见 update_sig.rs 顶部信任模型）——签名机制之前的旧 Release 没有签名
+    // 清单，自动安装/自动回滚一律阻断（前端把该错误原样展示给用户，引导
+    // 手动下载）。仅当调用方显式传 `allow_unsigned_sidecar=true` 才保留
+    // sidecar 兜底——「最后兼容路径」，供确有需要的存量流程显式选择，
+    // 缺省（None/false）一律拒绝。在下载开始前拒绝，不白白拉取整包。
+    let wants_unsigned_sidecar = allow_unsigned_sidecar.unwrap_or(false);
+    let has_expected = expected_sha256
+        .as_deref()
+        .map(|h| !h.trim().is_empty())
+        .unwrap_or(false);
+    if !has_expected && !wants_unsigned_sidecar {
+        return Err(
+            "该版本早于签名机制，出于安全不再提供自动回滚/自动更新（缺少签名校验清单；如需安装请手动下载）"
+                .to_string(),
+        );
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        // D-1（审查修复）：更新链只接受 https——http 源等于把安装包与校验
+        // 更新链只接受 https——http 源等于把安装包与校验
         // 清单都交给链路上的任何中间人。同源 sidecar 校验对 MITM 无防御力。
         if !url.starts_with("https://") {
             return Err("更新链仅支持 https 链接（D-1：http 源已停用）".to_string());
         }
-        // C-3：下载地址的 host 必须与用户配置的更新源同域（或为其子域）。
+        // 下载地址的 host 必须与用户配置的更新源同域（或为其子域）。
         // 被注入的 webview 无法再把任意 URL 喂给 download_update + install_update
         // 完成静默 RCE —— 只能从用户已信任的更新域取包。
         // fail-closed：更新源未配置（或读取失败）时直接拒绝，而不是跳过校验。
@@ -899,7 +1090,7 @@ pub async fn download_update(
         // 走到这里却没有配置，说明调用并非来自受信流程。
         let allowed =
             configured_update_host(&app).ok_or_else(|| "未配置更新源，拒绝下载".to_string())?;
-        // P1（审计修复）：每一跳重定向都重新执行"内网拒绝 + 同域校验"，
+        // 每一跳重定向都重新执行"内网拒绝 + 同域校验"，
         // 防止受信更新源上的开放重定向把下载（及 .sha256 清单）引到任意主机。
         let guard = |u: &str| -> Result<(), String> {
             reject_private_target(u)?;
@@ -913,6 +1104,34 @@ pub async fn download_update(
             }
             Ok(())
         };
+        // 签名证据后端绑定 + 版本下限。此前
+        // expected_sha256 由前端单独回传、Rust 侧照单全收——Ed25519 验签
+        // (verify_update_manifest) 只是前端独立调用的旁路命令，下载/安装
+        // 并不要求签名证据，被注入的受信 webview 可传任意历史旧版安装包的
+        // 真实 sha256 实现静默降级，或安装同域任意 .exe。现在带期望哈希的
+        // 下载必须命中「本进程内验签通过时登记的资产清单」(url, sha256)
+        // 精确匹配（见 update_sig.rs；取走即消费防重放），且清单版本必须
+        // 严格高于当前版本（env!("CARGO_PKG_VERSION")，与 get_update_info
+        // 同源）——历史旧版清单的真实签名重放与同域任意包都被此拒绝。
+        // 消费发生在下载发起前：若本次下载失败（网络中断等），证据已随
+        // 匹配消费掉，重试前需重新检查更新（重新验签登记），重放面不扩大。
+        // 显式 allow_unsigned_sidecar 的「最后兼容路径」无清单版本可言，
+        // 维持 原口径（入口显式 opt-in 才可达）。
+        if let Some(h) = expected_sha256.as_deref().map(str::trim) {
+            if !h.is_empty() {
+                let verified_version = crate::update_sig::take_verified_manifest(&url, h)
+                    .ok_or_else(|| {
+                        "缺少有效的签名清单证据（未验证、已过期或已被使用），请重新检查更新后再下载"
+                            .to_string()
+                    })?;
+                let current = env!("CARGO_PKG_VERSION");
+                if !crate::update_sig::version_gt(&verified_version, current) {
+                    return Err(format!(
+                        "拒绝降级安装：清单版本 {verified_version} 不高于当前版本 {current}"
+                    ));
+                }
+            }
+        }
         let resp = send_guarded(&url, std::time::Duration::from_secs(600), &guard)?;
         if !resp.status().is_success() {
             return Err(format!("下载失败：HTTP {}", resp.status()));
@@ -948,7 +1167,7 @@ pub async fn download_update(
 
         let dir = update_stage_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建更新目录失败：{e}"))?;
-        // C-18：临时目录只保留最新一份安装包，下载前清理旧文件，避免多次更新
+        // 临时目录只保留最新一份安装包，下载前清理旧文件，避免多次更新
         // 后数百 MB 的旧安装包无限累积（上次下载的安装包此刻已安装或已失效）。
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -979,7 +1198,7 @@ pub async fn download_update(
         let total = resp.content_length().unwrap_or(0);
         let mut written: u64 = 0;
         let mut out = std::fs::File::create(&dest).map_err(|e| format!("创建文件失败：{e}"))?;
-        // C-3 + P2（审计修复）：SHA-256 改为边下载边流式计算，替代此前
+        // + ：SHA-256 改为边下载边流式计算，替代此前
         // "整包读入内存再哈希"（数百 MB 安装包会瞬时占满 RAM 两份）。
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -1008,7 +1227,7 @@ pub async fn download_update(
                 if mb != last_emit_mb || percent != last_emit_percent {
                     last_emit_mb = mb;
                     last_emit_percent = percent;
-                    // D-9：仅设置窗口（UpdatePage）消费，定向投递避免广播到所有 widget 窗口。
+                    // 仅设置窗口（UpdatePage）消费，定向投递避免广播到所有 widget 窗口。
                     let _ = app.emit_to("settings", "update:progress", (written, total));
                 }
             }
@@ -1019,12 +1238,15 @@ pub async fn download_update(
             dest.to_string_lossy().to_string(),
         );
 
-        // C-3 + D-1：下载完成后立刻比对 SHA-256。期望哈希有两个来源，
-        // 优先级从高到低：
-        //  1) 前端传入的 expected_sha256——来自「已通过 Ed25519 签名验证的
-        //     manifest」（update_sig.rs，锚定到离线公钥，源被攻破也无法伪造）；
-        //  2) 兜底：更新源同目录 `<url>.sha256` sidecar（与安装包同源，仅防
-        //     损坏不防投毒）。比对失败删除安装包并报错。
+        // + + + ：下载完成后立刻比对 SHA-256。期望哈希优先取
+        // 前端传入的 expected_sha256——后它不再仅凭回传即被信任：能走到
+        // 这里必然已命中后端验签登记的资产清单（上方 绑定检查），即哈希
+        // 出处是「已通过 Ed25519 签名验证的 manifest」（update_sig.rs，锚定到
+        // 离线公钥，源被攻破也无法伪造）。无期望哈希时走「最后兼容路径」：
+        // 更新源同目录 `<url>.sha256` sidecar（与安装包同源，仅防损坏不防
+        // 投毒）——入口已在上方 门控收口：只有调用方显式传
+        // allow_unsigned_sidecar=true 才能到达这里，缺省早已拒绝。比对失败
+        // 删除安装包并报错。
         let expected = match expected_sha256.as_deref().map(str::trim) {
             Some(h) if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) => {
                 h.to_ascii_lowercase()
@@ -1039,7 +1261,7 @@ pub async fn download_update(
         }
         // 已校验摘要落盘为 sidecar 文件，install_update 执行前据此二次复核，
         // 防御"下载完成 → 安装执行"之间安装包被替换的时间窗。
-        // BentoDesk 借鉴 #11：原子写（tmp → sync → rename）——直接写目标在
+        // 原子写（tmp → sync → rename）——直接写目标在
         // 进程中途被杀时会留下截断清单，二次复核读到半截哈希误判失败。
         crate::storage_util::write_text_atomic(
             std::path::Path::new(&format!("{}.sha256", dest.display())),
@@ -1053,10 +1275,13 @@ pub async fn download_update(
     .map_err(|e| format!("下载任务失败：{e}"))?
 }
 
-/// C-3：请求更新源同目录的 `<url>.sha256` 校验清单，返回其中第一个 64 位
+/// 请求更新源同目录的 `<url>.sha256` 校验清单，返回其中第一个 64 位
 /// 十六进制 token（兼容纯哈希与 GNU sha256sum 的 `<hash>  <name>` 两种格式）。
-/// P1（审计修复）：清单请求同样走逐跳守卫——若"包"和"哈希清单"都能被
+/// 清单请求同样走逐跳守卫——若"包"和"哈希清单"都能被
 /// 重定向到攻击者主机，SHA-256 校验就形同虚设。
+/// 本函数是「最后兼容路径」——仅 download_update 显式收到
+/// allow_unsigned_sidecar=true 时才会被调用；缺省（无签名清单）在入口即被
+/// 拒绝，不再作为常规兜底。
 fn fetch_expected_sha256(
     url: &str,
     guard: &dyn Fn(&str) -> Result<(), String>,
@@ -1088,8 +1313,8 @@ pub async fn install_update(
     app: tauri::AppHandle,
     path: String,
 ) -> Result<(), String> {
-    // P1（审计修复）：与 download_update 同理，静默执行安装器的命令必须挂
-    // 窗口闸门（C-7/C-8 收口的漏网之鱼）。
+    // 与 download_update 同理，静默执行安装器的命令必须挂
+    // 窗口闸门（收口的漏网之鱼）。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
@@ -1116,10 +1341,10 @@ pub async fn install_update(
             {
                 return Err("仅支持 .exe 安装包".to_string());
             }
-            // C-3：执行前用下载时落盘的 sidecar 摘要二次复核。路径门控已保证
+            // 执行前用下载时落盘的 sidecar 摘要二次复核。路径门控已保证
             // 文件在本目录内，但"下载完成 → 安装执行"之间存在替换时间窗，
             // 这里按下载阶段校验过的 SHA-256 再做一次完整性与来源复核。
-            // P2（审计修复）：改为流式读取哈希，不再把数百 MB 安装包整读进内存。
+            // 改为流式读取哈希，不再把数百 MB 安装包整读进内存。
             let expected = std::fs::read_to_string(format!("{}.sha256", canonical_path.display()))
                 .map_err(|_| "缺少校验清单，拒绝安装".to_string())?;
             let expected = expected.trim().to_ascii_lowercase();
@@ -1182,6 +1407,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_value_matches_exe_tolerates_quotes_case_and_slashes() {
+        let cur = std::path::Path::new(r"C:\Program Files\Vela\vela.exe");
+        // set_autostart 的写入形态（成对引号）。
+        assert!(run_value_matches_exe(
+            r#""C:\Program Files\Vela\vela.exe""#,
+            cur
+        ));
+        // 大小写与正反斜杠差异不算指向别的文件。
+        assert!(run_value_matches_exe(
+            r"c:\program files\vela\VELA.EXE",
+            cur
+        ));
+        assert!(run_value_matches_exe(
+            r"C:/Program Files/Vela/vela.exe",
+            cur
+        ));
+        // 指向别的路径（应用搬目录后的陈旧项）必须判失配。
+        assert!(!run_value_matches_exe(r#""D:\Old\Vela\vela.exe""#, cur));
+        assert!(!run_value_matches_exe(
+            r"C:\Program Files\Vela\other.exe",
+            cur
+        ));
+    }
+
+    #[test]
     fn lyric_proxy_allowlists_only_lyric_engine_hosts() {
         // 白名单：QQ（搜索 / 歌词）与网易云（搜索 / 歌词）的四个接口域。
         for ok in [
@@ -1237,7 +1487,7 @@ mod tests {
         assert!(!host_allowed("example.com", "evil.com"));
     }
 
-    // DeskOrder 借鉴 #9：GitHub 官方 CDN 只在更新源为 github.com 时放行，
+    // GitHub 官方 CDN 只在更新源为 github.com 时放行，
     // 且清单里只有这三个域——伪装子域与其它 CDN 不在名单内。
     #[test]
     fn github_official_host_list_is_closed() {
@@ -1283,7 +1533,7 @@ mod tests {
         assert_eq!(extract_release_tag("https://example.com/other"), None);
     }
 
-    // P1（审计修复回归）：手写字符串解析识别不了的数字 IP 字面量必须被拒绝。
+    // 手写字符串解析识别不了的数字 IP 字面量必须被拒绝。
     #[test]
     fn reject_private_target_blocks_numeric_ip_forms() {
         // 十进制整数形式（此前可绕过）。

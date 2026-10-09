@@ -20,10 +20,10 @@ pub struct SystemSampler {
     /// walks every volume and can block for seconds on a dead network drive;
     /// usage-only refresh is cheap, so the expensive pass is throttled.
     disk_full_refresh_calls: AtomicU32,
-    /// Calls since the last process-list refresh (W-149). Enumerating all
+    /// Calls since the last process-list refresh (). Enumerating all
     /// processes every second is wasteful; a 10s cadence is plenty for a count.
     process_refresh_calls: AtomicU32,
-    /// Last known process count (W-149), refreshed on the throttled cadence.
+    /// Last known process count (), refreshed on the throttled cadence.
     process_count: AtomicU32,
     /// Instant of the previous `sample_networks` refresh. `sysinfo` counters
     /// (`received()`/`transmitted()`) report bytes transferred SINCE the last
@@ -31,12 +31,12 @@ pub struct SystemSampler {
     /// converts it to true bytes/second; without it the displayed speed was
     /// inflated by the sampling interval (2–3× at the default cadence).
     last_network_sample: Mutex<Option<std::time::Instant>>,
-    /// W-145/W-153 每网卡绝对计数器快照（开机以来累计字节）。速率由本进程
+    /// 每网卡绝对计数器快照（开机以来累计字节）。速率由本进程
     /// 自己对绝对计数器做 checked 差分得出：计数器回落（网卡禁用/驱动重置/
     /// 系统重置计数）时差分安全归 0，天然免疫 sysinfo 内部 wrapping 减法
-    /// 产生的假尖峰（经典网速工具同款四重防护的回绕分支）。
+    /// 产生的假尖峰（经典网速工具 同款四重防护的回绕分支）。
     network_totals: Mutex<HashMap<String, NetIfaceBaseline>>,
-    /// W-153 采样帧序号：与 `network_totals` 的 last_seen 配合识别「缺席帧」
+    /// 采样帧序号：与 `network_totals` 的 last_seen 配合识别「缺席帧」
     /// （sysinfo 会把断开的网卡从列表剔除）与「采样间隙」（presence 暂停/
     /// 睡眠唤醒后 first_seen 断档 → 本帧速率归 0 重建基线）。
     net_frame: AtomicU64,
@@ -50,7 +50,7 @@ struct NetIfaceBaseline {
     last_seen: u64,
 }
 
-/// W-145/W-153 断开网卡的「幽灵行」保留帧数：超过后不再上报（约 10 分钟
+/// 断开网卡的「幽灵行」保留帧数：超过后不再上报（约 10 分钟
 /// @1s 采样）。sysinfo 只列已连接网卡，幽灵行让 UI 能显示「未连接」而不是
 /// 静默消失，同时不至于永久堆积。
 const NET_GHOST_FRAMES: u64 = 600;
@@ -78,7 +78,7 @@ impl SystemSampler {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Default)]
 pub struct SystemStats {
     pub cpu_usage: f32,
     pub mem_used_gb: f32,
@@ -91,18 +91,18 @@ pub struct SystemStats {
     /// True when real GPU performance counters were found. The widgets use this
     /// (not VRAM) to decide whether to show the GPU section.
     pub gpu_present: bool,
-    /// BUG-1（审计）：每块显卡一条记录（名称来自 DXGI 枚举），多卡全部可见；
+    /// 每块显卡一条记录（名称来自 DXGI 枚举），多卡全部可见；
     /// 旧标量字段保留为"最忙一块"，供 SystemWidget/SystemBarWidget 兼容消费。
     pub gpus: Vec<GpuInfo>,
-    /// W-146 每核占用率数组（与 cores 等长，任务管理器小格子形态）。
+    /// 每核占用率数组（与 cores 等长，任务管理器小格子形态）。
     pub cpu_per_core: Vec<f32>,
-    /// W-149 开机时长（秒）。
+    /// 开机时长（秒）。
     pub uptime_secs: u64,
-    /// W-149 进程数（10s 节流刷新）。
+    /// 进程数（10s 节流刷新）。
     pub process_count: u32,
 }
 
-/// BUG-1（审计）：单块显卡的运行时信息。
+/// 单块显卡的运行时信息。
 #[derive(Serialize, Clone)]
 pub struct GpuInfo {
     pub model: String,
@@ -111,7 +111,7 @@ pub struct GpuInfo {
     pub mem_total_gb: f32,
 }
 
-/// F-3：静态硬件信息（CPU/GPU 型号），进程内只算一次。已从每帧 `sys:stats`
+/// 静态硬件信息（CPU/GPU 型号），进程内只算一次。已从每帧 `sys:stats`
 /// 载荷中拆出，走低频一次的 `sys:hardware` 事件投递，消除 String 每帧克隆。
 #[derive(Serialize, Clone)]
 pub struct HardwareInfo {
@@ -128,7 +128,7 @@ pub fn sample_hardware() -> HardwareInfo {
     }
 }
 
-/// W-148 静态硬件信息：CPU 型号（sysinfo brand，一次性全量刷新）+
+/// 静态硬件信息：CPU 型号（sysinfo brand，一次性全量刷新）+
 /// GPU 型号（HKLM 显卡类 DriverDesc，第一个非空项）。进程内只算一次。
 fn static_hardware() -> (String, String) {
     static CACHE: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
@@ -192,13 +192,13 @@ pub struct NetworkInfo {
     /// B/s / KB/s / MB/s; it must NOT be misread as kbit/s.
     pub rx_bps: f32,
     pub tx_bps: f32,
-    /// W-153 开机以来累计收发字节（sysinfo 绝对计数器，跨采样帧单调递增；
+    /// 开机以来累计收发字节（sysinfo 绝对计数器，跨采样帧单调递增；
     /// 网卡重置时归零重来，前端仅作展示不作差分）。
     #[ts(type = "number")]
     pub total_received: u64,
     #[ts(type = "number")]
     pub total_transmitted: u64,
-    /// W-145 连接状态：true = 本帧在 sysinfo 列表中（sysinfo 会过滤掉媒体
+    /// 连接状态：true = 本帧在 sysinfo 列表中（sysinfo 会过滤掉媒体
     /// 断开的网卡）；false = 刚断开的幽灵行（保留 `NET_GHOST_FRAMES` 帧）。
     pub up: bool,
 }
@@ -209,11 +209,16 @@ pub struct BatteryInfo {
     pub present: bool,
     pub percent: f32,
     pub charging: bool,
+    /// 预计剩余时间（秒，放电时的 BatteryLifeTime）。0 = 未知或交流供电
+    /// （系统对 0xFFFFFFFF「未知」与本模块的「0」约定统一为不可用即 0，
+    /// 前端据此隐藏剩余时间，绝不显示编造的估计值）。
+    #[ts(type = "number")]
+    pub secs_left: u64,
 }
 
 // Sampling helpers shared by the polled commands and the broadcast thread.
 fn sample_stats(state: &SystemSampler) -> SystemStats {
-    // R7：临界区收窄——CPU/内存/每核占用取完即放锁。GPU 采样（PDH collect）
+    // 临界区收窄——CPU/内存/每核占用取完即放锁。GPU 采样（PDH collect）
     // 与进程全量枚举（几百进程的机器上几十~上百 ms）此前都在 sys 锁内，
     // 期间并发的 get_system_stats / get_disk_info 命令只能排队。
     let (cpu_usage, mem_used, mem_total, cpu_per_core, cores) = {
@@ -259,11 +264,11 @@ fn sample_stats(state: &SystemSampler) -> SystemStats {
     let gpu_mem_total_gb = best.map(|g| g.mem_total_gb).unwrap_or(0.0);
     let gpu_mem_used_gb = best.map(|g| g.mem_used_gb).unwrap_or(0.0);
 
-    // W-149 开机时长（0.33 起为关联函数，无需实例刷新）。
+    // 开机时长（0.33 起为关联函数，无需实例刷新）。
     let uptime_secs = System::uptime();
 
-    // W-149 进程数：10s 节流全量刷新，其余帧读缓存值。独立 System 实例做
-    // PID 级枚举（R7：不占共享 sys 锁；丢实例无状态代价）。
+    // 进程数：10s 节流全量刷新，其余帧读缓存值。独立 System 实例做
+    // PID 级枚举（不占共享 sys 锁；丢实例无状态代价）。
     let calls = state.process_refresh_calls.fetch_add(1, Ordering::Relaxed);
     if calls.is_multiple_of(10) {
         let mut counter = System::new();
@@ -329,8 +334,15 @@ fn sample_networks(state: &SystemSampler) -> Vec<NetworkInfo> {
         .unwrap_or_else(|p| p.into_inner());
     // Window length since the previous refresh; the very first sample has no
     // baseline, so it reports 0 instead of leaking the entire boot counter.
-    let elapsed_secs = last.map(|prev| prev.elapsed().as_secs_f32()).unwrap_or(0.0);
+    // 计量点在 refresh 完成之后：计数器差分窗口（上次读取 → 本次读取）横跨
+    // 整个 refresh 调用——`refresh(true)` 在死网卡上可阻塞数秒，若 elapsed
+    // 只量「上次结束 → 本次开始」，差分里的流量会被摊到偏短的窗口上，速率
+    // 成倍虚高。refresh 后取 prev.elapsed() 才与差分窗口对齐。
+    let prev_instant = *last;
     networks.refresh(true);
+    let elapsed_secs = prev_instant
+        .map(|prev| prev.elapsed().as_secs_f32())
+        .unwrap_or(0.0);
     *last = Some(std::time::Instant::now());
     let frame = state.net_frame.fetch_add(1, Ordering::SeqCst);
     let mut baselines = state
@@ -338,7 +350,7 @@ fn sample_networks(state: &SystemSampler) -> Vec<NetworkInfo> {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
 
-    // 鲁棒性（对照经典网速工具的速率四重防护）：
+    // 鲁棒性（对照 经典网速工具的速率四重防护）：
     //  1. 速率一律由本进程对「绝对计数器」做 checked_sub 差分——计数器回落
     //     （网卡禁用/驱动重置）差分安全归 0，绝不产生假尖峰；
     //  2. 首帧 / 采样间隙（presence 暂停、睡眠唤醒 → last_seen 断档）→ 本帧
@@ -410,14 +422,39 @@ fn read_battery() -> BatteryInfo {
                 present: false,
                 percent: 0.0,
                 charging: false,
+                secs_left: 0,
             };
         }
         let ac = status.ACLineStatus;
         let percent = status.BatteryLifePercent;
+        // BatteryFlag 位域（MSDN）：0x08 = 充电中，0x80 = 无电池（台式机
+        // 常态），0xFF = 未知。present 只看 percent 时，无电池台式机上报的
+        // 0/100 会被误判成有电池；充电态用 ACLineStatus 会把「插电但已满」
+        // 的笔记本显示成充电中。驱动不上报充电位（unknown）时退回近似。
+        const BATTERY_FLAG_CHARGING: u8 = 0x08;
+        const BATTERY_FLAG_NO_BATTERY: u8 = 0x80;
+        const BATTERY_FLAG_UNKNOWN: u8 = 0xFF;
+        let flag = status.BatteryFlag;
+        let present = (flag & BATTERY_FLAG_NO_BATTERY) == 0 && percent <= 100;
+        let charging = if !present {
+            false
+        } else if flag == BATTERY_FLAG_UNKNOWN {
+            ac == 1 && percent < 100
+        } else {
+            (flag & BATTERY_FLAG_CHARGING) != 0
+        };
+        // 剩余时间：仅放电且有有效估计时上报（0xFFFFFFFF = 未知；交流供电
+        // 下系统通常也无意义值）。溢出防护：u32::MAX 之外再钳一层。
+        let secs_left = if present && !charging && status.BatteryLifeTime != u32::MAX {
+            status.BatteryLifeTime as u64
+        } else {
+            0
+        };
         BatteryInfo {
-            present: percent <= 100,
-            percent: percent as f32,
-            charging: ac == 1,
+            present,
+            percent: if present { percent as f32 } else { 0.0 },
+            charging,
+            secs_left,
         }
     }
     #[cfg(not(windows))]
@@ -426,6 +463,7 @@ fn read_battery() -> BatteryInfo {
             present: false,
             percent: 0.0,
             charging: false,
+            secs_left: 0,
         }
     }
 }
@@ -446,7 +484,7 @@ pub struct SystemBroadcast {
 pub struct StatsBroadcaster {
     subscribers: AtomicU32,
     /// Per-window subscription ledger: label -> (count, smallest interval the
-    /// window asked for). Two problems this fixes:
+    /// window asked for, any full-payload subscriber). Two problems this fixes:
     ///  1. Interval only ever went *down* (global `min`); once a fast
     ///     subscriber left, the survivors stayed at its cadence forever.
     ///     Recomputing from the ledger lets the cadence recover.
@@ -454,7 +492,11 @@ pub struct StatsBroadcaster {
     ///     never runs its JS cleanup, leaking subscribers and keeping the
     ///     broadcast thread sampling into the void forever. The ledger gives
     ///     `RunEvent::WindowEvent::Destroyed` a way to settle the account.
-    per_window: std::sync::Mutex<std::collections::HashMap<String, (u32, u64)>>,
+    ///
+    /// The third element：窗口内是否有「全量载荷」订阅者。全 false 时
+    /// 采样线程只采 networks（网速条场景：两个数字不再把 CPU/GPU/磁盘/电池
+    /// 全家采样钉在 1Hz）。
+    per_window: std::sync::Mutex<std::collections::HashMap<String, (u32, u64, bool)>>,
     /// Sampling cadence in ms — always the minimum across the live ledger.
     interval_ms: AtomicU64,
     /// Bumped each time a new thread is (re)started; an exiting thread compares
@@ -484,11 +526,16 @@ impl StatsBroadcaster {
         self.paused.store(v, Ordering::SeqCst);
     }
 
-    fn add_subscription(&self, label: &str, iv: u64) {
+    fn add_subscription(&self, label: &str, iv: u64, full_payload: bool) {
         let mut map = self.per_window.lock().unwrap_or_else(|p| p.into_inner());
-        let entry = map.entry(label.to_string()).or_insert((0, iv));
+        let entry = map
+            .entry(label.to_string())
+            .or_insert((0, iv, full_payload));
         entry.0 += 1;
         entry.1 = entry.1.min(iv);
+        // 同窗口任一订阅者要全量，窗口即按全量供给（摘除全量订阅后
+        // 随计数归零自然回落——网速条是本窗唯一订阅者，退订即整窗消失）。
+        entry.2 = entry.2 || full_payload;
         self.subscribers.fetch_add(1, Ordering::SeqCst);
         self.recalc_interval(&map);
     }
@@ -526,7 +573,7 @@ impl StatsBroadcaster {
     /// run — e.g. `monitor.rs` destroys webviews directly on monitor unplug).
     pub fn drop_window(&self, label: &str) {
         let mut map = self.per_window.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((count, _)) = map.remove(label) {
+        if let Some((count, _, _)) = map.remove(label) {
             let mut cur = self.subscribers.load(Ordering::SeqCst);
             while cur > 0 {
                 let target = cur.saturating_sub(count);
@@ -544,8 +591,8 @@ impl StatsBroadcaster {
         self.recalc_interval(&map);
     }
 
-    fn recalc_interval(&self, map: &std::collections::HashMap<String, (u32, u64)>) {
-        let want = map.values().map(|(_, iv)| *iv).min().unwrap_or(0);
+    fn recalc_interval(&self, map: &std::collections::HashMap<String, (u32, u64, bool)>) {
+        let want = map.values().map(|(_, iv, _)| *iv).min().unwrap_or(0);
         self.interval_ms.store(want, Ordering::SeqCst);
     }
 }
@@ -594,14 +641,39 @@ fn broadcast_loop(app: tauri::AppHandle, my_generation: u64) {
         // 本线程直接 unwind 退出而 running 仍为 true → 之后任何 subscribe 都
         // 看到 running=true 而不重启线程，sys:stats 从此永久冻结。catch_unwind
         // 兜住后复位 running，让下一次 subscribe 重新拉起采样线程。
+        // 账本内没有任何全量订阅者时（网速条独占场景）只采 networks——
+        // 两个数字不再把 CPU/GPU/每核/磁盘/电池全家采样（含 30 拍一次的进程
+        // 全量枚举）钉在 1Hz。stats 字段给零值：前端 hook 以 stats 存在性判帧
+        // 合法，net-only 消费者（TaskbarNetView）不读它。
+        let net_only = {
+            let map = bc.per_window.lock().unwrap_or_else(|p| p.into_inner());
+            !map.values().any(|(_, _, full)| *full)
+        };
         let payload = {
             let sampler = app.state::<SystemSampler>();
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| SystemBroadcast {
-                    stats: sample_stats(&sampler),
-                    disks: sample_disks(&sampler),
+                    stats: if net_only {
+                        SystemStats::default()
+                    } else {
+                        sample_stats(&sampler)
+                    },
+                    disks: if net_only {
+                        Vec::new()
+                    } else {
+                        sample_disks(&sampler)
+                    },
                     networks: sample_networks(&sampler),
-                    battery: read_battery(),
+                    battery: if net_only {
+                        BatteryInfo {
+                            present: false,
+                            percent: 0.0,
+                            charging: false,
+                            secs_left: 0,
+                        }
+                    } else {
+                        read_battery()
+                    },
                 }));
             match result {
                 Ok(payload) => payload,
@@ -620,7 +692,7 @@ fn broadcast_loop(app: tauri::AppHandle, my_generation: u64) {
                 }
             }
         };
-        // F-3：改用 emit_filter——载荷只序列化一次，且只投递给 per_window 账本里
+        // 改用 emit_filter——载荷只序列化一次，且只投递给 per_window 账本里
         // 实际订阅了的窗口，不再向无监听窗口（如 quick-note / 设置窗口）广播。
         let subscribed: std::collections::HashSet<String> = {
             let map = bc.per_window.lock().unwrap_or_else(|p| p.into_inner());
@@ -647,16 +719,18 @@ pub async fn subscribe_system_stats(
     app: tauri::AppHandle,
     bc: tauri::State<'_, StatsBroadcaster>,
     interval_ms: u64,
+    net_only: Option<bool>,
 ) -> Result<(), String> {
-    // A-5 扫描发现补闸：硬件型号/占用率/电池属本机信息面（net_history M3
+    // 扫描发现补闸：硬件型号/占用率/电池属本机信息面（net_history M3
     // 同口径），不给 web-preview 远程页订阅。WebviewWindow 无 require_trusted
-    // 重载，内联谓词但走 canonical 文案。
+    // 重载，内联谓词但走 canonical 文案。taskbar-net 在 trusted 名单内正是
+    // 为订阅本广播（枚举类命令另用更窄的 enum_system_window）。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
     let iv = interval_ms.clamp(500, 30_000);
-    bc.add_subscription(window.label(), iv);
-    // F-3：静态硬件型号低频投递一次（订阅即发），前端合并进每帧 stats。
+    bc.add_subscription(window.label(), iv, !net_only.unwrap_or(false));
+    // 静态硬件型号低频投递一次（订阅即发），前端合并进每帧 stats。
     let _ = window.emit("sys:hardware", sample_hardware());
     if !bc.running.swap(true, Ordering::SeqCst) {
         let gen = bc.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -681,7 +755,14 @@ pub async fn unsubscribe_system_stats(
 // worker starves the whole runtime's other IPC, so each is wrapped in
 // spawn_blocking (State borrows can't cross the closure; use app.state inside).
 #[tauri::command]
-pub async fn get_system_stats(app: tauri::AppHandle) -> Result<SystemStats, String> {
+pub async fn get_system_stats(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<SystemStats, String> {
+    // 系统统计快照与 M3 族同标准收 enum 名单。
+    if !crate::enum_system_window(window.label()) {
+        return Err("untrusted window".into());
+    }
     // Poison-safe: if a prior panic poisoned the lock, hand out the inner value
     // rather than panicking the (polled every second) IPC handler.
     tauri::async_runtime::spawn_blocking(move || {
@@ -697,9 +778,11 @@ pub async fn get_disk_info(
     window: tauri::Window,
     app: tauri::AppHandle,
 ) -> Result<Vec<DiskInfo>, String> {
-    // 隐私闸门（M3）：低信任窗（quick-note / taskbar-net）不应能枚举系统信息。
+    // 隐私闸门（M3/）：磁盘/网卡枚举是系统信息面，比 sys:stats 广播更
+    // 敏感——taskbar-net 只为订阅速率广播进 trusted 名单，不该顺带拿到枚举
+    // 面，故用更窄的 enum_system_window（quick-note / taskbar-net 均拒）。
     // 拒绝走 Err（M2 统一语义），不再返回空表假成功。
-    if !crate::trusted_window(window.label()) {
+    if !crate::enum_system_window(window.label()) {
         return Err("untrusted window".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -715,9 +798,10 @@ pub async fn get_network_info(
     window: tauri::Window,
     app: tauri::AppHandle,
 ) -> Result<Vec<NetworkInfo>, String> {
-    // 隐私闸门（M3）：与 get_disk_info / get_network_details 同源，低信任窗
-    // 不应能枚举无线网络。拒绝走 Err（M2 统一语义），不再返回空表假成功。
-    if !crate::trusted_window(window.label()) {
+    // 隐私闸门（M3/）：与 get_disk_info / get_network_details 同源，低信任
+    // 窗不应能枚举无线网络；taskbar-net 同样排除（见上）。拒绝走 Err（M2
+    // 统一语义），不再返回空表假成功。
+    if !crate::enum_system_window(window.label()) {
         return Err("untrusted window".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -729,7 +813,18 @@ pub async fn get_network_info(
 }
 
 #[tauri::command]
-pub async fn get_battery_info() -> BatteryInfo {
+pub async fn get_battery_info(window: tauri::Window) -> BatteryInfo {
+    // 窗口闸门：电池状态是本机信息，与同文件其它系统读命令同
+    // 标准（enum_system_window）；不受信窗口按「无电池」应答（present=false，
+    // 前端渲染为不可用）。
+    if !crate::enum_system_window(window.label()) {
+        return BatteryInfo {
+            present: false,
+            percent: 0.0,
+            charging: false,
+            secs_left: 0,
+        };
+    }
     read_battery()
 }
 
@@ -760,7 +855,7 @@ pub fn fmt_bytes_human(bytes: u64) -> String {
 }
 
 /* ------------------------------------------------------------------ */
-/* W-168 网卡连接详情 + W-169 当前 TCP 连接（对照经典网速工具的          */
+/* 网卡连接详情 + 当前 TCP 连接（对照 经典网速工具的 */
 /* NetworkInfoDlg / 连接列表）。按需命令：MAC/IP 等字符串不进每帧        */
 /* `sys:stats` 广播，仅在设置页 / 小组件展开明细时拉取一次。             */
 /* ------------------------------------------------------------------ */
@@ -771,7 +866,7 @@ pub fn fmt_bytes_human(bytes: u64) -> String {
 #[derive(Serialize, Clone)]
 pub struct NetworkDetail {
     pub name: String,
-    /// 适配器描述（如 "Intel(R) Wi-Fi 6 AX201 160MHz"）。
+    /// 适配器描述（如 "Intel(R) Wi-Fi 6 160MHz"）。
     pub description: String,
     /// ethernet / wifi / ppp / tunnel / loopback / other（IANA IfType 映射）。
     pub if_type: String,
@@ -784,6 +879,8 @@ pub struct NetworkDetail {
     pub ips: Vec<String>,
     /// 默认网关（取第一条；无为空串）。
     pub gateway: String,
+    /// DNS 服务器列表（去重；「已连接但打不开网页」类问题的第一诊断面）。
+    pub dns: Vec<String>,
     pub mtu: u32,
     /// 开机以来累计收发字节（一次性 sysinfo 实例，绝对计数器）。
     pub total_received: u64,
@@ -851,8 +948,8 @@ unsafe fn sockaddr_to_ip(
 fn collect_network_details() -> Vec<NetworkDetail> {
     use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
     use windows::Win32::NetworkManagement::IpHelper::{
-        GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
-        GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+        GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
+        IP_ADAPTER_ADDRESSES_LH,
     };
     use windows::Win32::Networking::WinSock::{AF_UNSPEC, SOCKET_ADDRESS};
 
@@ -863,7 +960,7 @@ fn collect_network_details() -> Vec<NetworkDetail> {
         .map(|(n, d)| (n.clone(), (d.total_received(), d.total_transmitted())))
         .collect();
 
-    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_MULTICAST;
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
     let mut size: u32 = 16 * 1024;
     // 两轮缓冲增长循环足够：一次正常成功，一次 overflow 后按需大小重试。
     for _ in 0..2 {
@@ -918,6 +1015,19 @@ fn collect_network_details() -> Vec<NetworkDetail> {
                 }
                 ga = unsafe { &*ga }.Next;
             }
+            // DNS 服务器（补充）：跨适配器常见的重复服务器只记一次。
+            let mut dns = Vec::new();
+            let mut da = a.FirstDnsServerAddress;
+            while !da.is_null() {
+                let sa: SOCKET_ADDRESS = unsafe { &*da }.Address;
+                // SAFETY: 同上。
+                if let Some(ip) = unsafe { sockaddr_to_ip(sa.lpSockaddr) } {
+                    if !dns.contains(&ip) {
+                        dns.push(ip);
+                    }
+                }
+                da = unsafe { &*da }.Next;
+            }
             let (total_received, total_transmitted) = totals.get(&name).copied().unwrap_or((0, 0));
             out.push(NetworkDetail {
                 name,
@@ -928,6 +1038,7 @@ fn collect_network_details() -> Vec<NetworkDetail> {
                 mac,
                 ips,
                 gateway,
+                dns,
                 mtu: a.Mtu,
                 total_received,
                 total_transmitted,
@@ -952,16 +1063,19 @@ fn collect_network_details() -> Vec<NetworkDetail> {
 
 #[tauri::command]
 pub async fn get_network_details(window: tauri::Window) -> Result<Vec<NetworkDetail>, String> {
-    // 隐私闸门（M3）：低信任窗（quick-note / taskbar-net）不应能枚举系统信息。
-    if !crate::trusted_window(window.label()) {
-        return Ok(Vec::new());
+    // 隐私闸门（M3/）：网卡枚举（MAC/IP/DNS）与磁盘/无线枚举同面，
+    // 用收窄后的 enum_system_window（taskbar-net 不在其列），拒绝走 Err
+    // （M2 统一语义，与 get_network_info 一致）——此前 trusted_window 放行
+    // taskbar-net 且返回 Ok(空表) 假成功，两处都不符合既有闸门口径。
+    if !crate::enum_system_window(window.label()) {
+        return Err("untrusted window".into());
     }
     tauri::async_runtime::spawn_blocking(collect_network_details)
         .await
         .map_err(|e| format!("采样任务失败:{e}"))
 }
 
-/// 当前 TCP 连接（W-169，P2 按进程流量的连接级交付）。来自
+/// 当前 TCP 连接（按进程流量的连接级交付）。来自
 /// `GetExtendedTcpTable(TCP_TABLE_OWNER_MODULE_ALL)`，含归属 PID；
 /// 进程名经 sysinfo 一次解析（未退出/短命进程显示 PID）。IPv4/IPv6 合并，
 /// 上限 400 条防 UI 卡顿。
@@ -1132,9 +1246,11 @@ fn collect_tcp_connections() -> Vec<TcpConnectionInfo> {
 
 #[tauri::command]
 pub async fn get_tcp_connections(window: tauri::Window) -> Result<Vec<TcpConnectionInfo>, String> {
-    // 隐私闸门（M3）：低信任窗（quick-note / taskbar-net）不应能枚举系统信息。
-    if !crate::trusted_window(window.label()) {
-        return Ok(Vec::new());
+    // 隐私闸门（M3/）：连接表含全机对外目标与归属进程，比网卡枚举更
+    // 敏感；与 get_network_details 同用 enum_system_window + Err 拒绝
+    // （M2 统一语义），不再 Ok(空表) 假成功。
+    if !crate::enum_system_window(window.label()) {
+        return Err("untrusted window".into());
     }
     tauri::async_runtime::spawn_blocking(|| {
         let mut conns = collect_tcp_connections();
@@ -1233,32 +1349,11 @@ mod verify {
 
     #[test]
     fn prints_real_battery_metrics() {
-        let b = block_complete(super::get_battery_info());
+        // 闸门改造后命令签名带 window（测试环境无窗口），直接测底层读取。
+        let b = super::read_battery();
         eprintln!(
             "[verify-batt] present={} percent={} charging={}",
             b.present, b.percent, b.charging
         );
-    }
-
-    /// 无环境 exec 的最小 block_on：所调命令内部无 await 点，一次 poll 即 Ready。
-    fn block_complete<T>(fut: impl std::future::Future<Output = T>) -> T {
-        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        fn raw_waker() -> RawWaker {
-            fn clone(_: *const ()) -> RawWaker {
-                raw_waker()
-            }
-            fn wake(_: *const ()) {}
-            fn wake_ref(_: *const ()) {}
-            fn drop(_: *const ()) {}
-            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_ref, drop);
-            RawWaker::new(std::ptr::null(), &VTABLE)
-        }
-        let waker = unsafe { Waker::from_raw(raw_waker()) };
-        let mut cx = Context::from_waker(&waker);
-        let mut fut = std::pin::pin!(fut);
-        match fut.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => v,
-            Poll::Pending => panic!("command has no awaits; must not block"),
-        }
     }
 }

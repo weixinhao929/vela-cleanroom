@@ -6,16 +6,42 @@
  * - DateTimePicker：日期 + 时间组合（datetime-local 的 YYYY-MM-DDTHH:mm 形），
  *   弹层底部内嵌时间输入；只选日期不选时间时值退化为纯日期（Date 解析兼容）。
  *
+ * 弹层此前内联渲染在 .tm-dp（relative）下且只向下
+ * absolute 展开——倒计时 / 截止日期两个消费方的触发点贴卡片底缘，被
+ * .widget-card-body 的 overflow:auto 裁剪掉大半。改为 createPortal 到
+ * document.body + fixed 定位（锚点 gBCR ÷ uiZoom 归一布局单位，定位数学复用
+ * WidgetConfigPopover 的 placePopover：上方优先、放不下翻下方、视口钳制），
+ * 滚动 / resize / 失焦即关闭（与 ContextMenuHost 同口径）。
+ *
  * 样式在 styles/date-picker.css（独立文件而非 settings.css：桌面层窗口不加载
  * settings.css，本组件要供 DDL / 倒计时等桌面小组件共用）。
  */
-import { useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject
+} from "react";
+import { createPortal } from "react-dom";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { useT } from "../i18n-lite";
 import { useDelayedUnmount } from "../lib/anim";
 import { animDurations } from "../lib/durations";
+import { uiZoom } from "../lib/ui-zoom";
 import { useDismissable } from "../lib/use-dismissable";
+import { placePopover, type PopoverAnchor } from "../widget/WidgetConfigPopover";
 import "../styles/date-picker.css";
+
+/** 弹层锚点快照——触发字段 wrapRef 的 gBCR 是视觉
+ *  坐标（已含 --ui-zoom），÷ uiZoom() 归一为布局单位（fixed left/top 的
+ *  量纲契约，见 lib/ui-zoom.ts；与 dock 磁贴 / TimetableWidget 同范式）。 */
+function fieldAnchor(wrapRef: RefObject<HTMLDivElement | null>): PopoverAnchor {
+  const r = wrapRef.current?.getBoundingClientRect();
+  const z = uiZoom();
+  return r ? { x: r.left / z, y: r.top / z, w: r.width / z, h: r.height / z } : { x: 0, y: 0, w: 0, h: 0 };
+}
 
 const DP_WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 /** 表头单字 → i18n 键（周一…周日，与 CalendarWidget 表头同源）；英文界面显示 Mon…Sun。 */
@@ -80,7 +106,12 @@ function parseIso(value: string): { y: number; m: number } | null {
   return parsed ? { y: Number(parsed[1]), m: Number(parsed[2]) - 1 } : null;
 }
 
-/** 弹层骨架：头部翻月 + 周行 + 日网格 +（可选）时间行 + 底部动作。 */
+/** 弹层骨架：头部翻月 + 周行 + 日网格 +（可选）时间行 + 底部动作。
+ *
+ * 整树 createPortal 到 document.body + fixed 定位，
+ * 摆脱卡片 overflow:auto 的裁剪祖先。锚点在挂载时对触发字段取一次快照
+ * （之后卡片位置变化不跟随，与 WidgetConfigPopover 的语义一致）；定位数学
+ * 复用 placePopover（上方优先、放不下翻下方、视口钳制）。 */
 function CalendarPopover({
   value,
   withTime,
@@ -88,6 +119,9 @@ function CalendarPopover({
   onTimeChange,
   onPick,
   onClear,
+  anchorEl,
+  popRef,
+  onDismiss,
   closing
 }: {
   value: string;
@@ -96,11 +130,42 @@ function CalendarPopover({
   onTimeChange?: (t: string) => void;
   onPick: (iso: string) => void;
   onClear: () => void;
+  /** 触发字段（.tm-dp wrap）ref：挂载时取锚点快照。 */
+  anchorEl: RefObject<HTMLDivElement | null>;
+  /** 弹层根元素 ref：交回 useDismissable 的 anchors——portal 后弹层不再是
+   *  wrapRef 的 DOM 后代，点弹层内部不能被判定成「外点」。 */
+  popRef: RefObject<HTMLDivElement | null>;
+  /** 滚动 / resize / 失焦请求关闭（fixed 弹层不随卡片滚动，留在原地只会
+   *  悬在错误位置，对齐 ContextMenuHost 的关闭口径）。 */
+  onDismiss: () => void;
   /** 退场中（useDelayedUnmount 关闭窗口）：播 tm-dp-out 后由父级卸载。 */
   closing?: boolean;
 }) {
   const tr = useT();
   const [view, setView] = useState(() => parseIso(value) ?? { y: new Date().getFullYear(), m: new Date().getMonth() });
+  /* 锚点只在挂载时取一次（组件按 open key 重挂，等同每次打开快照）。 */
+  const [anchor] = useState<PopoverAnchor>(() => fieldAnchor(anchorEl));
+  /* 渲染后按实测尺寸定位（offsetWidth/Height 与 innerWidth 同为布局
+     单位，placePopover 内部不涉及视觉坐标）。定位前隐藏，避免 0,0 闪现。 */
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = popRef.current;
+    if (!el) return;
+    setPos(
+      placePopover(anchor, { w: el.offsetWidth, h: el.offsetHeight }, { w: window.innerWidth, h: window.innerHeight })
+    );
+  }, [anchor, popRef]);
+  /* 滚动（capture，含卡片内滚动容器）/ resize / 失焦即关闭。 */
+  useEffect(() => {
+    window.addEventListener("resize", onDismiss);
+    window.addEventListener("blur", onDismiss);
+    window.addEventListener("scroll", onDismiss, true);
+    return () => {
+      window.removeEventListener("resize", onDismiss);
+      window.removeEventListener("blur", onDismiss);
+      window.removeEventListener("scroll", onDismiss, true);
+    };
+  }, [onDismiss]);
   // 翻月方向（-1 上月 / 1 下月）：日网格按「年-月」重挂并带方向性滑入。
   const [flipDir, setFlipDir] = useState(0);
   /* roving tabindex：整个日网格只占一个 Tab 停靠点（此前 ~30 个本月日全进
@@ -145,12 +210,16 @@ function CalendarPopover({
     setView(parseIso(value) ?? { y: new Date().getFullYear(), m: new Date().getMonth() });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  return (
+  /* portal 到 document.body——left/top 由 JS 内联（布局单位），CSS 只
+     保留 position:fixed 与层级令牌。 */
+  return createPortal(
     <div
+      ref={popRef}
       className={`tm-dp-pop${closing ? " is-closing" : ""}`}
       role="dialog"
       aria-label={tr("选择日期")}
       data-interactive
+      style={pos ? { left: pos.left, top: pos.top } : { visibility: "hidden" }}
     >
       <div className="tm-dp-head">
         <button
@@ -226,7 +295,8 @@ function CalendarPopover({
           {tr("今天")}
         </button>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -240,9 +310,12 @@ function usePickerShell() {
   const tr = useT();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  /* 弹层根 ref——portal 到 body 后不再是 wrapRef 的
+     DOM 后代，须作为 anchors 交给 useDismissable，弹层内的按下才不算外点。 */
+  const popRef = useRef<HTMLDivElement>(null);
   /* 统一关闭骨架：外点（pointerdown capture）+ Esc（capture 抢先，嵌套弹层
      只关一层）+ 关闭归还焦点到触发按钮（此前焦点跌落 body）。 */
-  useDismissable(open, wrapRef, () => setOpen(false), { restoreFocus: true });
+  useDismissable(open, wrapRef, () => setOpen(false), { restoreFocus: true, anchors: [popRef] });
   // 渲染函数（非组件）：hook 内定义的组件每轮渲染都是新类型，<Field/> 会
   // 整树重挂——DateTimePicker 的父级在时间输入每键后重渲染，autoFocus 会把
   // 焦点从时间输入框抢走。按函数调用返回元素则不产生组件边界。
@@ -271,7 +344,7 @@ function usePickerShell() {
       <CalendarDays size={14} />
     </button>
   );
-  return { tr, open, setOpen, wrapRef, renderField };
+  return { tr, open, setOpen, wrapRef, popRef, renderField };
 }
 
 /** 纯日期选择。value 形如 YYYY-MM-DD（空串 = 未选）。 */
@@ -287,8 +360,8 @@ export function DatePicker({
   autoFocus?: boolean;
 }) {
   const tr = useT();
-  const { open, setOpen, wrapRef, renderField } = usePickerShell();
-  // 退场窗口（120ms 档）保持挂载播 tm-dp-out，播完卸载（F-9 弹层退场档）。
+  const { open, setOpen, wrapRef, popRef, renderField } = usePickerShell();
+  // 退场窗口（120ms 档）保持挂载播 tm-dp-out，播完卸载（弹层退场档）。
   const renderPop = useDelayedUnmount(open, animDurations().fxXfastMs);
   return (
     <div className="tm-dp" ref={wrapRef}>
@@ -298,6 +371,9 @@ export function DatePicker({
           key={String(open)}
           closing={!open}
           value={value}
+          anchorEl={wrapRef}
+          popRef={popRef}
+          onDismiss={() => setOpen(false)}
           onPick={(iso) => {
             onChange(iso);
             setOpen(false);
@@ -328,7 +404,7 @@ export function DateTimePicker({
   autoFocus?: boolean;
 }) {
   const tr = useT();
-  const { open, setOpen, wrapRef, renderField } = usePickerShell();
+  const { open, setOpen, wrapRef, popRef, renderField } = usePickerShell();
   // 退场窗口（120ms 档）保持挂载播 tm-dp-out，播完卸载——与上方 DatePicker
   // 同范式（此前裸 {open && ...} 条件渲染，关闭瞬消无退场）。
   const renderPop = useDelayedUnmount(open, animDurations().fxXfastMs);
@@ -348,6 +424,9 @@ export function DateTimePicker({
           key={String(open)}
           closing={!open}
           value={datePart}
+          anchorEl={wrapRef}
+          popRef={popRef}
+          onDismiss={() => setOpen(false)}
           withTime
           timeValue={timePart}
           onTimeChange={(t) => commit(datePart || todayIso(), t)}

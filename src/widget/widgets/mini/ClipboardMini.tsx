@@ -1,13 +1,16 @@
 /**
  * 剪贴板迷你磁贴（ISLAND-MINI）：最近一条摘要（文本前 24 字 / 「图片」）。
- * 首帧拉 list 首条；此后只由 clipboard:changed 事件触发重拉（150ms 合并，与
- * ClipboardHistoryWidget 同口径），无轮询；active=false 期间忽略事件不重拉。
- * 隐私总开关（settings general.clipboard.enabled）关闭 → 禁用态 + title 提示且
- * 不可点；开启时点击回写系统剪贴板（restore_clipboard_entry）并闪「已复制」。
- * 可点区是 role=button 的 span（宿主磁贴本身是 <button>），点击 stopPropagation。
+ * 首帧拉 list_recent 首条（纯 created_at 序——置顶是列表浏览语义，不该霸占
+ * 迷你位：此前 pinned 优先排序让置顶项永远占着迷你磁贴）；此后只由
+ * clipboard:changed 事件触发重拉（150ms 合并，"pin" 载荷跳过），无轮询；
+ * active=false 期间忽略事件不重拉，重新激活时补拉一次（否则要等下一次复制
+ * 才能看到新内容）。隐私总开关（settings general.clipboard.enabled）关闭 →
+ * 禁用态 + title 提示且不可点；开启时点击回写系统剪贴板
+ * （restore_clipboard_entry）并闪「已复制」。可点区是 role=button 的 span
+ * （宿主磁贴本身是 <button>），点击 stopPropagation。
  */
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type SyntheticEvent } from "react";
-import { ClipboardList, Image as ImageIcon } from "lucide-react";
+import { ClipboardList, FolderClosed, Image as ImageIcon } from "lucide-react";
 import { useT } from "../../../i18n-lite";
 import { invoke, isTauri } from "../../../lib/tauri";
 import { useSafeTimeout } from "../../../lib/use-safe-timeout";
@@ -28,16 +31,19 @@ export function ClipboardMini({ active }: MiniComponentProps) {
 
   const load = useCallback(() => {
     if (!isTauri()) return;
-    void invoke<ClipboardEntry[]>("list_clipboard_history", { query: null, limit: 1 })
+    void invoke<ClipboardEntry[]>("list_clipboard_history", { query: null, limit: 1, latest: true })
       .then((list) => setEntry(list[0] ?? null))
       .catch(() => {});
   }, []);
+  // 挂载 + 每次激活（active=false 期间错过的事件）都拉一次。
   useEffect(() => {
-    load();
+    if (active) load();
+  }, [active, load]);
+  useEffect(() => {
     return () => window.clearTimeout(refreshTimer.current);
-  }, [load]);
-  useTauriEvent("clipboard:changed", () => {
-    if (!activeRef.current) return;
+  }, []);
+  useTauriEvent<string | null>("clipboard:changed", (payload) => {
+    if (!activeRef.current || payload === "pin") return;
     window.clearTimeout(refreshTimer.current);
     refreshTimer.current = window.setTimeout(load, 150);
   });
@@ -59,6 +65,7 @@ export function ClipboardMini({ active }: MiniComponentProps) {
     }
   };
   const isImage = entry?.kind === "image";
+  const isFiles = entry?.kind === "files";
   const summary = !entry
     ? tr("暂无剪贴板记录")
     : isImage
@@ -75,6 +82,8 @@ export function ClipboardMini({ active }: MiniComponentProps) {
     >
       {isImage ? (
         <ImageIcon size={13} className="dock-mini-ico" />
+      ) : isFiles ? (
+        <FolderClosed size={13} className="dock-mini-ico" />
       ) : (
         <ClipboardList size={13} className="dock-mini-ico" />
       )}

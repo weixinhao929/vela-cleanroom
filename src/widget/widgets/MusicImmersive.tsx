@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 音乐沉浸页（C1 首批沉浸表面之一）：封面放大 + 封面 blur 背景 + 径向
+ * 音乐沉浸页（首批沉浸表面之一）：封面放大 + 封面 blur 背景 + 径向
  * 频谱 + 歌词预留位。
  *
  * 契约：经 registry 的 `ExpandedComponent` 挂到音乐/正在播放卡片，由
@@ -11,11 +11,11 @@
  * （{primary, onPrimary, track}，封面取色）；未合入时回退主题 accent。
  * 消费口收敛在 extractPalette 一处——后端字段合入后零改动生效。
  *
- * 数据源（W-130）：改走共享 useNowPlaying（media:snapshot 事件 + 本地
+ * 数据源：改走共享 useNowPlaying（media:snapshot 事件 + 本地
  * 插值推进 + seekTo），替代此前 1s 全量轮询 get_system_media_info——
  * base64 封面不再每秒过 IPC，与卡片同一数据管道。歌词行点击 seek 同样
  * 走 seekTo（秒），仅当会话上报 IsPlaybackPositionEnabled 时可点。
- * repeat/shuffle 按钮消费快照 controls（W-130，同类媒体浮窗对齐）。
+ * repeat/shuffle 按钮消费快照 controls（同类媒体浮窗 对齐）。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -82,23 +82,23 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
 
   /* active=false（收起后保持挂载）时跳过 250ms 位置推进渲染：隐藏面板不重渲染。 */
   const { media, pos, seekTo } = useNowPlaying(active);
-  /* 播放源会话列表：共享轮询器（与「正在播放」卡片同一份 3s 轮询，见
-     lib/media-sessions——沉浸页展开 + 底层卡片并存时不再双份并发）。 */
+  /* 播放源会话列表：共享事件源（lib/media-sessions——Rust 每拍枚举变化时
+     emit media:sessions + 30s 兜底复核；沉浸页与底层卡片同窗口共享一份）。 */
   const { sessions, selectedId: sessionId } = useMediaSessions(active);
 
-  /* 传输控制（W-130）：toggle 为主键动作（不依赖可能过期的 playing 快照），
+  /* 传输控制：toggle 为主键动作（不依赖可能过期的 playing 快照），
      shuffle/repeat 为开关式动作，均由 Rust 按会话当前态处理。 */
   const control = (action: string) => {
     if (isTauri()) void invoke("control_system_media", { action }).catch(() => {});
   };
 
-  /* W-131 唤起播放器：与卡片封面点击同款（带曲目标题，浏览器可定位窗口）。 */
+  /* 唤起播放器：与卡片封面点击同款（带曲目标题，浏览器可定位窗口）。 */
   const openPlayer = () => {
     if (!isTauri() || !media?.aumid) return;
     void invoke("open_media_player", { aumid: media.aumid, title: media.title }).catch(() => {});
   };
 
-  /* W-130 进度条 seek：点击 + 拖动（pointer capture），拖动中只更新预览，
+  /* 进度条 seek：点击 + 拖动（pointer capture），拖动中只更新预览，
      松手一次性 seekTo（乐观跳转 + 下发命令）。 */
   const barRef = useRef<HTMLDivElement>(null);
   const [dragRatio, setDragRatio] = useState<number | null>(null);
@@ -115,8 +115,7 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
   const [lyrics, setLyrics] = useState<LrcLine[] | null>(null);
   const [lyricsState, setLyricsState] = useState<"idle" | "loading" | "ok" | "none">("idle");
   /* 一.5 歌词延迟微调（秒，-5 ~ +5 步进 0.5，持久化在实例配置）：SMTC 时间轴
-     与流媒体 App 内部进度存在整体快慢差，一个偏移量即可对齐（NPS
-     LyricDelayOffset 同款）。正值 = 歌词推后显示。 */
+     与流媒体 App 内部进度存在整体快慢差，一个偏移量即可对齐。正值 = 歌词推后显示。 */
   const lyricOffsetSec =
     typeof config.lyricOffsetSec === "number" && Number.isFinite(config.lyricOffsetSec)
       ? Math.max(-5, Math.min(5, config.lyricOffsetSec))
@@ -128,7 +127,13 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
   const trackKey = media ? `${media.artist}|${media.title}` : "";
   useEffect(() => {
     if (!lyricsOn || !active || !media?.title) {
-      if (!lyricsOn) setLyricsState("idle");
+      // （旧歌词滞留）：切到无标题曲目/媒体清空时提前返回，但上一首的
+      // 歌词与 ok 态原样保留并继续渲染——清空歌词来源（关闭/无曲目）时
+      // 一并清屏；仅 inactive（临时失活）时保留现状。
+      if (!lyricsOn || !media?.title) {
+        setLyrics(null);
+        setLyricsState("idle");
+      }
       return;
     }
     const controller = new AbortController();
@@ -152,8 +157,7 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lyricsOn, active, trackKey]);
 
-  /* 延迟微调只作用于「当前行判定」的显示口径（NPS 同款：compensated =
-     position + offset）；歌词行点击 seek 仍用原始时间戳（那是正确目标点）。 */
+  /* 延迟微调只作用于「当前行判定」的显示口径；歌词行点击 seek 仍用原始时间戳（那是正确目标点）。 */
   const activeLine = lyrics ? indexForTime(lyrics, pos + lyricOffsetSec) : -1;
   /* 译文双行：引擎携带了任何译文行才显示开关；config.lyricTranslation 缺省开。 */
   const hasTranslation = !!lyrics?.some((l) => !!l.translation);
@@ -199,7 +203,7 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
     "--mi-track": palette?.track ?? "var(--accent-2)"
   } as React.CSSProperties;
 
-  /* 能力位（W-130）：旧载荷缺失时按可用降级。 */
+  /* 能力位：旧载荷缺失时按可用降级。 */
   const ctl = media?.controls;
   const canToggle = !ctl || ctl.play || ctl.pause;
   const canSkip = !ctl || ctl.next || ctl.previous;
@@ -209,6 +213,21 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
   const displayPct = dragRatio != null ? dragRatio * 100 : basePct;
   const displayPos = dragRatio != null && media ? dragRatio * media.duration : pos;
   const sessionName = sessions.find((s) => s.id === sessionId)?.name;
+
+  /* 键盘 seek（a11y）：←/→ ±5s（Shift ±30s）、Home/End 到首尾；不可 seek
+   * 或时长未知（直播）时与点击同口径禁用。 */
+  const onBarKeyDown = (e: React.KeyboardEvent) => {
+    if (!seekable || !media || !(media.duration > 0)) return;
+    const step = e.shiftKey ? 30 : 5;
+    let next: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next = Math.min(media.duration, pos + step);
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = Math.max(0, pos - step);
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = media.duration;
+    if (next == null) return;
+    e.preventDefault();
+    seekTo(next);
+  };
 
   return (
     <div className={`mi${active ? " is-active" : ""}`} style={style}>
@@ -278,38 +297,50 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
 
           <div className="mi-progress">
             <span className="mi-time">{fmtTime(displayPos)}</span>
-            <div
-              ref={barRef}
-              className={`mi-bar${seekable ? "" : " is-disabled"}`}
-              aria-label={tr("播放进度")}
-              onPointerDown={(e) => {
-                if (!seekable || !media) return;
-                const r = ratioFromEvent(e);
-                if (r == null) return;
-                e.currentTarget.setPointerCapture(e.pointerId);
-                setDragRatio(r);
-              }}
-              onPointerMove={(e) => {
-                if (dragRatio == null) return;
-                const r = ratioFromEvent(e);
-                if (r != null) setDragRatio(r);
-              }}
-              onPointerUp={(e) => {
-                if (dragRatio == null || !media) return;
-                e.currentTarget.releasePointerCapture?.(e.pointerId);
-                const r = ratioFromEvent(e) ?? dragRatio;
-                setDragRatio(null);
-                seekTo(r * media.duration);
-              }}
-              onPointerCancel={() => setDragRatio(null)}
-            >
-              <div className="mi-bar-fill" style={{ transform: `scaleX(${displayPct / 100})` }} />
-            </div>
-            <span className="mi-time">{fmtTime(media?.duration ?? 0)}</span>
+            {/* 时长未知（直播/部分流媒体）不渲染拖条与总时长，只留已播放时间。 */}
+            {media != null && media.duration > 0 && (
+              <div
+                ref={barRef}
+                className={`mi-bar${seekable ? "" : " is-disabled"}`}
+                role="slider"
+                aria-label={tr("播放进度")}
+                aria-valuemin={0}
+                aria-valuemax={media.duration}
+                aria-valuenow={displayPos}
+                aria-valuetext={`${fmtTime(displayPos)} / ${fmtTime(media.duration)}`}
+                aria-disabled={!seekable}
+                tabIndex={seekable ? 0 : -1}
+                data-interactive={seekable || undefined}
+                onKeyDown={onBarKeyDown}
+                onPointerDown={(e) => {
+                  if (!seekable || !media) return;
+                  const r = ratioFromEvent(e);
+                  if (r == null) return;
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setDragRatio(r);
+                }}
+                onPointerMove={(e) => {
+                  if (dragRatio == null) return;
+                  const r = ratioFromEvent(e);
+                  if (r != null) setDragRatio(r);
+                }}
+                onPointerUp={(e) => {
+                  if (dragRatio == null || !media) return;
+                  e.currentTarget.releasePointerCapture?.(e.pointerId);
+                  const r = ratioFromEvent(e) ?? dragRatio;
+                  setDragRatio(null);
+                  seekTo(r * media.duration);
+                }}
+                onPointerCancel={() => setDragRatio(null)}
+              >
+                <div className="mi-bar-fill" style={{ transform: `scaleX(${displayPct / 100})` }} />
+              </div>
+            )}
+            {media != null && media.duration > 0 && <span className="mi-time">{fmtTime(media.duration)}</span>}
           </div>
 
           <div className="mi-controls">
-            {/* W-130 shuffle/repeat：会话上报能力时展示，状态随快照亮灭。 */}
+            {/* shuffle/repeat：会话上报能力时展示，状态随快照亮灭。 */}
             {ctl?.shuffle && (
               <button
                 className={`mi-btn mi-mode${ctl.shuffleActive ? " is-on" : ""}`}
@@ -356,7 +387,10 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
               <button
                 className={`mi-btn mi-mode${ctl.repeatMode !== "off" ? " is-on" : ""}`}
                 onClick={() => control("repeat")}
-                aria-label={tr("循环模式")}
+                aria-pressed={ctl.repeatMode !== "off"}
+                aria-label={
+                  ctl.repeatMode === "one" ? tr("单曲循环") : ctl.repeatMode === "all" ? tr("列表循环") : tr("关闭循环")
+                }
                 title={
                   ctl.repeatMode === "one" ? tr("单曲循环") : ctl.repeatMode === "all" ? tr("列表循环") : tr("关闭循环")
                 }
@@ -408,7 +442,7 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
           )}
           {/* 一.5 延迟微调：±0.5s 步进，当前偏移量即时可见（0 时显示「对齐」）。 */}
           {lyricsOn && (
-            <span className="mi-lyrics-offset" aria-label={tr("歌词偏移")}>
+            <span className="mi-lyrics-offset" role="group" aria-label={tr("歌词偏移")}>
               <button onClick={() => nudgeLyricOffset(-0.5)} aria-label={tr("歌词提前")} data-interactive>
                 −
               </button>
@@ -436,6 +470,16 @@ export function MusicImmersive({ instanceId, active }: ExpandedComponentProps) {
                   role="listitem"
                   className={`mi-lyric-line${i === activeLine ? " is-active" : ""}${i < activeLine ? " is-past" : ""}${seekable ? " clickable" : ""}`}
                   onClick={seekable ? () => seekTo(l.time) : undefined}
+                  onKeyDown={
+                    seekable
+                      ? (e) => {
+                          if (e.key !== "Enter" && e.key !== " ") return;
+                          e.preventDefault();
+                          seekTo(l.time);
+                        }
+                      : undefined
+                  }
+                  tabIndex={seekable ? 0 : undefined}
                   data-interactive={seekable || undefined}
                 >
                   {l.text}

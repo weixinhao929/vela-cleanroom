@@ -1,5 +1,5 @@
 /**
- * 本机版本历史（借鉴 ClassSoftwareHub #7）：记录「这台电脑运行过哪些版本 +
+ * 本机版本历史：记录「这台电脑运行过哪些版本 +
  * 通道 + 首次/最近时间」，与远端 Release 列表分开展示。localStorage 轻数据
  * （persistMirrored 进备份镜像），与远端仓库无关。
  */

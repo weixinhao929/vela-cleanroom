@@ -63,4 +63,64 @@ describe("ViewPage · 整行点击切换视图", () => {
     expect(active()).toBe("focus");
     expect(settingsOpen()).toBe(false);
   });
+
+  it("B2：视图不存在时自动重定向到剩余第一个视图，并渲染空态而非空白页", () => {
+    const onNavigate = vi.fn();
+    render(<ViewPage view="ghost" onNavigate={onNavigate} />);
+    expect(onNavigate).toHaveBeenCalledWith("view-home");
+    expect(screen.getByText("该视图不存在或已被删除。")).toBeInTheDocument();
+  });
+
+  it("C3：下移按钮把视图移到目标位置（store + 持久化同步）", () => {
+    render(<ViewPage view="home" onNavigate={() => {}} />);
+    const homeRow = screen.getByTitle("切换到 Home");
+    fireEvent.click(within(homeRow).getByRole("button", { name: "下移" }));
+    expect(useWidgetStore.getState().views.map((v) => v.id)).toEqual(["work", "home", "focus"]);
+    const persisted = JSON.parse(localStorage.getItem("focus-desk.screen.0.widgets.views.v1") ?? "[]") as {
+      id: string;
+    }[];
+    expect(persisted.map((v) => v.id)).toEqual(["work", "home", "focus"]);
+    // 重排后行首（work）的上移禁用。
+    const firstRow = screen.getByTitle("切换到 Work");
+    expect(within(firstRow).getByRole("button", { name: "上移" })).toBeDisabled();
+    expect(within(firstRow).getByRole("button", { name: "下移" })).toBeEnabled();
+  });
+
+  it("C3：「复制视图」克隆当前视图（名称带副本后缀并避开重名）", () => {
+    localStorage.setItem(
+      "focus-desk.screen.0.widgets.focus.v1",
+      JSON.stringify([{ id: "w1", type: "notes", x: 0, y: 0, w: 50, h: 50, z: 1 }])
+    );
+    localStorage.setItem("focus-desk.notes.w1", "内容");
+    const onNavigate = vi.fn();
+    render(<ViewPage view="focus" onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByText("复制视图"));
+    const st = useWidgetStore.getState();
+    expect(st.views).toHaveLength(4);
+    const added = st.views.at(-1)!;
+    expect(added.name).toContain("副本");
+    expect(onNavigate).toHaveBeenCalledWith(`view-${added.id}`);
+    // 克隆布局落盘、实例 id 重造、数据桶搬家。
+    const cloned = JSON.parse(localStorage.getItem(`focus-desk.screen.0.widgets.${added.id}.v1`) ?? "[]") as {
+      id: string;
+    }[];
+    expect(cloned).toHaveLength(1);
+    expect(cloned[0].id).not.toBe("w1");
+    expect(localStorage.getItem(`focus-desk.notes.${cloned[0].id}`)).toBe("内容");
+  });
+
+  it("C1：多屏时标题旁显示「作用于」徽标（点击跳显示器页），单屏不显示", () => {
+    const monitors = [
+      { id: 0, name: "主屏", x: 0, y: 0, width: 1920, height: 1080, is_primary: true },
+      { id: 1, name: "副屏", x: 1920, y: 0, width: 1920, height: 1080, is_primary: false }
+    ];
+    const onNavigate = vi.fn();
+    const { rerender } = render(<ViewPage view="home" onNavigate={onNavigate} monitors={monitors} />);
+    const chip = screen.getByTitle(/视图与小组件的添加、配置作用于：/);
+    expect(chip.textContent).toContain("作用于：主屏");
+    fireEvent.click(chip);
+    expect(onNavigate).toHaveBeenCalledWith("display");
+    rerender(<ViewPage view="home" onNavigate={onNavigate} />);
+    expect(screen.queryByTitle(/视图与小组件的添加、配置作用于：/)).toBeNull();
+  });
 });

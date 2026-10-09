@@ -1,5 +1,5 @@
 /**
- * DockTypePicker（F-2 入口 b）组件测试：分组列出全部 registry 类型 + 迷你形态标记、
+ * DockTypePicker（入口 b）组件测试：分组列出全部 registry 类型 + 迷你形态标记、
  * 搜索（名称 / 拼音首字母 / 类型 id）、回车选首条、点选 onPick、Esc / 外点 / × 的
  * 关闭原因、↑/↓ 焦点移动、groupPickerItems 纯函数。
  */
@@ -32,6 +32,27 @@ describe("groupPickerItems", () => {
   it("名称命中的分数高于描述命中：搜「时钟」时钟排在含「时钟」描述的类型之前", () => {
     const hits = groupPickerItems(WIDGET_REGISTRY, "时钟", identity).flatMap((g) => g.items);
     expect(hits[0]?.type).toBe("clock");
+  });
+
+  it("P1-1 跨类搜索：组间按组内最高分降序——tools 强匹配不被 focus 弱匹配劫持", () => {
+    /* 「时」同时命中 clock / stopwatch（tools，名称强匹配）与 countdown /
+       pomodoro / deadlines（focus，描述弱匹配）——修复前组序固定
+       focus>tools，flatMap 首项是 focus 的弱匹配；修复后全局最佳（clock）
+       第一。 */
+    const flat = groupPickerItems(WIDGET_REGISTRY, "时", identity).flatMap((g) => g.items);
+    expect(flat.length).toBeGreaterThan(2);
+    expect(flat[0]?.type).toBe("clock");
+    // tools 的次强匹配也在 focus 弱匹配之前（组间 + 组内双降序的拉平序）。
+    const types = flat.map((m) => m.type);
+    expect(types.indexOf("stopwatch")).toBeLessThan(types.indexOf("countdown"));
+    // 单一强匹配查询：组间排序不影响结果（回归保护）。
+    const solo = groupPickerItems(WIDGET_REGISTRY, "jsq", identity);
+    expect(solo.map((g) => g.category)).toEqual(["tools"]);
+  });
+
+  it("P1-1 空查询保持固定分类序（组间排序只在有 query 时生效）", () => {
+    const groups = groupPickerItems(WIDGET_REGISTRY, "  ", identity);
+    expect(groups.map((g) => g.category)).toEqual(["focus", "tools", "system", "online"]);
   });
 });
 

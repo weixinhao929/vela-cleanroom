@@ -18,6 +18,7 @@
  * 挂载：App.tsx 的设置窗与桌面层分支（速记/截图/取词等极简窗不挂）。
  */
 import { useEffect } from "react";
+import { uiZoom } from "../lib/ui-zoom";
 
 const SHOW_DELAY_MS = 350;
 const GAP_PX = 8;
@@ -71,10 +72,17 @@ function showTip(): void {
   const th = tipEl.offsetHeight;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
+  // gBCR 视觉坐标 → 布局单位：÷uiZoom（fixed left/top、offsetWidth、
+  // innerWidth 均为布局，直接混算在缩放 ≠100% 时会漂移/错钳）。
+  const z = uiZoom();
+  const rt = r.top / z;
+  const rb = r.bottom / z;
+  const rl = r.left / z;
+  const rw = r.width / z;
   // 优先上方，放不下翻下方；水平居中并钳在视口内。
-  const above = r.top - th - GAP_PX >= EDGE_PX;
-  const top = above ? r.top - th - GAP_PX : Math.min(r.bottom + GAP_PX, vh - th - EDGE_PX);
-  const left = Math.min(Math.max(r.left + r.width / 2 - tw / 2, EDGE_PX), vw - tw - EDGE_PX);
+  const above = rt - th - GAP_PX >= EDGE_PX;
+  const top = above ? rt - th - GAP_PX : Math.min(rb + GAP_PX, vh - th - EDGE_PX);
+  const left = Math.min(Math.max(rl + rw / 2 - tw / 2, EDGE_PX), vw - tw - EDGE_PX);
   tipEl.style.top = `${Math.max(EDGE_PX, Math.round(top))}px`;
   tipEl.style.left = `${Math.round(left)}px`;
 }

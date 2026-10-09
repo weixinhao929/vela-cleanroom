@@ -595,7 +595,7 @@
 }
 
 /* ================================================================== */
-/* FocusTimer 借鉴（#13 时段分布图）：24 小时专注分布柱                 */
+/* （#13 时段分布图）：24 小时专注分布柱 */
 /* ================================================================== */
 .hourly-bars {
   margin-top: 6px;
@@ -657,7 +657,7 @@
 }
 
 /* ================================================================== */
-/* FocusTimer 月页 BubbleChart 同款：近 N 天 × 24 小时气泡矩阵          */
+/*  月页 BubbleChart 同款：近 N 天 × 24 小时气泡矩阵 */
 /* （行 = 天，列 = 小时；半径 ∝ sqrt 分 4 级量化；空值 10% 基圆）       */
 /* ================================================================== */
 .hourly-bubbles {
@@ -716,6 +716,10 @@
 .hb-bubble {
   display: block;
   border-radius: 50%;
+  /* 高度随宽度（组件只定宽）+ 钳到列宽内：最小 widget 尺寸下列宽小于
+     数据直径时气泡缩成小圆，不再叠到邻列。 */
+  aspect-ratio: 1;
+  max-width: 100%;
   background: linear-gradient(135deg, var(--accent-2), var(--accent));
   /* 尺寸随数据重算（低频）直接落位，不做 width/height 过渡（layout-anim 门禁）；
      只保留 hover 提亮的 filter 过渡（合成层）。 */
@@ -729,7 +733,7 @@
 .hb-cell:focus-visible .hb-bubble {
   filter: contrast(0.75) brightness(1.15);
 }
-/* FocusTimer 同款 hover 提亮 + 复用日趋势柱的 data-tip 气泡模型 */
+/*  同款 hover 提亮 + 复用日趋势柱的 data-tip 气泡模型 */
 .hb-cell::after {
   content: attr(data-tip);
   position: absolute;

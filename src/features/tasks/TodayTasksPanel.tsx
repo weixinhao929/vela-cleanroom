@@ -18,12 +18,12 @@ import { flipReorder } from "../../lib/anim";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
 import type { Task } from "../../domain/schemas";
 
-/** W-043 优先级文案：0 无 / 1 低 / 2 中 / 3 高。 */
+/** 优先级文案：0 无 / 1 低 / 2 中 / 3 高。 */
 const PRIORITIES = [0, 1, 2, 3] as const;
 const priorityLabel = (p: number, tr: (s: string) => string) =>
   p === 3 ? tr("高") : p === 2 ? tr("中") : p === 1 ? tr("低") : tr("无");
 
-/** W-048 截止徽标：逾期红 / 今天强调 / 明天 / 其余显示日期（日期格式跟随应用内语言，
+/** 截止徽标：逾期红 / 今天强调 / 明天 / 其余显示日期（日期格式跟随应用内语言，
  *  与 DeadlinePanel 的 useAppLocale 口径一致；不传 locale 会跟随操作系统语言）。 */
 function dueLabel(
   dueAt: string,
@@ -65,7 +65,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
   const toggleTask = useAppStore((s) => s.toggleTask);
   const deleteTask = useAppStore((s) => s.deleteTask);
   const clearCompletedTasks = useAppStore((s) => s.clearCompletedTasks);
-  /* W-044 行内编辑 / W-045 手动排序。 */
+  /* 行内编辑 / 手动排序。 */
   const updateTask = useAppStore((s) => s.updateTask);
   const reorderTasks = useAppStore((s) => s.reorderTasks);
   const habits = useHabitsStore((s) => s.habits);
@@ -84,7 +84,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
   const manual = sortOrder === "manual";
   const [filter, setFilter] = useState<"all" | "active" | "done">("all");
 
-  /* W-044 行内编辑态：双击任务行进入，回车保存、Esc 取消。 */
+  /* 行内编辑态：双击任务行进入，回车保存、Esc 取消。 */
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editPriority, setEditPriority] = useState(0);
@@ -110,9 +110,9 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
   };
   const cancelEdit = () => setEditingId(null);
 
-  /* #104 删除/清除退场：命中的行先收拢淡出。
+  /* 删除/清除退场：命中的行先收拢淡出。
      单击即删：此前两击确认在点击穿透层下第二击易被吞，用户反馈"删不掉"，
-     改为单击删除 + 退场动画。B2（审计）：toast 无撤销按钮的补偿不足——
+     改为单击删除 + 退场动画。：toast 无撤销按钮的补偿不足——
      改为「延迟落删」：点击后行立即收拢隐藏，数据保留 4.5s，期间 toast 上
      「撤销」可恢复；窗口过后真正 deleteTask（对 sqlite/localStorage 双模式
      都无需新增 store 动作）。 */
@@ -174,7 +174,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
     });
   };
 
-  /* #104 清除已完成退场：已完成行整组收拢淡出后再清空数据 */
+  /* 清除已完成退场：已完成行整组收拢淡出后再清空数据 */
   const clearCompletedAnimated = async () => {
     if (
       await confirmDialog({
@@ -184,7 +184,10 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
         danger: true
       })
     ) {
-      const doneIds = new Set(visibleTasks.filter((t) => t.completed).map((t) => t.id));
+      // 确认数（全部已完成）与实际清除（store 清全部已完成）同口径——
+      // 此前取 visibleTasks（受 filter/showCompleted/maxItems 影响），筛选态
+      // 下确认后 doneIds 为空直接 return，承诺清除却零删除。
+      const doneIds = new Set(tasks.filter((t) => t.completed).map((t) => t.id));
       if (!doneIds.size) return;
       setClosingIds(doneIds);
       safeTimeout(() => {
@@ -202,7 +205,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
       const aDone = a.completed ? 1 : 0;
       const bDone = b.completed ? 1 : 0;
       if (aDone !== bDone) return aDone - bDone; // 未完成在前
-      if (manual) return (a.sortOrder ?? 0) - (b.sortOrder ?? 0); // W-045 手动顺序
+      if (manual) return (a.sortOrder ?? 0) - (b.sortOrder ?? 0); // 手动顺序
       const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       return sortOrder === "oldest" ? -diff : diff;
     });
@@ -210,7 +213,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
     return list;
   }, [tasks, showCompleted, sortOrder, manual, maxItems, filter]);
 
-  /* W-048 截止分组：仅当存在带截止的任务时启用，复用 DDL 的分组形态。
+  /* 截止分组：仅当存在带截止的任务时启用，复用 DDL 的分组形态。
      E-dayKey：分组只关心日期边界，依赖用天粒度 todayKey，不再每 30s 全量重算。 */
   const hasDue = useMemo(() => tasks.some((t) => !t.completed && t.dueAt), [tasks]);
   const todayKey = dayKeyOf(nowTick);
@@ -242,7 +245,9 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
         return;
       }
       const diff = Math.round((startOf(d) - startNow) / 86_400_000);
-      if (diff < 0) byKey.overdue.push(t);
+      // 与行徽标 dueLabel/今日概览统一口径：时刻已过即逾期（今天 10:00 到期、
+      // 现在 14:00 → 逾期组），不再出现「分组在今天、徽标已逾期」的分裂。
+      if (diff < 0 || (diff === 0 && d.getTime() < nowTick.getTime())) byKey.overdue.push(t);
       else if (diff === 0) byKey.today.push(t);
       else byKey.future.push(t);
     });
@@ -256,9 +261,10 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
     return (Object.keys(byKey) as (keyof typeof byKey)[])
       .filter((k) => byKey[k].length > 0)
       .map((k) => ({ key: k, label: labels[k], items: byKey[k] }));
-  }, [visibleTasks, showDueGrouping, hasDue, tr, todayKey]);
+    // nowTick：逾期边界精确到时刻（见上方口径统一注释），30s 一拍重算的代价是 O(n) 过滤。
+  }, [visibleTasks, showDueGrouping, hasDue, tr, todayKey, nowTick]);
 
-  /* C5（性能）：计数与索引一次算好，避免每次渲染全表 filter/findIndex（O(n²)）。 */
+  /* （性能）：计数与索引一次算好，避免每次渲染全表 filter/findIndex（O(n²)）。 */
   const { completed, activeCount } = useMemo(
     () => ({
       completed: tasks.reduce((n, t) => n + (t.completed ? 1 : 0), 0),
@@ -283,7 +289,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
     return () => window.removeEventListener("focus-task-input", focus);
   }, []);
 
-  /* W-047 自然语言日期：输入"明天下午3点交报告"自动拆出截止时间。 */
+  /* 自然语言日期：输入"明天下午3点交报告"自动拆出截止时间。 */
   const natural = useMemo(() => parseNaturalDateTime(title), [title]);
 
   function submit(event: FormEvent) {
@@ -303,9 +309,9 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
     setTitle("");
   }
 
-  /* W-045 拖拽排序：HTML5 DnD，松手即按当前可见顺序覆写 sortOrder。
-     B10：键盘替代——行聚焦后 Alt+↑/↓ 移动（拖拽手柄本身不可聚焦）。
-     D8：落位用 FLIP 过渡回弹，替代此前的瞬间跳变。 */
+  /* 拖拽排序：HTML5 DnD，松手即按当前可见顺序覆写 sortOrder。
+     键盘替代——行聚焦后 Alt+↑/↓ 移动（拖拽手柄本身不可聚焦）。
+     落位用 FLIP 过渡回弹，替代此前的瞬间跳变。 */
   const listRef = useRef<HTMLDivElement>(null);
   const dragIndexRef = useRef<number>(-1);
   const [dragOverIndex, setDragOverIndex] = useState(-1);
@@ -555,7 +561,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
           <Plus size={18} />
         </button>
       </form>
-      {/* W-047 自然语言日期预览：解析成功时提示将写入的截止时间。 */}
+      {/* 自然语言日期预览：解析成功时提示将写入的截止时间。 */}
       {natural && (
         <div className="task-natural-preview">
           {tr("识别截止时间")}：
@@ -668,7 +674,7 @@ export function TodayTasksPanel({ instanceId }: { instanceId: string }) {
                   <em>{g.items.length}</em>
                 </div>
                 {(() => {
-                  // C5：分组渲染用 Map 索引替代每行 findIndex（O(n²)→O(n)）。
+                  // 分组渲染用 Map 索引替代每行 findIndex（O(n²)→O(n)）。
                   const idxById = new Map(visibleTasks.map((t, i) => [t.id, i]));
                   return g.items.map((t) => renderRow(t, idxById.get(t.id) ?? 0));
                 })()}

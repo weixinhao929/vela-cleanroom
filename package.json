@@ -1,6 +1,9 @@
 {
   "name": "vela-cleanroom",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "version": "0.1.0",
   "license": "MIT",
   "author": "浩浩浩",
@@ -12,6 +15,7 @@
     "check": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "npm --prefix e2e run test",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
@@ -25,11 +29,14 @@
     "lint:sizes": "node scripts/check-size-tokens.mjs",
     "lint:layout-anim": "node scripts/check-layout-anim.mjs",
     "lint:tokens": "node scripts/check-css-tokens.mjs",
-    "lint:i18n": "node scripts/check-i18n.cjs && node scripts/check-i18n-attrs.cjs",
+    "lint:i18n": "node scripts/check-i18n.cjs && node scripts/check-i18n-attrs.cjs && node scripts/check-i18n.cjs --dead",
+    "lint:ime": "node scripts/check-ime-guards.mjs",
     "lint:api": "node scripts/check-api-docs.mjs",
     "lint:layering": "node scripts/check-layering.mjs",
     "lint:window-gates": "node scripts/check-window-gates.mjs",
-    "gen:types": "cd src-tauri && cargo test export"
+    "lint:csp": "node scripts/check-csp-lock.mjs",
+    "gen:types": "cd src-tauri && cargo test export",
+    "ci:local": "node scripts/run-local-ci.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -52,6 +59,7 @@
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-react-refresh": "^0.4.16",
@@ -61,6 +69,6 @@
     "typescript": "~5.7.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.11"
   }
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "../lib/tauri";
 import { persistMirrored } from "../lib/local-backup";
+import { isPersistSuspended } from "../lib/persist-gate";
 import { useTauriEvent } from "../lib/use-tauri-event";
 
 /**
@@ -34,18 +35,36 @@ const syncTimers = new Map<string, number>();
 
 /** 立即广播某实例的待发配置（无待发时 no-op）。 */
 export function flushWidgetConfigSync(instanceId: string): void {
+  /* persist-gate 挂起期（恢复备份 pause→导入→resume
+     的窗口内）不发射——挂起期本窗的 saveWidgetConfig 被 persistMirrored 拦截
+     不写 LS，此刻冲刷现读 LS 读到的是恢复前的旧值，的「冲刷现读」与
+     「挂起期不写 LS」组合会把旧值广播给对端。挂起期的尾包随恢复 reload
+     一并消失，无需发射。 */
+  if (isPersistSuspended()) return;
   const timer = syncTimers.get(instanceId);
   if (timer !== undefined) {
     window.clearTimeout(timer);
     syncTimers.delete(instanceId);
   }
-  const config = pendingSync.get(instanceId);
-  if (!config) return;
+  if (!pendingSync.has(instanceId)) return;
   pendingSync.delete(instanceId);
   if (isTauri()) {
+    /* 发射现读 LS 真值，不再用 pendingSync 里的旧
+       快照。根因：槽内快照捕获于最后一次本地编辑，150ms 防抖窗口内远端包被
+       采纳（useTauriEvent 只 setConfig、不清槽）后，到点的冲刷会把旧快照整包
+       广播出去，回滚对端刚保存的字段——两窗 150ms 内并发编辑同一实例配置时
+       必现（groups 通道同族）。选「冲刷现读」而非「远端采纳时清槽」：
+       saveWidgetConfig 每次编辑都同步写共享 LS，远端发送方的写也落在同一
+       LS——loadWidgetConfig(id) 即「两端最后一次写入」的合并真值，回放它只会
+       收敛（等值回声幂等），永不回滚；而清槽无法区分「本地确有更新待发」与
+       「陈旧快照」，误清会丢本地编辑。pendingSync 由此退化为「有待发」脏标记，
+       快照值不再被消费。 */
+    const config = loadWidgetConfig(instanceId);
+    /* 静默 catch 改上报（保持不中断语义）——配置
+       广播丢失时其他窗口要等重启/下次编辑才追上，留证据可排查。 */
     import("@tauri-apps/api/event")
       .then(({ emit }) => emit("sync:widget-config", { instanceId, config }))
-      .catch(() => {});
+      .catch((err: unknown) => console.error("[widget-config] sync emit failed", err));
   }
 }
 
@@ -121,17 +140,17 @@ if (typeof window !== "undefined") {
 /**
  * 读取并订阅某实例配置（hook）。
  * 同窗口经 CHANGE_EVENT 实时更新；跨窗口监听 `sync:widget-config`，
- * 远端载荷非纯对象时回退本地权威副本（P2 防畸形载荷击穿渲染）。
+ * 远端载荷非纯对象时回退本地权威副本（防畸形载荷击穿渲染）。
  *
  * @param instanceId - 小组件实例 id。
  * @returns `{ config, update }`：当前配置与增量合并函数
  *          （update(patch) 合并后自动持久化 + 广播）。
  *
  * @example
- * ```tsx
+ * `tsx
  * const { config, update } = useWidgetConfig(instanceId);
  * <Toggle checked={config.showTags !== false} onChange={(v) => update({ showTags: v })} />
- * ```
+ * `
  */
 export function useWidgetConfig(instanceId: string) {
   const [config, setConfig] = useState<WidgetConfig>(() => loadWidgetConfig(instanceId));
@@ -154,7 +173,7 @@ export function useWidgetConfig(instanceId: string) {
   // 跨窗口：设置窗口保存配置后，桌面层的小组件立即收到并应用。
   useTauriEvent<{ instanceId: string; config?: unknown }>("sync:widget-config", (payload) => {
     if (payload?.instanceId !== instanceId) return;
-    // P2（审计修复）：远端载荷此前不做形状校验直接 setConfig——畸形
+    // 远端载荷此前不做形状校验直接 setConfig——畸形
     // 载荷（原始值/数组）会展开成垃圾键击穿小组件渲染。非纯对象时回退
     // 读取本窗口持久化的权威副本。
     const incoming = payload.config;

@@ -1,6 +1,6 @@
 ﻿/* === z-index 阶梯（单窗口内的层叠几何，数值间距留白便于插层）===
    小组件内弹出 < 浮层菜单带 < 组件菜单 < 组件 tooltip < 模态遮罩 <
-   模态对话框 < 右键菜单 < 配置 popover < 命令面板 < 全局 toast <
+   模态对话框 < 配置 popover < 右键菜单 < 命令面板 < 全局 toast <
    沉浸层（画布 z 上限 2_000_000 之上，见 widget-store MAX_Z）。
    全部 fixed 浮层消费这里的令牌，禁止新增裸魔数；组件内部的小叠放
    （1/2/5…）是局部上下文，不入阶梯。 */
@@ -11,13 +11,28 @@
   --z-widget-tooltip: 10001;
   --z-modal-scrim: 10020; /* 全屏模态遮罩，低于其承载的对话框 */
   --z-dialog: 10050;
-  --z-ctx: 10100;
-  --z-config-pop: 10110; /* 组件/磁贴配置 popover：高于右键菜单（弹层开着时菜单已被外点关闭） */
+  --z-config-pop: 10110; /* 组件/磁贴配置 popover 与文件夹弹层（含 pin 常驻态） */
+  --z-drag-ghost: 10111; /* 拖拽幽灵（sfolder 条目 / 编组标签）：弹层 +1，仍低于右键菜单 */
+  --z-ctx: 10120; /* 右键菜单：须高于配置 popover——pin 弹层外点不关，可与菜单
+     共存，菜单被弹层盖住会「看不见」（组卡片右键/弹层内条目右键同层保证） */
   --z-cmd: 10150;
   --z-toast: 10200; /* toast 必须浮于一切对话框之上（此前 ctx-menu 99999 / cmd-palette 2147483000 越阶级压住 toast，违反本约定） */
+  --z-blockout: 10250; /* 窗口级阻断遮罩（恢复备份/迁移等「覆盖一切直到 reload」期）——
+     必须压过包括 toast 在内的全部可交互层，恢复期间任何点击都不得生效 */
   --z-immersive: 2100000;
   --z-immersive-ghost: 2100001;
   --z-tooltip: 2100002; /* 主题化 tooltip（ThemeTooltip）：高于沉浸层 */
+  /* === 画布带（canvas band）：.widget-canvas 直接子层的 fixed 编辑 HUD ===
+     卡片层 .widget-canvas-viewport 自身 z-index:0 成栈（内部卡片 z 可达
+     2_000_000 也不越栈），其兄弟 HUD 用百位小值即可压住整栈，但低于一切
+     小组件内弹出（--z-pop 9000）。同为 fixed 浮层，按阶梯约定走令牌，
+     不裸写魔数（此前 widget.css 裸写 150/200/210 与阶梯并行）。 */
+  --z-canvas-band-marquee: 150; /* 编辑模式框选矩形 */
+  --z-canvas-band-edit-toolbar: 200; /* 编辑工具栏 */
+  --z-canvas-band-batch-toolbar: 210; /* 多选批量工具栏：编辑工具栏 +10，同锚位让位时压其上 */
+  --z-fx-band: 8000; /* 全屏装饰特效画布带（rb 像素翻牌涟漪等 pointer-events:none
+     效果层）——高于普通文档流，低于小组件内弹出（--z-pop）与一切 fixed 浮层，
+     特效不遮弹层/菜单 */
   /* === 字号/圆角数值令牌（全量令牌化）===
      --fs-* 字号、--rad-* 圆角：精确值有语义令牌（--radius-sm/md/lg/xl、
      --radius 24、--radius-pill 999）的直接复用，其余按像素值命名（小数用
@@ -80,6 +95,9 @@
   --fs-32: 32px;
   --fs-34: 34px;
   --fs-40: 40px;
+  /* hero 大数字（global.css 面板头 / widget.css 两处）的原生 42px——
+     多行 font: 简写裸 px 收编令牌时补齐阶差。 */
+  --fs-42: 42px;
   /* 下方 font-family 读 --ui-font（字体设置经 applySettings 写入）；未设置时回退到系统字体栈 */
   font-family: var(
     --ui-font,
@@ -95,25 +113,23 @@
   font-synthesis: none;
   color-scheme: light;
 
-  /* ── A2 字体角色：四款内置字体（Geist / Geist Mono / Manrope / Outfit）映射
+  /* ── 字体角色：四款内置字体（Geist / Geist Mono / Manrope / Outfit）映射
      到语义角色，窗口与组件不再各自硬编码字体名。body 跟随用户字体设置
      （--ui-font，applySettings 写入），Geist 为内置缺省；label 专用于大写
-     等宽小节标签（原设置窗 Geist Mono 硬编码的收敛位）。 ── */
-  --font-display: "Outfit", "Manrope", var(--ui-font, "Segoe UI"), sans-serif;
-  --font-title: "Manrope", var(--ui-font, "Segoe UI"), sans-serif;
+     等宽小节标签（原设置窗 Geist Mono 硬编码的收敛位）。
+     --font-display/--font-title/--font-numeric 定义后零消费，删除。 ── */
   --font-body: var(--ui-font, "Segoe UI", "Microsoft YaHei", sans-serif);
   --font-label: "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --font-numeric: "Geist Mono", ui-monospace, monospace;
 
-  /* ── A2 语义前景色：图像/深色媒介上的内容色与危险实底上的内容色
+  /* ── 语义前景色：图像/深色媒介上的内容色与危险实底上的内容色
      （明暗两档恒定：图上永远浅字、危险实底永远亮字），widget 层硬编码
      #fff 的收敛位。 ── */
   --on-image: rgba(255, 255, 255, 0.96);
   --on-danger: #ffffff;
   --bg: #eee9df;
   --bg-glow: #fff7e8;
-  --ink: #292820; /* A10 对比度修复：--muted 旧值 #817d70 在暖纸底上仅 3.4:1（WCAG AA 需 4.5），
+  --ink: #292820; /* 对比度修复：--muted 旧值 #817d70 在暖纸底上仅 3.4:1（WCAG AA 需 4.5），
      加深到 ≥4.7:1；--muted-2 为弱化层级（装饰/次要提示），同步加深一档。 */
   --muted: #6b6659;
   --muted-2: #8a8578;
@@ -162,7 +178,7 @@
   --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
 
   --scrim: rgba(0, 0, 0, 0.32);
-  /* F10：深一档遮罩（0.45）。给确需更浓压暗的浮层（设置内嵌遮罩、截图暗幕、
+  /* 深一档遮罩（0.45）。给确需更浓压暗的浮层（设置内嵌遮罩、截图暗幕、
      全屏提示）与色板 hex 标签条共用——不再各写 rgba，浓度档位全库单点。 */
   --scrim-strong: rgba(0, 0, 0, 0.45);
   /* 浮层阴影色（明暗分档的收口）：浅色档带暖棕（同 --widget-rest-shadow 家族，
@@ -170,15 +186,8 @@
      color-mix(in srgb, var(--shadow-tint) N%, transparent) 调浓度。 */
   --shadow-tint: rgba(67, 55, 35, 0.4);
   --spacing: 16px;
-
-  --space-1: calc(var(--spacing, 16px) * 0.25); /*  4px */
-  --space-2: calc(var(--spacing, 16px) * 0.5); /*   8px */
-  --space-3: calc(var(--spacing, 16px) * 0.75); /* 12px */
-  --space-4: var(--spacing, 16px); /*               16px */
-  --space-5: calc(var(--spacing, 16px) * 1.25); /* 20px */
-  --space-6: calc(var(--spacing, 16px) * 1.5); /*  24px */
-  --space-8: calc(var(--spacing, 16px) * 2); /*    32px */
-  --space-10: calc(var(--spacing, 16px) * 2.5); /* 40px */
+  /* --space-1~10 间距阶梯定义后零消费（组件直接用 var(--spacing) 运算
+     或裸值），整组删除；--spacing 本体在消费中，保留。 */
   --blur: 0px;
   --widget-rest-shadow: rgba(67, 55, 35, 0.1);
   --widget-hover-shadow: rgba(0, 0, 0, 0.1);
@@ -231,7 +240,7 @@
   --widget-drag-shadow: rgba(0, 0, 0, 0.45);
   --shadow-tint: rgba(0, 0, 0, 0.5);
   /* 引擎恒写、此处静态兜底的剩余 token：纯 CSS 直开（无 JS 引擎）时保持
-     弹层 / A1 层阶 / 语义色可用，取值与暗档同源。运行时引擎内联同名值
+     弹层 / 层阶 / 语义色可用，取值与暗档同源。运行时引擎内联同名值
      （style 特异性更高）覆盖，静态值只在纯预览场景生效。 */
   --paper-opaque: rgba(18, 18, 18, 0.98);
   --popover-bg: rgba(28, 28, 28, 0.92);
@@ -242,20 +251,14 @@
   --amber-soft: rgba(251, 191, 36, 0.14);
   --sky-ink: #38bdf8;
   --sky-soft: rgba(56, 189, 248, 0.14);
-  --layer0: rgba(255, 255, 255, 0.04);
-  --layer0-solid: #101010;
-  --layer0-on: #ffffff;
-  --layer1: rgba(255, 255, 255, 0.07);
+  /* layer 表面色零消费的 9 个删除（--layer0/-solid/-on、--layer1、
+     --layer3/-solid/-on、--layer4/-solid）；存活的 --layer1-solid（settings
+     侧栏底 fallback 消费）、--layer1-on、--layer2* 与 --layer4-on 保留。 */
   --layer1-solid: #171717;
   --layer1-on: #ffffff;
   --layer2: rgba(255, 255, 255, 0.1);
   --layer2-solid: #1e1e1e;
   --layer2-on: #ffffff;
-  --layer3: rgba(255, 255, 255, 0.13);
-  --layer3-solid: #262626;
-  --layer3-on: #ffffff;
-  --layer4: rgba(255, 255, 255, 0.16);
-  --layer4-solid: #2e2e2e;
   --layer4-on: #ffffff;
 }
 /* 文字极性联防的消费入口（theme-engine *-wl 镜像族）：小组件层窗口在
@@ -331,9 +334,9 @@ html.theme-crossfade-accent {
     --accent var(--dur-fx-slow, 0.3s) var(--ease-fx, ease),
     --accent-2 var(--dur-fx-slow, 0.3s) var(--ease-fx, ease);
 }
-/* P2-4（纸墨族可插值）：注册核心纸/墨 token 为 <color> 类型。这是能力开放
+/* （纸墨族可插值）：注册核心纸/墨 token 为 <color> 类型。这是能力开放
    而非行为变更——全局主题/明暗切换仍是即时呈现（水墨只管设置窗的点击路径，
-   跨窗口统一换肤淡化的完整方案待 Rust 侧截屏交叉淡化，见审查报告 P2-4）；
+   跨窗口统一换肤淡化的完整方案待 Rust 侧截屏交叉淡化，见审查报告 ）；
    注册后任何局部消费者都可以在自己的 transition 里点名这些 token（含渐变
    内的 var() 插值——未注册时渐变色标只会瞬跳），widget 卡片局部的主题过渡
    即可按需启用。initial-value 取暖纸/暖墨标准档，首帧即有定义。 */
@@ -534,8 +537,9 @@ button:active {
   margin-bottom: 22px;
 }
 .panel-header h2 {
+  /* 多行 font: 简写的裸 px 此前绕过按行门禁——改令牌（23→--fs-23）。 */
   font:
-    600 23px/1 Outfit,
+    600 var(--fs-23)/1 Outfit,
     sans-serif;
   letter-spacing: -0.03em;
   margin: 0;
@@ -588,7 +592,7 @@ button:active {
   fill: none;
   stroke-width: 7;
   stroke-linecap: round;
-  /* D6：倒计时每秒 tick 推进用 linear——ease-out 会造成「动-停」阶梯感。
+  /* 倒计时每秒 tick 推进用 linear——ease-out 会造成「动-停」阶梯感。
      时长统一走 --dur-tick-fill 语义 token（三.7，≥ tick 周期覆盖漂移间隙）。 */
   transition: stroke-dashoffset var(--dur-tick-fill, 1.05s) linear;
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 32%, transparent));
@@ -612,7 +616,7 @@ button:active {
   stroke: var(--paper-solid);
   stroke-width: 2;
   /* 与进度弧同一 tick 节拍（1s 数据步进），时长对齐见 .focus-timer-progress。
-     layout-anim: ok D6 刻意设计（P3 三轮补正式注记）：cx/cy 是 SVG 几何属性，
+     layout-anim: ok 刻意设计（三轮补正式注记）：cx/cy 是 SVG 几何属性，
      过渡逐 tick 触发 SVG layout+paint；改 transform 驱动会与 ft-tip-pulse 的
      transform 缩放动画互斥（animation 覆盖 transform），故保留 cx/cy——
      代价限定为运行期每秒一次的小面积 SVG 重排。 */
@@ -623,14 +627,18 @@ button:active {
   transform-box: fill-box;
   transform-origin: center;
 }
-.focus-timer.running .focus-timer-tip {
+/* 专注计时器运行态的 tip/glow/disc 三条呼吸 + 36s 刻度
+   旋转均属常驻氛围循环（一次专注会话可达数小时，keep-will-change 常占合成层），
+   照 cd-ring.running 先例（widget.css）受「特效管理→氛围动效」总闸门控——
+   此前该开关对最常驻的桌面组件无效。 */
+html:not([data-fx-off~="ambientMotion"]) .focus-timer.running .focus-timer-tip {
   animation: ft-tip-pulse var(--dur-ft-breathe, 2.6s) ease-in-out infinite;
 }
-.focus-timer.running .focus-timer-glow {
+html:not([data-fx-off~="ambientMotion"]) .focus-timer.running .focus-timer-glow {
   animation: ft-glow-pulse var(--dur-ft-breathe, 2.6s) ease-in-out infinite;
 }
 
-.focus-timer.spin-ticks .focus-timer-ticks {
+html:not([data-fx-off~="ambientMotion"]) .focus-timer.spin-ticks .focus-timer-ticks {
   animation: ft-ticks-spin 36s linear infinite;
   /* prettier-ignore（单行规则：keep-will-change 豁免注释与声明同行供审计脚本识别） */
   will-change: transform; /* keep-will-change: 36s 常驻旋转仅运行态挂——此前无条件常驻，空闲期合成层白占 */
@@ -669,7 +677,7 @@ button:active {
   transform-box: view-box;
   /* will-change 已随 ft-ticks-spin 移入 .spin-ticks 运行态：空闲期不再常驻合成层。 */
 }
-.focus-timer.running .focus-timer-disc {
+html:not([data-fx-off~="ambientMotion"]) .focus-timer.running .focus-timer-disc {
   animation: ft-disc-breathe var(--dur-ft-breathe, 2.6s) ease-in-out infinite;
 }
 @keyframes ft-disc-breathe {
@@ -703,7 +711,7 @@ button:active {
 }
 .focus-timer-time {
   font:
-    600 42px/1 Outfit,
+    600 var(--fs-42)/1 Outfit,
     sans-serif;
   letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
@@ -813,7 +821,7 @@ button:active {
 }
 .pomodoro-stat strong {
   font:
-    600 20px/1 Outfit,
+    600 var(--fs-20)/1 Outfit,
     sans-serif;
   letter-spacing: -0.02em;
 }
@@ -1792,7 +1800,7 @@ html:not([data-fx-off~="ambientMotion"]) .current-task-dot::after {
   border: 1px solid var(--line);
   color: var(--muted);
 }
-/* W-043 优先级点：仅靠颜色区分不满足 WCAG 1.4.1，内嵌高/中/低字符（白字 8px +
+/* 优先级点：仅靠颜色区分不满足 WCAG 1.4.1，内嵌高/中/低字符（白字 8px +
    轻描边保证浅色档位上的可读性）。 */
 .task-pri-dot {
   width: 11px;
@@ -2367,7 +2375,7 @@ html:not([data-fx-off~="ambientMotion"]) .current-task-dot::after {
 .date-tile strong {
   display: block;
   font:
-    600 17px/1 Outfit,
+    600 var(--fs-17)/1 Outfit,
     sans-serif;
   font-variant-numeric: tabular-nums;
 }
@@ -2497,10 +2505,8 @@ footer {
   font-size: var(--fs-11);
   color: var(--muted);
 }
-.analytics-empty {
-  padding: 14px 16px;
-  font-size: var(--fs-11);
-}
+/* .analytics-empty 已删——空态统一迁移到
+   EmptyState（fd-empty），全语料 0 引用。 */
 
 .dist-wrap {
   display: flex;
@@ -2650,13 +2656,6 @@ footer {
 .heat-wrap::-webkit-scrollbar-thumb {
   background: var(--sb-thumb);
   border-radius: var(--rad-3);
-}
-.heat-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 12px;
 }
 
 .month-heatmap {
@@ -2972,19 +2971,9 @@ footer {
   color: var(--muted);
   line-height: 1.5;
 }
-@media (max-width: 800px) {
-  .pomodoro-panel {
-    grid-row: auto;
-    min-height: 570px;
-  }
-  .deadline-form {
-    grid-template-columns: 1fr 1fr;
-  }
-  .deadline-form > button {
-    grid-column: span 2;
-    padding: 10px;
-  }
-}
+/* 已删除全仓唯一的 @media (max-width: 800px) 宽度断点
+   （含 .pomodoro-panel min-height:570px / .deadline-form 两列规则）——桌面小部件
+   无响应式需求，窗口拖窄/副屏缩窗时该断点反会给番茄面板突加 570px 最小高。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -3001,7 +2990,7 @@ footer {
     animation-iteration-count: 1 !important;
   }
 }
-/* P3 窗口隐藏挂起：遮挡/最小化时 data-app-hidden（lib/anim.ts
+/* 窗口隐藏挂起：遮挡/最小化时 data-app-hidden（lib/anim.ts
    installAppVisibilityGate 写入）把全部动画置 paused——跨平台合成器节流
    不一致，显式暂停兜底，常驻装饰循环（光晕/跑马/呼吸）隐藏期间不再空转。
    useDelayedUnmount 走 setTimeout 卸载、无 animationend 依赖，恢复可见不残留。 */
@@ -3116,7 +3105,7 @@ html[data-app-hidden] *::after {
   gap: 14px;
 }
 .fd-prompt-overlay.is-closing {
-  /* #57 退场：关闭路径由 PromptDialogHost 挂 .is-closing 并等待同长再卸载。
+  /* 退场：关闭路径由 PromptDialogHost 挂 .is-closing 并等待同长再卸载。
      时长/曲线与 JS 侧 animDurations().fxFastMs（--dur-fx-fast）对齐。 */
   animation: fd-prompt-overlay-out var(--dur-fx-fast, 0.15s) var(--ease-in) both;
   pointer-events: none;
@@ -3137,7 +3126,7 @@ html[data-app-hidden] *::after {
 }
 
 .fd-prompt-title {
-  /* E13：多行标题防孤字。 */
+  /* 多行标题防孤字。 */
   text-wrap: balance;
   font-size: var(--fs-14);
   font-weight: 600;
@@ -3205,6 +3194,33 @@ html[data-app-hidden] *::after {
 .fd-prompt-btn.primary.danger:hover {
   filter: brightness(1.05);
 }
+/* choiceDialog（单选列表）：整宽选项按钮，视觉与 fd-prompt-btn 同语言。 */
+.fd-prompt-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+.fd-prompt-choice {
+  padding: 9px 14px;
+  font-size: var(--fs-13);
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  cursor: pointer;
+  transition:
+    background var(--dur-fx-fast, 0.15s) var(--ease-fx, ease),
+    border-color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.fd-prompt-choice:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+}
+.fd-prompt-choice.danger {
+  color: var(--danger);
+}
 @keyframes tm-overlay-in {
   from {
     opacity: 0;
@@ -3230,7 +3246,6 @@ html[data-no-glass="1"] *::after {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
-
-html[data-no-glass="1"] .launcher-menu {
-  background: var(--paper-solid) !important;
-}
+/* 已删除 html[data-no-glass="1"] .launcher-menu 补丁——
+   applauncher 组件已退役（widget-store.ts RETIRED_TYPES），该规则指向不存在的
+   菜单，误导玻璃效果排查。 */

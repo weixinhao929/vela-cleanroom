@@ -3,7 +3,7 @@
  * 归因与目标连续天数；数据经 domain/analytics 纯函数聚合（memo 化），
  * SQLite 全量口径（FromAgg 系列）突破内存截断。
  */
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CalendarDays,
@@ -33,33 +33,32 @@ import {
   monthlyInterruptionBreakdown,
   monthFocusCount,
   monthFocusMinutes,
-  isSameDay,
   splitSessionsByDay,
   taskFocusBreakdown,
   todayGiveUpCount,
   todayInterruptions,
+  virtualDayKey,
   weekStats,
   weekStatsFromAgg,
   yearGrid,
   yearGridFromAgg,
   type DayHourGrid,
-  type FocusAggregate,
   type HeatCell,
   type HourlyFocusBucket,
   type YearWeekGrid
 } from "../../domain/analytics";
-import { isTauri } from "../../lib/tauri";
-import { sqliteRepo } from "../../lib/persistence/sqlite";
+import { useFocusAggregate, useFocusHourly, useMonthInterruptions, useTaskBreakdown } from "../../lib/focus-aggregate";
 import { useCountUp } from "../../lib/anim";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useAppStore } from "../../store/app-store";
 import { useSettingsStore } from "../../store/settings-store";
 import { useWidgetConfig } from "../../widget/widget-config";
 import { useAppLocale, useT } from "../../i18n-lite";
-import { dayKeyOf, dayKeyToDate, useNow } from "../../lib/use-now";
+import { dayKeyOf, useNow } from "../../lib/use-now";
 
 const HEAT_COLORS = ["var(--track)", "var(--accent-2)", "var(--accent)", "var(--ink)"];
 
-/** E4（i18n）：星期标签按应用内语言经 Intl 生成（周日开头，与月历网格一致）。 */
+/** （i18n）：星期标签按应用内语言经 Intl 生成（周日开头，与月历网格一致）。 */
 function buildWeekdayLabels(locale: string): string[] {
   const fmt = new Intl.DateTimeFormat(locale, { weekday: "narrow" });
   // 2023-10-01 是周日：以它为锚生成 周日..周六 七个标签。
@@ -396,7 +395,7 @@ function SectionHead({ icon, title, extra }: { icon: React.ReactNode; title: str
   );
 }
 
-/** 指标瓦片：图标章 + 标签 + 大数字（可滚动）+ 单位/副行。C3：memo 隔离。 */
+/** 指标瓦片：图标章 + 标签 + 大数字（可滚动）+ 单位/副行。：memo 隔离。 */
 const MetricTile = memo(function MetricTile({
   icon,
   label,
@@ -448,7 +447,7 @@ function HeatTooltip({ tip }: { tip: HeatTip | null }) {
 }
 
 /** A single heatmap cell with a hover tooltip showing the day's focus time.
- *  C3：memo 化——此前面板任何状态变化都会让月/年热力图数百个格子全量重渲。
+ *  memo 化——此前面板任何状态变化都会让月/年热力图数百个格子全量重渲。
  *  键盘可达：Tab 聚焦同样出 tooltip（aria-label 带数值）；
  *  rect 在 mouseenter/focus 时测一次并缓存，mousemove 不再逐帧 getBoundingClientRect。 */
 const HeatCellView = memo(function HeatCellView({
@@ -466,7 +465,11 @@ const HeatCellView = memo(function HeatCellView({
   };
   const emit = () => {
     const r = rectRef.current;
-    if (r) onTip({ x: r.left + r.width / 2, y: r.top, date: cell.date, minutes: cell.focusMinutes });
+    // gBCR 视觉坐标 → 布局单位：÷uiZoom（.heat-tooltip 为 fixed 定位）。
+    if (r) {
+      const z = uiZoom();
+      onTip({ x: (r.left + r.width / 2) / z, y: r.top / z, date: cell.date, minutes: cell.focusMinutes });
+    }
   };
   const leave = () => {
     rectRef.current = null;
@@ -506,7 +509,7 @@ const MonthHeatmap = memo(function MonthHeatmap({
   weekdayLabels: string[];
 }) {
   const [tip, setTip] = useState<HeatTip | null>(null);
-  /* C3：网格布局只在输入变化时重算（此前 tip 每动一格整图重算）。 */
+  /* 网格布局只在输入变化时重算（此前 tip 每动一格整图重算）。 */
   const grid = useMemo(() => monthCalendarGrid(year, month, cells), [year, month, cells]);
   return (
     <div className="month-heatmap">
@@ -546,9 +549,14 @@ const YearHeatmap = memo(function YearHeatmap({
   const tr = useT();
   const [tip, setTip] = useState<HeatTip | null>(null);
   const { weeks, monthLabels, totalWeeks } = grid;
+  const currentYear = new Date().getFullYear();
   return (
     <div className="year-heatmap">
-      <div className="year-heatmap-scroll">
+      <div
+        className="year-heatmap-scroll"
+        /* 横向滚动时格子在视口下移动，tooltip 停在原地会指错格——滚动即收起。 */
+        onScroll={() => setTip(null)}
+      >
         <div className="year-heatmap-inner">
           <div className="year-month-labels" style={{ width: totalWeeks * 14 - 3 }}>
             {monthLabels.map((ml) => (
@@ -582,13 +590,20 @@ const YearHeatmap = memo(function YearHeatmap({
         </div>
       </div>
       <div className="year-heatmap-side">
-        <button className="year-nav" onClick={() => onYearChange(year - 1)} aria-label={tr("上一年")}>
+        {/* 补 type="button"（「今年」有；与全仓按钮规范一致）。 */}
+        <button type="button" className="year-nav" onClick={() => onYearChange(year - 1)} aria-label={tr("上一年")}>
           <ChevronLeft size={14} />
         </button>
         <span className="year-value">{year}</span>
-        <button className="year-nav" onClick={() => onYearChange(year + 1)} aria-label={tr("下一年")}>
+        <button type="button" className="year-nav" onClick={() => onYearChange(year + 1)} aria-label={tr("下一年")}>
           <ChevronRight size={14} />
         </button>
+        {/* 翻回多年前后一键回今年，不必连点 N 次导航。 */}
+        {year !== currentYear && (
+          <button type="button" className="year-nav year-today" onClick={() => onYearChange(currentYear)}>
+            {tr("今年")}
+          </button>
+        )}
       </div>
       <HeatTooltip tip={tip} />
     </div>
@@ -624,7 +639,7 @@ const DailyBars = memo(function DailyBars({ data }: { data: ReturnType<typeof da
   );
 });
 
-/** FocusTimer 借鉴（#13 时段分布图）：近 N 天 × 24 小时气泡矩阵（参考其
+/** （#13 时段分布图）：近 N 天 × 24 小时气泡矩阵（参考其
  *  月页 BubbleChart：半径 ∝ sqrt(值/最大值) 分 4 级量化、空值画 10% 基圆、
  *  hover 提亮）。行 = 天（今日行高亮），列 = 小时（0/6/12/18 刻度），
  *  一眼看出黄金专注时段与「下午三点必崩」。格尺寸由 CSS --hb-cell 控制。 */
@@ -647,7 +662,9 @@ const HourlyBubbles = memo(function HourlyBubbles({ grid }: { grid: DayHourGrid 
   const max = Math.max(1, ...grid.cells.flat());
   const ticks = grid.cells[0].map((_, h) => (h % 6 === 0 ? `${String(h).padStart(2, "0")}` : ""));
   return (
-    <div className="hourly-bubbles" role="img" aria-label={tr("近 {n} 天的小时分布", { n: grid.dayKeys.length })}>
+    /* 容器 role="img" 要求子树按整图呈现，与内部可聚焦格子（tabIndex）
+       语义冲突——改 group 保留标签。 */
+    <div className="hourly-bubbles" role="group" aria-label={tr("近 {n} 天的小时分布", { n: grid.dayKeys.length })}>
       <div className="hb-row hb-head" aria-hidden="true">
         <span className="hb-day" />
         {ticks.map((label, h) => (
@@ -671,7 +688,13 @@ const HourlyBubbles = memo(function HourlyBubbles({ grid }: { grid: DayHourGrid 
                 tabIndex={minutes > 0 ? 0 : -1}
                 aria-label={minutes > 0 ? tip : undefined}
               >
-                <i className={`hb-bubble${minutes <= 0 ? " empty" : ""}`} style={{ width: d, height: d }} />
+                <i
+                  className={`hb-bubble${minutes <= 0 ? " empty" : ""}`}
+                  /* （最小尺寸）：只定宽 + aspect-ratio:1，CSS 侧 max-width:100%
+                     把直径钳到列宽内——240px 最小 widget 宽下列宽 ~6px，此前
+                     14px 气泡会叠到邻列。 */
+                  style={{ width: d }}
+                />
               </span>
             );
           })}
@@ -723,7 +746,7 @@ const HourlyBars = memo(function HourlyBars({ data }: { data: HourlyFocusBucket[
   );
 });
 
-/* C3：饼图 + 图例联动抽成自包含区块——distHover 状态下沉到这里，
+/* 饼图 + 图例联动抽成自包含区块——distHover 状态下沉到这里，
    hover 图例/扇区不再重渲整个面板（热力图/stat 卡/趋势图全部隔离）。 */
 function DistSection({
   distribution,
@@ -735,7 +758,9 @@ function DistSection({
   const tr = useT();
   const [distHover, setDistHover] = useState<number | null>(null);
   const total = distribution.reduce((acc, d) => acc + d.minutes, 0);
-  if (distribution.length === 0) {
+  // 分布非空但全部条目取整后为 0（全是 <30s 的完成段）时，占比是
+  // NaN%、饼图 total=0 只剩图例——按空态呈现。
+  if (distribution.length === 0 || total <= 0) {
     return <EmptyState text={tr("暂无数据")} hint={tr("完成一次专注后自动生成。")} />;
   }
   return (
@@ -749,6 +774,10 @@ function DistSection({
             key={d.key}
             onMouseEnter={() => setDistHover(i)}
             onMouseLeave={() => setDistHover(null)}
+            /* 图例键盘可达——焦点复用 hover 联动（扇区纯鼠标的补齐）。 */
+            tabIndex={0}
+            onFocus={() => setDistHover(i)}
+            onBlur={() => setDistHover(null)}
           >
             <span className="dist-color" style={{ background: sliceColor(i) }} />
             <span className="dist-name" title={d.label}>
@@ -763,16 +792,25 @@ function DistSection({
   );
 }
 
-/** W-051 任务用时归集：饼图 + 图例已完整呈现各事件时长，排行条区块移除以精简版面。 */
+/** 任务用时归集：饼图 + 图例已完整呈现各事件时长，排行条区块移除以精简版面。 */
 
 export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
   const tr = useT();
   const nowTick = useNow();
-  /* C2（E-dayKey）：六个重型 useMemo 此前依赖每 30s 翻新的 nowTick——
+  // 虚拟午夜口径（0/2/4）——SQL 聚合与内存切分共用此值。
+  const vmHour = useSettingsStore((s) => s.extra.virtualMidnightHour ?? 0);
+  /* （E-dayKey）：六个重型 useMemo 此前依赖每 30s 翻新的 nowTick——
      数据没变也会整面板重算全年热力图。这些统计全部只关心「日期边界」，
-     统一归约成天粒度依赖；跨零点由 todayKey 变化触发，语义不变。 */
-  const todayKey = dayKeyOf(nowTick);
-  const today = useMemo(() => dayKeyToDate(todayKey) ?? new Date(), [todayKey]);
+     统一归约成天粒度依赖；跨零点由 todayKey 变化触发，语义不变。
+     依赖用**虚拟日键**（自然日键在 00:00 翻转而
+     虚拟日在 02:00/04:00 翻转）；today 用真实墙钟——此前拿零点当 now，
+     vmHour>0 时零点属于昨天的虚拟日，isSameVirtualDay 把「今日」统计整体
+     错位成昨天。 */
+  const todayKey = vmHour > 0 ? virtualDayKey(nowTick, vmHour) : dayKeyOf(nowTick);
+  // today 按虚拟日键翻新（依赖数组故意只含 todayKey——new Date() 不引用它，
+  // 但跨虚拟午夜必须换一个新 Date 触发下游重算）。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const today = useMemo(() => new Date(), [todayKey]);
   const locale = useAppLocale();
   const weekdayLabels = useMemo(() => buildWeekdayLabels(locale), [locale]);
   const sessions = useAppStore((s) => s.sessions);
@@ -785,9 +823,11 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
   const trendDays = (config.days as number) || 7;
   const showMonthHeatmap = config.showMonthHeatmap !== false;
   const analyticsStartDate = useSettingsStore((s) => s.extra.analyticsStartDate);
-  // FocusTimer 借鉴：虚拟午夜口径（0/2/4）——SQL 聚合与内存切分共用此值。
-  const vmHour = useSettingsStore((s) => s.extra.virtualMidnightHour ?? 0);
   const [heatTab, setHeatTab] = useState<"month" | "year">("month");
+  /* heat tab/pane 的 id 加实例后缀——展开遮罩打开时卡片与展开页两个
+     AnalyticsPanel 并存，固定 id 会在文档中重复，aria-controls 按文档序解析
+     到第一个实例，展开页的 tab 关联错位。 */
+  const heatUid = useId();
   /* 月/年切换：先 120ms 淡出旧视图再换挂载（新视图以 an-rise-in 入场），
      避免此前瞬切生硬。卸载/重选时清理定时器。 */
   const [heatShown, setHeatShown] = useState<"month" | "year">("month");
@@ -805,81 +845,61 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
     }, 120);
   };
   const [heatYear, setHeatYear] = useState(() => new Date().getFullYear());
-  const native = isTauri();
-  // A-4：SQLite 全量按日聚合，累计/年度/连胜等长周期统计据此计算，突破内存
+  // SQLite 全量按日聚合，累计/年度/连胜等长周期统计据此计算，突破内存
   // SESSIONS_CAP=500 的截断。加载失败（浏览器模式/首次未就绪）回退内存口径。
-  const [focusAgg, setFocusAgg] = useState<FocusAggregate | null>(null);
-  // 聚合刷新信号：内存 sessions 尾部新增一条（完成专注/中断补录）时重新读库。
-  // 此前只在挂载时读一次，「今日次数」随内存实时 +1 而「累计/本周/热力图」
-  // 停在旧快照，两个口径在组件存活期内分叉。用尾条 id 而非 length 做键：
-  // SESSIONS_CAP 截断后 length 恒为 500，内容变化不再可见。
-  const lastSessionId = sessions.length > 0 ? sessions[sessions.length - 1].id : "";
-  useEffect(() => {
-    if (!native) return;
-    let cancelled = false;
-    sqliteRepo
-      .aggregateSessions(vmHour)
-      .then((agg) => {
-        if (!cancelled) setFocusAgg(agg);
-      })
-      .catch(() => {
-        // 聚合加载失败回退内存口径（SESSIONS_CAP 截断），不让统计面板报错。
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [native, lastSessionId, vmHour]);
-  // FocusTimer 借鉴（#13）：24 小时分布。SQL 全量口径优先，失败回退内存。
-  // SQL 口径按墙钟小时分桶、与虚拟午夜无关，故不依赖 vmHour。
-  const [hourly, setHourly] = useState<HourlyFocusBucket[] | null>(null);
-  useEffect(() => {
-    if (!native) return;
-    let cancelled = false;
-    sqliteRepo
-      .hourlyFocusDistribution()
-      .then((rows) => {
-        if (!cancelled)
-          setHourly(rows.map((r) => ({ hour: r.hour, focusSeconds: r.focus_seconds, focusCount: r.focus_count })));
-      })
-      .catch(() => {
-        // 回退内存口径
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [native, lastSessionId]);
+  // （竞态+去重）：改用共享钩子——写落地信号（dbVersion）补读、双面板
+  // 只发一次 IPC、失败回退新鲜内存而非旧 SQL 快照。：面板内不再直接
+  // 判 isTauri（native）——三条 SQL 查询与聚合一并下沉到共享钩子内判定。
+  const focusAgg = useFocusAggregate(vmHour);
+  /* 时段分布/任务归集/月度打断同样走共享钩子——展开遮罩打开时卡片
+     与展开页两个实例并存，此前三条 effect 各自重复发 IPC（key={openEpoch}
+     重挂载再触发一轮）。刷新/缓存/失败回退语义与聚合钩子一致（详见
+     lib/focus-aggregate.ts）。 */
+  const hourly = useFocusHourly();
+  const taskAgg = useTaskBreakdown();
+  const monthInterruptAgg = useMonthInterruptions(vmHour, today.getFullYear(), today.getMonth());
   // 内存口径统一先按虚拟午夜切分（#12），与 SQL 聚合的归日结果一致；无跨日
   // 段时 splitSessionsByDay 快路径原样返回。
   const memSessions = useMemo(() => splitSessionsByDay(sessions, vmHour), [sessions, vmHour]);
   const hourlyData = useMemo(() => hourly ?? hourlyFocusDistribution(memSessions), [hourly, memSessions]);
-  // FocusTimer 月页同款气泡矩阵的数据：近 trendDays 天 × 24 小时。
-  const dayGrid = useMemo(() => dayHourGrid(memSessions, today, trendDays, tr), [memSessions, today, trendDays, tr]);
+  // 月页同款气泡矩阵的数据：近 trendDays 虚拟日 × 24 小时。
+  const dayGrid = useMemo(
+    () => dayHourGrid(memSessions, today, trendDays, tr, vmHour),
+    [memSessions, today, trendDays, tr, vmHour]
+  );
   const stats = useMemo(() => {
     const now = today;
     const cum = focusAgg
       ? cumulativeStatsFromAgg(focusAgg, now, analyticsStartDate)
-      : cumulativeStats(memSessions, now, analyticsStartDate);
-    const todayMinutes = memSessions
-      .filter(
-        (s) => s.type === "focus" && !Number.isNaN(new Date(s.endedAt).getTime()) && isSameDay(new Date(s.endedAt), now)
-      )
-      .reduce((acc, s) => acc + Math.round(s.plannedSeconds / 60), 0);
+      : cumulativeStats(memSessions, now, analyticsStartDate, vmHour);
+    // 今日分钟 = 实际净专注时长（含未完成段），与 SQL 聚合、
+    // 番茄钟面板同口径；轮数保持 仅完成口径。今日归日按起始时刻的
+    // 虚拟日（与 Rust 聚合一致）。
+    const todayKey = virtualDayKey(now, vmHour);
+    let todaySeconds = 0;
+    for (const s of memSessions) {
+      if (s.type !== "focus") continue;
+      const started = new Date(s.startedAt);
+      if (Number.isNaN(started.getTime())) continue;
+      if (virtualDayKey(started, vmHour) === todayKey) todaySeconds += s.plannedSeconds;
+    }
+    const todayMinutes = Math.round(todaySeconds / 60);
     const month = focusAgg
       ? monthTotalFromAgg(focusAgg, now)
-      : { minutes: monthFocusMinutes(memSessions, now), count: monthFocusCount(memSessions, now) };
+      : { minutes: monthFocusMinutes(memSessions, now, vmHour), count: monthFocusCount(memSessions, now, vmHour) };
     const goalValue = dailyGoalMode === "minutes" ? dailyGoalMinutes : dailyGoalSessions;
     return {
       cum,
-      todayCount: countFocusToday(memSessions, now),
+      todayCount: countFocusToday(memSessions, now, vmHour),
       todayMinutes,
-      todayGiveUp: todayGiveUpCount(memSessions, now),
-      todayInterrupt: todayInterruptions(interruptions, now),
+      todayGiveUp: todayGiveUpCount(memSessions, now, vmHour),
+      todayInterrupt: todayInterruptions(interruptions, now, vmHour),
       monthMinutes: month.minutes,
       monthCount: month.count,
-      week: focusAgg ? weekStatsFromAgg(focusAgg, now) : weekStats(memSessions, now),
+      week: focusAgg ? weekStatsFromAgg(focusAgg, now) : weekStats(memSessions, now, vmHour),
       streak: focusAgg
         ? goalStreakDaysFromAgg(focusAgg, goalValue, now, dailyGoalMode)
-        : goalStreakDays(memSessions, goalValue, now, dailyGoalMode)
+        : goalStreakDays(memSessions, goalValue, now, dailyGoalMode, vmHour)
     };
   }, [
     memSessions,
@@ -889,40 +909,78 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
     dailyGoalMinutes,
     dailyGoalMode,
     today,
-    focusAgg
+    focusAgg,
+    vmHour
   ]);
 
-  /* C4（性能）：taskFocusBreakdown 只算一遍供饼图消费；回调里对每个 session
-     做 tasks.find 是 O(sessions×tasks)，改为 Map 化标题查询。 */
+  /* （性能）：标题 Map 化（O(1) 查询），SQL 与内存两条路径共用。 */
   const titleById = useMemo(() => new Map(tasks.map((t) => [t.id, t.title])), [tasks]);
-  const breakdown = useMemo(() => taskFocusBreakdown(memSessions, (id) => titleById.get(id)), [memSessions, titleById]);
 
   /* 时长分布：按专注事件（待办/自定义事件）聚合，每个事件一个扇区；
-     未归属任何事件的完成专注归入「未关联」，保证饼图覆盖全部时长。 */
+     未归属任何事件的完成专注归入「未关联」（SQL 路径的 NULL 组原生覆盖，
+     内存路径按秒累计、出口一次取整——与全局面值规则一致）。
+     （图例收敛）：扇区超过 9 个时保留前 8，其余合并为「其余 N 项」，
+     图例不再随事件数无限增长。 */
   const distribution = useMemo(() => {
-    const parts = breakdown.map((r) => ({ key: r.key, label: r.label, minutes: r.focusMinutes }));
-    let unlinked = 0;
-    for (const s of memSessions) {
-      if (s.type !== "focus" || !s.completed) continue;
-      if (!s.taskId && !s.eventLabel) unlinked += Math.round(s.plannedSeconds / 60);
-    }
-    if (unlinked > 0) parts.push({ key: "__unlinked", label: tr("未关联"), minutes: unlinked });
+    const parts: { key: string; label: string; minutes: number }[] = taskAgg
+      ? taskAgg.map((r) => ({
+          key: r.taskId ?? (r.eventLabel ? `label:${r.eventLabel}` : "__unlinked"),
+          label: r.taskId ? (titleById.get(r.taskId) ?? r.eventLabel ?? r.taskId) : (r.eventLabel ?? tr("未关联")),
+          minutes: Math.round(r.focusSeconds / 60)
+        }))
+      : (() => {
+          const mem = taskFocusBreakdown(memSessions, (id) => titleById.get(id)).map((r) => ({
+            key: r.key,
+            label: r.label,
+            minutes: r.focusMinutes
+          }));
+          let unlinkedSec = 0;
+          for (const s of memSessions) {
+            if (s.type !== "focus" || !s.completed) continue;
+            if (!s.taskId && !s.eventLabel) unlinkedSec += s.plannedSeconds;
+          }
+          if (unlinkedSec > 0)
+            mem.push({ key: "__unlinked", label: tr("未关联"), minutes: Math.round(unlinkedSec / 60) });
+          return mem;
+        })();
     parts.sort((a, b) => b.minutes - a.minutes);
+    if (parts.length > 9) {
+      const rest = parts.splice(8);
+      parts.push({
+        key: "__rest",
+        label: tr("其余 {n} 项", { n: rest.length }),
+        minutes: rest.reduce((acc, p) => acc + p.minutes, 0)
+      });
+    }
     return parts;
-  }, [breakdown, memSessions, tr]);
+  }, [taskAgg, memSessions, titleById, tr]);
   const heat = useMemo(
-    () => (focusAgg ? monthlyHeatmapFromAgg(focusAgg, today) : monthlyHeatmap(memSessions, today)),
-    [focusAgg, memSessions, today]
+    () => (focusAgg ? monthlyHeatmapFromAgg(focusAgg, today, vmHour) : monthlyHeatmap(memSessions, today, vmHour)),
+    [focusAgg, memSessions, today, vmHour]
   );
-  const monthInterrupt = useMemo(() => monthlyInterruptionBreakdown(interruptions, today), [interruptions, today]);
+  const monthInterrupt = useMemo(
+    () => monthInterruptAgg ?? monthlyInterruptionBreakdown(interruptions, today, vmHour),
+    [monthInterruptAgg, interruptions, today, vmHour]
+  );
+  /* （今日圈随日翻转）：now 显式传入（today 跨虚拟午夜翻新），且 today
+     进依赖——此前 buildYearGrid 内部 new Date() 让「今日圈」冻结在挂载日。 */
   const yearGridData = useMemo(
-    () => (focusAgg ? yearGridFromAgg(focusAgg, heatYear, tr) : yearGrid(memSessions, heatYear, tr)),
-    [focusAgg, memSessions, heatYear, tr]
+    () =>
+      focusAgg
+        ? yearGridFromAgg(focusAgg, heatYear, tr, today, vmHour)
+        : yearGrid(memSessions, heatYear, tr, vmHour, today),
+    [focusAgg, memSessions, heatYear, tr, vmHour, today]
   );
   // 标签（今天 / 星期）随应用语言：把 tr 传进去，语言切换后 memo 才会重算。
-  const daily = useMemo(() => dailyTrend(memSessions, today, trendDays, tr), [memSessions, trendDays, today, tr]);
+  const daily = useMemo(
+    () => dailyTrend(memSessions, today, trendDays, tr, vmHour),
+    [memSessions, trendDays, today, tr, vmHour]
+  );
   const monthLabel = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
   const dailyAvgLabel = fmtDur(stats.cum.dailyAverageMinutes, tr);
+  /* 目标未设（goal=0）时隐藏「连续达标」chip——此前渲染「0 连续达标/
+     未设目标」，与番茄钟面板同条件直接隐藏目标行的策略不一致。 */
+  const goalValue = dailyGoalMode === "minutes" ? dailyGoalMinutes : dailyGoalSessions;
 
   return (
     <Panel
@@ -956,24 +1014,22 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
               </b>
               <span>{tr("累计次数")}</span>
             </div>
-            <div className="hero-chip streak">
-              <Flame size={14} />
-              <b>
-                <AnimatedStat value={stats.streak} />
-              </b>
-              <span>
-                {tr("连续达标")}
-                <em>
-                  {dailyGoalMode === "minutes"
-                    ? dailyGoalMinutes > 0
+            {goalValue > 0 && (
+              <div className="hero-chip streak">
+                <Flame size={14} />
+                <b>
+                  <AnimatedStat value={stats.streak} />
+                </b>
+                <span>
+                  {tr("连续达标")}
+                  <em>
+                    {dailyGoalMode === "minutes"
                       ? tr("目标 {d}/天", { d: fmtDur(dailyGoalMinutes, tr) })
-                      : tr("未设目标")
-                    : dailyGoalSessions > 0
-                      ? tr("目标 {n} 轮/天", { n: dailyGoalSessions })
-                      : tr("未设目标")}
-                </em>
-              </span>
-            </div>
+                      : tr("目标 {n} 轮/天", { n: dailyGoalSessions })}
+                  </em>
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1018,7 +1074,7 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
         </div>
       </div>
 
-      {/* W-051 任务用时归集：由「专注时长分布」饼图 + 图例承担，不再单独排行 */}
+      {/* 任务用时归集：由「专注时长分布」饼图 + 图例承担，不再单独排行 */}
 
       <div className="analytics-group">
         <SectionHead
@@ -1035,9 +1091,23 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
             icon={<Flame size={13} />}
             title={tr("专注时段分布")}
             extra={
-              <div className="heat-tabs" role="group" aria-label={tr("专注时段分布")}>
+              <div
+                className="heat-tabs"
+                role="tablist"
+                aria-label={tr("专注时段分布")}
+                /* 左右方向键切换 tab（APG tabs 键盘模式）。 */
+                onKeyDown={(e) => {
+                  if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+                  e.preventDefault();
+                  pickHeatTab(heatTab === "month" ? "year" : "month");
+                }}
+              >
                 <button
                   type="button"
+                  role="tab"
+                  id={`${heatUid}-heat-tab-month`}
+                  aria-controls={`${heatUid}-heat-pane`}
+                  aria-selected={heatTab === "month"}
                   className={`heat-tab${heatTab === "month" ? " active" : ""}`}
                   onClick={() => pickHeatTab("month")}
                 >
@@ -1045,6 +1115,10 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
                 </button>
                 <button
                   type="button"
+                  role="tab"
+                  id={`${heatUid}-heat-tab-year`}
+                  aria-controls={`${heatUid}-heat-pane`}
+                  aria-selected={heatTab === "year"}
                   className={`heat-tab${heatTab === "year" ? " active" : ""}`}
                   onClick={() => pickHeatTab("year")}
                 >
@@ -1053,7 +1127,13 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
               </div>
             }
           />
-          <div key={heatShown} className={`heat-pane${tabFading ? " heat-pane-out" : ""}`}>
+          <div
+            key={heatShown}
+            role="tabpanel"
+            id={`${heatUid}-heat-pane`}
+            aria-labelledby={`${heatUid}-heat-tab-${heatShown}`}
+            className={`heat-pane${tabFading ? " heat-pane-out" : ""}`}
+          >
             {heatShown === "month" ? (
               <>
                 <div className="heat-wrap">
@@ -1092,7 +1172,7 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
         <DailyBars data={daily} />
       </div>
 
-      {/* FocusTimer 借鉴（#13 时段分布图）：近 N 天 × 小时气泡矩阵（月页
+      {/* （#13 时段分布图）：近 N 天 × 小时气泡矩阵（月页
           BubbleChart 同款视觉）+ 下方全历史累计迷你行 */}
       <div className="analytics-group">
         <SectionHead
@@ -1133,13 +1213,13 @@ export function AnalyticsPanel({ instanceId }: { instanceId: string }) {
   );
 }
 
-/** 今日已完成专注轮数（A-36 口径：中断放弃的 completed:false 段不计，与番茄钟小组件一致）。 */
-function countFocusToday(sessions: ReturnType<typeof useAppStore.getState>["sessions"], now: Date): number {
-  return sessions.filter(
-    (s) =>
-      s.type === "focus" &&
-      s.completed &&
-      !Number.isNaN(new Date(s.endedAt).getTime()) &&
-      isSameDay(new Date(s.endedAt), now)
-  ).length;
+/** 今日已完成专注轮数（口径：中断放弃的 completed:false 段不计，与番茄钟小组件一致）。
+ *  按起始时刻的虚拟日归属（与 Rust 聚合 / 今日分钟同口径）。 */
+function countFocusToday(sessions: ReturnType<typeof useAppStore.getState>["sessions"], now: Date, vmHour = 0): number {
+  const todayKey = virtualDayKey(now, vmHour);
+  return sessions.filter((s) => {
+    if (s.type !== "focus" || !s.completed) return false;
+    const started = new Date(s.startedAt);
+    return !Number.isNaN(started.getTime()) && virtualDayKey(started, vmHour) === todayKey;
+  }).length;
 }

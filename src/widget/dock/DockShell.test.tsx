@@ -1,5 +1,5 @@
 /**
- * ISLAND-MOVE 组件测试（DockShell，F-4 / QQ 式自动隐藏 / F-9）：
+ * ISLAND-MOVE 组件测试（DockShell，/ QQ 式自动隐藏 / ）：
  *  - 拖动柄沿边拖 300px：拖动期只写 transform、不改 offset；松手 setDockPlacement
  *    一次 commit（snapOffset 口径），落盘为 left 百分比；
  *  - 不再换边：拖到屏幕底部区域也只沿顶边滑动，无幽灵预览，松手 edge 仍为 top；
@@ -32,6 +32,7 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
 import { DockShell } from "./DockShell";
 import { useWidgetExpand } from "../expand-store";
 import { DEFAULT_DOCK, useWidgetStore, type DockConfig } from "../widget-store";
+import { OSD_EVENT } from "../../lib/osd-events";
 
 /** 与 DockShell 内部常量同值（贴边留白）。 */
 const FLUSH = "8px";
@@ -289,7 +290,7 @@ describe("DockShell · 岛本体位置拖动（F-4）", () => {
     expect(dock.style.top).toBe("24px");
     r.unmount();
 
-    // I-07：bangs 外形贴屏（top:0 与 CSS 的 top:0 !important 一致，FLIP 基准同源）。
+    // bangs 外形贴屏（top:0 与 CSS 的 top:0 !important 一致，FLIP 基准同源）。
     seedDock({ offset: 0, snap: "start", style: "bangs" });
     r = render(<DockShell bottomInset={0} />);
     dock = getDock();
@@ -549,6 +550,53 @@ describe("DockShell · 鼠标动作（F-6 / I-03）", () => {
     await act(() => new Promise<void>((r) => setTimeout(r, 320)));
     expect(useWidgetExpand.getState().expandedId).toBeNull();
     expect(dock.classList.contains("is-peak")).toBe(true);
+  });
+
+  it("接管期间 hover=expand-first / wheel=cycle / middle=panel 让位：不从隐形磁贴层展开面板", async () => {
+    seedDock({ mouse: { ...DEFAULT_DOCK.mouse, hover: "expand-first", wheel: "cycle", middle: "panel" } }, false);
+    render(<DockShell bottomInset={0} />);
+    const dock = getDock();
+    // OSD 路径伪造一条音量接管（useDockTakeover 监听 focus-desk:osd 事件）。
+    act(() => {
+      fireEvent(window, new CustomEvent(OSD_EVENT, { detail: { kind: "volume", title: "音量", sub: "50%" } }));
+    });
+    expect(dock.classList.contains("has-takeover")).toBe(true);
+
+    // 滚轮：跨过节流窗口连滚也不展开（旧实现会从 opacity:0 的磁贴层弹出面板）。
+    fireEvent.wheel(dock, { deltaY: 120 });
+    await act(() => new Promise<void>((r) => setTimeout(r, 220)));
+    fireEvent.wheel(dock, { deltaY: 120 });
+    expect(useWidgetExpand.getState().expandedId).toBeNull();
+
+    // 中键 = panel：接管期让位。
+    auxClick(dock, 1);
+    expect(useWidgetExpand.getState().expandedId).toBeNull();
+
+    // 悬停 300ms 停留（expand-first）：接管期不展开、也不挂 peak 微涨。
+    fireEvent.pointerOver(dock);
+    await act(() => new Promise<void>((r) => setTimeout(r, 320)));
+    expect(useWidgetExpand.getState().expandedId).toBeNull();
+    expect(dock.classList.contains("is-peak")).toBe(false);
+    fireEvent.pointerOut(dock);
+  });
+
+  it("接管结束后（点击接管条消除）hover=expand-first 恢复展开——守卫只让位不吞配置语义", async () => {
+    seedDock({ mouse: { ...DEFAULT_DOCK.mouse, hover: "expand-first" } }, false);
+    render(<DockShell bottomInset={0} />);
+    const dock = getDock();
+    act(() => {
+      fireEvent(window, new CustomEvent(OSD_EVENT, { detail: { kind: "volume", title: "音量", sub: "50%" } }));
+    });
+    fireEvent.pointerOver(dock);
+    await act(() => new Promise<void>((r) => setTimeout(r, 320)));
+    expect(useWidgetExpand.getState().expandedId).toBeNull();
+    // 点击接管条 = dismiss（音量类无磁贴落点，走 onTakeoverClick 的兜底消除）。
+    fireEvent.click(screen.getByRole("button", { name: /音量/ }));
+    expect(dock.classList.contains("has-takeover")).toBe(false);
+    fireEvent.pointerOut(dock);
+    fireEvent.pointerOver(dock);
+    await act(() => new Promise<void>((r) => setTimeout(r, 320)));
+    expect(useWidgetExpand.getState().expandedId).toBe(`dock:${useWidgetStore.getState().dock.tiles[0].id}`);
   });
 });
 

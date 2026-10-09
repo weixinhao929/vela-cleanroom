@@ -7,9 +7,10 @@
  *  - 横向拖动删除：折叠组整卡可滑（删整组），展开组逐条可滑（删单条）。
  *    被拖项 1:1 跟手，同宿主内相邻项 0.3× / 隔一项 0.1× 弹性跟随，越过
  *    70px 阈值邻项脱跟；松手超阈值播 350ms 滑出后真正删除，否则弹回。
- *    拖动期间禁用过渡（跟手），松手后过渡接管（弹回 / 滑出）。中键直接删。
+ *    拖动期间禁用过渡（跟手），松手后过渡接管（弹回 / 滑出）。中键直接删；
+ *    行可聚焦，Delete/Backspace 为键盘等价路径。
  *  - 删除/清空后底部出现 6s 恢复条（undo 槽由 store 维护）；
- *  - 底部：免打扰开关 + 一键清除（两段式确认）；空状态占位。
+ *  - 底部：免打扰开关 + 全部已读（有未读时）+ 一键清除（两段式确认）；空状态占位。
  *  - 「看到即已读」：面板处于活跃态且存在未读时，停留 1.2s 后全部标已读。
  */
 import {
@@ -26,6 +27,7 @@ import {
   AppWindow,
   Bell,
   BellOff,
+  BellRing,
   Bluetooth,
   CalendarDays,
   Check,
@@ -36,6 +38,8 @@ import {
   LocateFixed,
   Repeat,
   RotateCcw,
+  Send,
+  StickyNote,
   Timer,
   Trash2,
   X,
@@ -65,7 +69,7 @@ import "../../styles/feature-notifications.css";
 export const SWIPE_THRESHOLD = 70;
 /** 方向锁定前的死区：小于此位移不区分横/纵，避免误吞垂直滚动。 */
 const LOCK_DEADZONE = 6;
-/* P1（动效速度档对齐）：退场/入场计时器此前写死标准档毫秒数（330/360/380），
+/* 退场/入场计时器此前写死标准档毫秒数（330/360/380），
    不随 设置→动效 速度档缩放——slow 档 CSS 放慢一倍后动画播到一半就被 JS
    卸载掐断。改为运行时读 animDurations()（时长单一真源），与 GroupBloom /
    ToastHost 的「派生值 + 余量」同范式。 */
@@ -78,7 +82,9 @@ const arriveMs = () => animDurations().spatialFastMs + 20;
 /** 批量退场总窗口：nc-mass-leave（--dur-fx）+ 逐组错落 40ms×4 档 + 帧余量。 */
 const massLeaveMs = () => animDurations().fxMs + 4 * 40 + 30;
 
-/** 来源 → 展示名与图标；未知来源回落原字符串 + 铃铛。 */
+/** 来源 → 展示名与图标；未知来源回落原字符串 + 铃铛。
+ *  （补漏）：note（便签提醒）/ system（系统通知镜像）/ push（外部推送）
+ *  三条链路一直在留档，此前缺元数据——分组头显示原始标识且无从翻译。 */
 const SOURCE_META: Record<string, { label: string; icon: LucideIcon }> = {
   pomodoro: { label: "番茄钟", icon: Timer },
   todo: { label: "待办与截止", icon: CheckSquare },
@@ -90,6 +96,9 @@ const SOURCE_META: Record<string, { label: string; icon: LucideIcon }> = {
   email: { label: "邮件", icon: Inbox },
   weather: { label: "天气", icon: CloudSun },
   bluetooth: { label: "蓝牙", icon: Bluetooth },
+  note: { label: "便签", icon: StickyNote },
+  system: { label: "系统通知", icon: BellRing },
+  push: { label: "外部推送", icon: Send },
   app: { label: "应用", icon: AppWindow }
 };
 
@@ -131,11 +140,25 @@ type SwipeRowProps = {
   className: string;
   /** 透传到行根的自定义属性（--sti 批量退场错落等）；位移 / 离场 transform 由行内状态独占。 */
   style?: CSSProperties;
+  /** （键盘可达）：滑删此前只有指针路径——开启后行可聚焦，Delete/Backspace 删除。 */
+  keyboard?: boolean;
+  /** 可聚焦行的无障碍名（组卡传来源名，条目传标题）。 */
+  ariaLabel?: string;
   children: ReactNode;
 };
 
 /** 一行可横滑删除的卡片：手势状态机 + 跟随位移 + 滑出退场。 */
-function SwipeRow({ host, index, onDismiss, onTap, className, style: outerStyle, children }: SwipeRowProps) {
+function SwipeRow({
+  host,
+  index,
+  onDismiss,
+  onTap,
+  className,
+  style: outerStyle,
+  keyboard = false,
+  ariaLabel,
+  children
+}: SwipeRowProps) {
   const safeTimeout = useSafeTimeout();
   const start = useRef<{ x: number; y: number; id: number; locked: "h" | "v" | null } | null>(null);
   const swallowClick = useRef(false);
@@ -147,7 +170,7 @@ function SwipeRow({ host, index, onDismiss, onTap, className, style: outerStyle,
     (dir: "left" | "right") => {
       if (leaving) return;
       setLeaving(dir);
-      // P1（reduce-motion 双标修复）：与批量退场 massLeaveCommit 同款短路——
+      // 与批量退场 massLeaveCommit 同款短路——
       // 减少动态开启时直接删除，不再让瞬移到屏外终点的行占布局一个计时窗口。
       if (prefersReducedMotion()) {
         onDismiss();
@@ -212,6 +235,16 @@ function SwipeRow({ host, index, onDismiss, onTap, className, style: outerStyle,
     onTap?.();
   };
 
+  /* 键盘等价路径——焦点在行上按 Delete/Backspace 直接走滑出删除，
+     与「中键直接删」同语义；preventDefault 挡 Backspace 的历史导航残留。 */
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!keyboard || leaving) return;
+    if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      dismiss("left");
+    }
+  };
+
   const style: CSSProperties | undefined = leaving
     ? outerStyle
     : offset !== 0
@@ -224,10 +257,13 @@ function SwipeRow({ host, index, onDismiss, onTap, className, style: outerStyle,
       className={cls}
       style={style}
       data-interactive
+      tabIndex={keyboard ? 0 : undefined}
+      aria-label={ariaLabel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={(e) => finish(e, false)}
       onPointerCancel={(e) => finish(e, true)}
+      onKeyDown={onKeyDown}
       onClick={onClick}
     >
       {children}
@@ -293,17 +329,28 @@ type GroupProps = {
 /** 展开态的组：逐条可滑；组内自有滑动宿主（跟随只在组内传播）。
  *  组内条目走增量窗口（initial 30，滚近底部扩容）：MEMORY_CAP=200 条同源
  *  通知全量挂载曾是通知中心最大的 DOM 热点（200 个 SwipeRow + 30s 全列表
- *  重渲）；滚动容器复用外层 .nc-list（经 scrollNode 传入绑定）。 */
+ *  重渲）；滚动容器复用外层 .nc-list（经 scrollNode 传入绑定）。
+ *  resetKey 绑组源——增量窗口默认「总数增大即重置回首屏」，新通知并入
+ *  展开组会把深滚动位置闪回 30 条；键控后长度变化只钳制不重置。
+ *  条目点击 = 定位来源组件（组头按钮之外的就近入口，语义与 OS 通知
+ *  点击直达一致）。 */
 function ExpandedGroupItems({
   group,
   now,
   tr,
   onDismissRecord,
   scrollNode,
-  arrivingIds
-}: Pick<GroupProps, "group" | "now" | "tr" | "onDismissRecord" | "arrivingIds"> & { scrollNode: HTMLElement | null }) {
+  arrivingIds,
+  onLocate
+}: Pick<GroupProps, "group" | "now" | "tr" | "onDismissRecord" | "arrivingIds" | "onLocate"> & {
+  scrollNode: HTMLElement | null;
+}) {
   const host = useSwipeHost();
-  const { items, scrollRef, remaining, loadMore } = useIncrementalList(group.records, { initial: 30, step: 30 });
+  const { items, scrollRef, remaining, loadMore } = useIncrementalList(group.records, {
+    initial: 30,
+    step: 30,
+    resetKey: group.source
+  });
   useEffect(() => {
     scrollRef(scrollNode);
     return () => scrollRef(null);
@@ -317,6 +364,9 @@ function ExpandedGroupItems({
           index={i}
           className={`nc-row${arrivingIds.has(r.id) ? " is-arriving" : ""}`}
           onDismiss={() => onDismissRecord(r.id)}
+          onTap={onLocate}
+          keyboard
+          ariaLabel={r.title}
         >
           <NotificationItemView record={r} now={now} tr={tr} expanded />
         </SwipeRow>
@@ -411,6 +461,7 @@ function NotificationGroupCard({
           onDismissRecord={onDismissRecord}
           scrollNode={scrollNode}
           arrivingIds={arrivingIds}
+          onLocate={onLocate}
         />
       </div>
     );
@@ -429,6 +480,8 @@ function NotificationGroupCard({
         )
       }
       onTap={onToggle}
+      keyboard
+      ariaLabel={tr(meta.label)}
     >
       {header}
       <div className="nc-group-items">
@@ -513,7 +566,8 @@ export function NotificationCenterList({ active = true, compact = false }: Notif
   }, [records, safeTimeout]);
 
   /* 组级增量窗口：源数量本身不大，但每组展开最多 200 条（MEMORY_CAP），
-     外层窗口与组内窗口共用 .nc-list 滚动容器（scrollNode 下传）。 */
+     外层窗口与组内窗口共用 .nc-list 滚动容器（scrollNode 下传）。
+     同款键控——新来源组到达（总数增大）不再把窗口闪回 20 组。 */
   const {
     items: visibleGroups,
     scrollRef,
@@ -521,7 +575,8 @@ export function NotificationCenterList({ active = true, compact = false }: Notif
     loadMore: loadMoreGroups
   } = useIncrementalList(groups, {
     initial: 20,
-    step: 20
+    step: 20,
+    resetKey: "sources"
   });
   const [scrollNode, setScrollNode] = useState<HTMLElement | null>(null);
   const listRef = useCallback(
@@ -622,7 +677,7 @@ export function NotificationCenterList({ active = true, compact = false }: Notif
 
       {undo && (
         <div className="nc-undo" key={undo.at} data-interactive>
-          <span className="nc-undo-text">{tr("已删除 {n} 条通知").replace("{n}", String(undo.records.length))}</span>
+          <span className="nc-undo-text">{tr("已删除 {n} 条通知", { n: undo.records.length })}</span>
           <button
             className="nc-undo-btn"
             onClick={() => useNotificationStore.getState().restoreDeleted()}
@@ -658,6 +713,20 @@ export function NotificationCenterList({ active = true, compact = false }: Notif
             <span className="nc-dnd-thumb" />
           </span>
         </button>
+        {/* （手动已读）：dock 面板有「驻留 1.2s 自动已读」，画布常驻卡
+            active=false 永不自动翻——此前未读角标只能靠逐条删除消掉。 */}
+        {unread > 0 && (
+          <button
+            className="nc-read"
+            onClick={() => useNotificationStore.getState().markAllRead()}
+            title={tr("全部已读")}
+            aria-label={tr("全部已读")}
+            data-interactive
+          >
+            <Check size={13} />
+            <span>{tr("全部已读")}</span>
+          </button>
+        )}
         <button
           className={`nc-clear${confirmClear ? " is-confirming" : ""}`}
           onClick={onClear}

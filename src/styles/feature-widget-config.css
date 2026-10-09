@@ -1,4 +1,4 @@
-/* === B1 就地配置弹层（WidgetConfigPopover） =========================
+/* === 就地配置弹层（WidgetConfigPopover） =========================
    独立样式文件：桌面层不加载 settings.css，弹层复用设置窗的控件组件
    （Toggle/Segmented/Slider/Stepper，类名 tm-*），其样式在此按
    .wcfg-popover 作用域补一套紧凑玻璃版本；视觉语言对齐悬浮工具条
@@ -19,7 +19,7 @@
     inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 7%, transparent),
     inset 0 0 0 0.5px color-mix(in srgb, var(--ink) 3%, transparent);
   color: var(--ink);
-  z-index: var(--z-config-pop); /* 高于右键菜单（--z-ctx 10100）：弹层打开时菜单已被外点关闭 */
+  z-index: var(--z-config-pop); /* 低于右键菜单（--z-ctx）：菜单是瞬态浮层，须浮于一切常驻弹层之上 */
   animation: wcfg-in var(--dur-fx, 0.2s) var(--ease-out, ease-out) both;
   outline: none;
 }
@@ -410,7 +410,7 @@
 /* 减动效无需本文件处理：全局 [data-reduce-motion="1"] 门控已把 animation
    时长压到 0.001s（见 feature-animations.css）。 */
 
-/* === 样式预设行（DeskOrder 借鉴 #4） === */
+/* === 样式预设行 === */
 .wcfg-preset-controls {
   display: flex;
   align-items: center;
@@ -433,4 +433,141 @@
 .wcfg-preset-select:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--ink) 25%, var(--line));
+}
+
+/* === 编组配置面板（GroupConfigPanel）：成员下一级列表 ===
+   壳复用 .wcfg-popover（玻璃弹层 + 单例互斥 + 打开期间视口可交互）。 */
+.group-cfg-members {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+.group-cfg-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-8);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    background-color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.group-cfg-member-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* 下级展开钮与成员设置区（组 × 成员两级配置）。 */
+.group-cfg-member-expander {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--rad-7);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  flex: none;
+  transition:
+    background-color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease),
+    color var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
+}
+.group-cfg-member-expander:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+.group-cfg-member.expanded {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+.group-cfg-member-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: var(--rad-8);
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+}
+.group-cfg-member-more {
+  align-self: flex-end;
+}
+.group-cfg-member:hover {
+  background: var(--surface-soft);
+}
+.group-cfg-member.active {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+}
+.group-cfg-member-ico {
+  display: inline-flex;
+  color: var(--muted-2, #666);
+  /* active 成员图标变 accent 走过渡（同 group-bloom-icon）。 */
+  transition: color var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.group-cfg-member.active .group-cfg-member-ico {
+  color: var(--accent, #4f7cff);
+}
+.group-cfg-member-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-12);
+  color: var(--ink);
+}
+.group-cfg-member-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-ink, var(--ink));
+  font-size: var(--fs-10);
+  font-weight: 600;
+}
+.group-cfg-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+}
+/* 「更多设置」居左、解散/删除靠右（三键不再挤在右侧）。 */
+.group-cfg-more {
+  margin-right: auto;
+}
+.group-cfg-danger {
+  color: var(--danger);
+}
+
+/* 成员重排边界禁用态（上移/下移到头）。 */
+.wcfg-zone-remove:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+  color: var(--muted);
+}
+/* 「添加成员」chips 行（桌面窗无设置窗的 tm-* 样式可借，复用 mini-btn）。 */
+.group-cfg-add-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+.group-cfg-add-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-cfg-add-empty {
+  font-size: var(--fs-11);
+  color: var(--muted);
 }

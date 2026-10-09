@@ -14,6 +14,7 @@ import {
   isLinkFileEntry,
   loadShortcutFolders,
   markEntriesMissing,
+  mergeWatchRows,
   pageCountOf,
   pageIndexOf,
   pruneFolderChildren,
@@ -110,7 +111,7 @@ describe("folderMemberIds / pruneFolderChildren", () => {
   });
 });
 
-describe("markEntriesMissing（BentoDesk file_missing 语义）", () => {
+describe("markEntriesMissing", () => {
   it("按归一路径标记 missing；url 条目不参与；路径大小写/分隔符差异归一", () => {
     const list = [
       item({ id: "a", path: "C:/gone/a.exe", kind: "file" }),
@@ -220,6 +221,35 @@ describe("分页纯函数", () => {
     expect(clampPage(3, 2)).toBe(1);
     expect(clampPage(-1, 2)).toBe(0);
     expect(clampPage(1, 0)).toBe(0);
+  });
+});
+
+describe("mergeWatchRows（watch 提交前行级合并）", () => {
+  const cur = [item({ id: "a", path: "C:/old/a.exe" }), item({ id: "b", path: "C:/ok/b.exe" })];
+  // watch 处理的产物：a 行改名后重建对象，b 行未命中沿用引用。
+  const next = [item({ id: "a", path: "C:/new/a.exe" }), cur[1]];
+
+  it("并发写窗口内：改过的行替换、并发新增的行保留", () => {
+    const concurrent = [...cur, item({ id: "c", path: "C:/drop/c.exe" })];
+    const merged = mergeWatchRows(concurrent, next);
+    expect(merged).not.toBeNull();
+    expect(merged!.map((s) => s.id)).toEqual(["a", "b", "c"]);
+    expect(merged![0].path).toBe("C:/new/a.exe");
+    expect(merged![1]).toBe(concurrent[1]);
+    expect(merged![2]).toBe(concurrent[2]);
+  });
+
+  it("next 多出的行追加（保险路径）", () => {
+    const merged = mergeWatchRows([cur[1]], next);
+    expect(merged!.map((s) => s.id)).toEqual(["b", "a"]);
+  });
+
+  it("无实际差异返回 null（零空写）——引用比较，非对象字符串化", () => {
+    // 回归锚点：此前的 join("|") 实现里下面这个场景会因两边都串成
+    // "[object Object]" 而恒判相等（丢写）；无差异时则恒判相等（碰巧对）。
+    expect(mergeWatchRows(cur, next)).not.toBeNull();
+    expect(mergeWatchRows(cur, [cur[0], cur[1]])).toBeNull();
+    expect(mergeWatchRows([], [])).toBeNull();
   });
 });
 

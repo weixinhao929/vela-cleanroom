@@ -9,8 +9,7 @@
 
 import { invoke, isTauri } from "./tauri";
 import { isPersistSuspended } from "./persist-gate";
-import { pushAppToast } from "../components/ToastHost";
-import { t } from "../i18n-lite";
+import { createQuotaToastOnce, QUOTA_TOAST_TEXT } from "./quota-toast";
 
 /** 不参与备份的瞬态键（导航标记、迁移标记、备份标志本身、崩溃日志）。
     另含浏览器时代的 legacy 快照 `state.v1` / `log.v1`：Tauri 模式下它们只是
@@ -83,10 +82,10 @@ export async function syncLocalStorageMirror(): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ *
- * 防抖合批（P5）
+ * 防抖合批
  *
  * 镜像同步是「整表替换」：连续触发 N 次的结果与只在最后触发 1 次完全
- * 等价，中间那 N-1 次纯属浪费（每次都要遍历 localStorage、序列化、跨
+ * 等价，中间那 次纯属浪费（每次都要遍历 localStorage、序列化、跨
  * IPC 传输、SQLite 事务重写整表）。批量场景（导入书签、连续编辑便签、
  * 托盘快捷操作）会在极短时间内密集触发，因此这里做尾部防抖合批。
  *
@@ -169,7 +168,8 @@ export async function flushMirrorSync(): Promise<void> {
   await runMirrorSync();
 }
 
-let quotaToastShown = false;
+/** 配额首报锁存（共享实现，见 lib/quota-toast；本写路径独立一个实例）。 */
+const quotaToast = createQuotaToastOnce();
 
 /**
  * 写入一个受备份保护的 localStorage 键，并请求一次防抖镜像同步。
@@ -187,23 +187,21 @@ let quotaToastShown = false;
  * ```
  */
 export function persistMirrored(key: string, value: string): boolean {
+  /* 恢复闸门下沉——备份整表替换期间（pause-ack 协议）不得写共享 LS：
+     此前只有镜像 IPC 被拦（runMirrorSync），本窗在飞的用户/远端采纳写入
+     仍会把恢复前的旧态盖回权威 LS（habits/notes/dnd 通道）。恢复以 reload
+     收尾，挂起期跳过的写由恢复后的新内存态接管，无丢失面。返回 true——
+     跳过是既定语义而非配额失败，调用方的失败回退不应触发。 */
+  if (isPersistSuspended()) return true;
   try {
     localStorage.setItem(key, value);
     // 从溢出中恢复后复位锁存：后续再次溢出要能重新弹 toast（与
     // local-storage.ts / settings-store.ts 的处理一致）。
-    quotaToastShown = false;
+    quotaToast.markOk();
   } catch (err) {
     // B-审计修复：配额溢出此前全线静默吞错——"重启即回档"无任何提示。
     // 首次失败弹 toast 上报，后续仅记日志防轰炸。
-    console.error("[local-backup] persist failed:", key, err);
-    if (!quotaToastShown) {
-      quotaToastShown = true;
-      try {
-        pushAppToast(t("本地保存失败"), t("浏览器存储空间不足或受限，最近的更改可能未保留。"), "error");
-      } catch {
-        // best-effort
-      }
-    }
+    quotaToast.fail("[local-backup] persist failed:", QUOTA_TOAST_TEXT.title(), QUOTA_TOAST_TEXT.body(), key, err);
     return false;
   }
   scheduleMirrorSync();
@@ -235,12 +233,15 @@ if (typeof window !== "undefined") {
  * @param overwrite - false（默认）只补齐本地缺失的键（不覆盖本地较新数据，
  *                    安全合并语义）；true 整体写回（显式恢复备份场景）。
  * @returns 实际写入的键数量；浏览器模式或读取失败返回 0。
- * @throws 无（IPC 失败记日志后返回 0）。
+ * @throws 仅 overwrite 模式（恢复备份收尾）下 IPC 失败向上抛（静默
+ *         返回 0 会让调用方误以为镜像已落地，reload 后出现「DB 已恢复、
+ *         LS 仍是旧态」的半恢复）。非 overwrite 保持吞错返回 0（启动补齐
+ *         语义：本地缺失键下次启动仍会补齐，无数据风险）。
  *
  * @example
- * ```ts
+ * `ts
  * const n = await applyLocalStorageMirror(false); // 启动时补齐缺失键
- * ```
+ * `
  */
 export async function applyLocalStorageMirror(overwrite = false): Promise<number> {
   if (!isTauri()) return 0;
@@ -248,9 +249,13 @@ export async function applyLocalStorageMirror(overwrite = false): Promise<number
     const entries = await invoke<MirrorEntry[]>("get_local_storage_mirror");
     if (!Array.isArray(entries)) return 0;
     let written = 0;
+    const mirrored = new Set<string>();
     for (const e of entries) {
       if (!e || typeof e.key !== "string" || typeof e.value !== "string") continue;
       if (!e.key.startsWith("focus-desk.")) continue; // 防御：只接受已知前缀
+      // 先入集合再写：单键写入失败（配额/损坏值）的键不会被下面的清理
+      // 步骤误删——它属于备份内容，只是没写成功。
+      mirrored.add(e.key);
       if (!overwrite && localStorage.getItem(e.key) !== null) continue;
       try {
         localStorage.setItem(e.key, e.value);
@@ -259,9 +264,28 @@ export async function applyLocalStorageMirror(overwrite = false): Promise<number
         // 单键失败（配额/损坏值）不阻断其余恢复
       }
     }
+    if (overwrite) {
+      // 整包替换语义收尾——备份里不存在的 focus-desk.* 键是「备份前
+      // 已删除」的数据（删掉的便签/书签），只写不清会原地复活，违背确认框
+      // 的「整包替换」承诺。严格限定镜像命名空间：TRANSIENT_KEYS（导航/迁移
+      // /备份标志/崩溃日志/legacy 快照——本机瞬态，从不进备份，删了反而破坏
+      // 回滚语义）与 `.corrupt-` 损坏存证保留；非 focus-desk.* 前缀的键（其
+      // 他应用共享的 localStorage）绝不动。倒序遍历：边删边遍历索引不漂移。
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith("focus-desk.")) continue;
+        if (mirrored.has(key) || TRANSIENT_KEYS.has(key) || key.includes(".corrupt-")) continue;
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // best-effort：单键清理失败不阻断其余
+        }
+      }
+    }
     return written;
   } catch (err) {
     console.error("[local-backup] mirror apply failed", err);
+    if (overwrite) throw err;
     return 0;
   }
 }

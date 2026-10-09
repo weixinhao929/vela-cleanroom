@@ -3,8 +3,7 @@
  * （QQ 音乐 → 网易云 → LRCLIB）+ 译文双行 + 本地缓存。
  *
  * 范围纪律变更记录：初版只接 LRCLIB（免费无密钥，「不碰网易云等灰色源」）。
- * 2026-09-26 项目所有者显式解除该边界（对标 NotchPeninsula 的多引擎管线，
- * 中文曲库覆盖率差距显著），QQ/网易云改走 system_integration.rs 的
+ * 2026-09-26 项目所有者显式解除该边界，QQ/网易云改走 system_integration.rs 的
  * fetch_lyric_page 受控代理（域名白名单 c.y.qq.com / y.qq.com /
  * music.163.com，带内网拒绝与限额读取，不构成开放代理）。浏览器开发模式
  * 仍只有 LRCLIB：无 CORS 头的引擎直连 webview 必被拦，属环境限制而非回退
@@ -15,7 +14,7 @@
  *  - 防串台：调用方（MusicImmersive）以 trackKey 为依赖 + AbortController；
  *    代理调用本身不可中断，慢返回的旧歌响应靠调用方事后判废丢弃；
  *  - 译文：QQ 的 trans / 网易云的 tlyric 与原文同时间轴，按 ±300ms 容差
- *    对齐贴到原文行（游标法 O(n)，NPS LookupTrans 同款）；`//`、`…` 这类
+ *    对齐贴到原文行；`//`、`…` 这类
  *    占位行与「翻译作品」版权声明按无译文处理；
  *  - 匹配精度：歌名 / 歌手双向包含（大小写不敏感），网易云加时长 ±4s
  *    校验过滤 Live / 伴奏版。
@@ -25,6 +24,7 @@
  */
 import { fetchJson } from "./network";
 import { invoke, isTauri } from "./tauri";
+import { createSerialChain } from "./serial-chain";
 
 /** 一行同步歌词：时间戳（秒）+ 文本（空行用 "♪" 占位由渲染层决定）+
  *  可选译文（与原文同时刻的第二行，引擎升级新增）。 */
@@ -67,7 +67,9 @@ export function parseLrc(text: string): LrcLine[] {
       continue;
     }
     for (const t of times) {
-      lines.push({ time: Math.max(0, t + offsetMs / 1000), text: body || "♪" });
+      // LRC 通行约定：[offset:+500] = 整体提前 500ms（时间戳减小）。此前
+      // 用 + 号方向反了：+500 把 10s 行推迟到 10.5s（延迟显示）。
+      lines.push({ time: Math.max(0, t - offsetMs / 1000), text: body || "♪" });
     }
   }
   /* stable sort：等时刻行保持出现顺序（多标签一行的语义）。 */
@@ -108,7 +110,7 @@ export function containsEitherWay(a: string, b: string): boolean {
   const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, "");
   const x = norm(a);
   const y = norm(b);
-  if (!x || !y) return true; // 缺侧（无歌手）不参与否决，与 NPS 口径一致。
+  if (!x || !y) return true; // 缺侧（无歌手）不参与否决，与 同类工具 口径一致。
   return x.includes(y) || y.includes(x);
 }
 
@@ -129,7 +131,7 @@ export function decodeEntities(s: string): string {
 
 /** 译文里的占位与版权声明不该被当成歌词显示：`//`、`/`、`…` 这类整行只有
  *  符号的占位，以及 QQ 音乐那句「享有本翻译作品的著作权」，统一按「这句
- *  没有译文」处理（NPS IsUsableTranslation 同款）。 */
+ *  没有译文」处理。 */
 export function isUsableTranslation(text: string): boolean {
   if (!text.trim()) return false;
   if (text.includes("翻译作品") || text.includes("本译文")) return false;
@@ -171,9 +173,18 @@ export function attachTranslations(lines: LrcLine[], table: { time: number; text
 
 export type LyricsCacheEntry = { lines: LrcLine[]; at: number; source: string };
 
-/** v2：v1 条目不含译文，升版一次性作废旧缓存（重取即带译文）。 */
+/** v2：v1 条目不含译文，升版一次性作废旧缓存（重取即带译文）。
+ * 负缓存（source "miss"，lines 为空）：全引擎无词/网络失败的短期记忆，
+ * 防止无词曲目每次开关歌词面板都重放 3~4 次网络取词链。TTL 见
+ * MISS_TTL_MS。 */
 const CACHE_KEY = "focus-desk.lyrics.cache.v2";
 const CACHE_MAX = 50;
+/** 负缓存有效时长：网络故障与「确无歌词」都不值得长期记住。 */
+const MISS_TTL_MS = 10 * 60_000;
+
+export function isLyricsCacheMiss(entry: LyricsCacheEntry): boolean {
+  return entry.source === "miss";
+}
 
 /** 缓存键：小写化去空白，容忍大小写/多空格差异。 */
 export function lyricsCacheKey(artist: string, title: string): string {
@@ -354,15 +365,11 @@ type LrcLibSearchItem = LrcLibGet & { artistName?: string; trackName?: string; d
 /* ------------------------------------------------------------------ */
 
 /** 单飞锁：同一时刻只跑一条取词链。换歌连点时后一条排队，前一条的慢响应
- *  由调用方的 AbortController 判废，不会把旧歌歌词写给新歌。 */
-let fetchChain: Promise<unknown> = Promise.resolve();
+ *  由调用方的 AbortController 判废，不会把旧歌歌词写给新歌。实现经
+ *  lib/serial-chain 的共享串行链（与 SQLite 写队列、快捷键对账链同内核）。 */
+const fetchChain = createSerialChain();
 function serialized<T>(fn: () => Promise<T>): Promise<T> {
-  const run = fetchChain.then(fn, fn);
-  fetchChain = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
+  return fetchChain.enqueue(fn);
 }
 
 function finalize(lrc: string, trans: string): LrcLine[] | null {
@@ -383,9 +390,33 @@ export async function fetchLyrics(
 ): Promise<LrcLine[] | null> {
   const key = lyricsCacheKey(artist, title);
   const cached = readCache()[key];
-  if (cached) return cached.lines;
+  if (cached) {
+    // 正缓存直接返回；负缓存（miss）在 TTL 内直接「无词」，过期重放全链。
+    if (!isLyricsCacheMiss(cached)) return cached.lines;
+    if (Date.now() - cached.at < MISS_TTL_MS) return null;
+  }
 
+  const lines = await fetchLyricsUncached(artist, title, opts);
+  if (!lines && !opts?.signal?.aborted) {
+    // 负缓存：无词/失败的记忆只留 MISS_TTL_MS（此后换网络/新上架仍会重试）。
+    // 调用方 abort（快速开关面板/切歌）导致的空结果不记账——否则正常
+    // 曲目会被 10 分钟的 miss 缓存误判为「暂无歌词」。
+    writeCache(key, { lines: [], at: Date.now(), source: "miss" });
+  }
+  return lines;
+}
+
+/** 引擎链本体（fetchLyrics 的缓存无关部分）。 */
+async function fetchLyricsUncached(
+  artist: string,
+  title: string,
+  opts?: { album?: string; durationSec?: number; signal?: AbortSignal }
+): Promise<LrcLine[] | null> {
+  const key = lyricsCacheKey(artist, title);
   return serialized(async () => {
+    // 排队轮到时调用方已 abort（换歌连点）——直接短路返回，不再跑
+    // 引擎链（省一轮网络取词，也避免把 abort 空结果当 miss 记账）。
+    if (opts?.signal?.aborted) return null;
     // 引擎 1/2 需要 Rust 代理（域名白名单 + 无 CORS 头）；浏览器模式只有 LRCLIB。
     if (isTauri()) {
       const qq = await fetchFromQq(artist, title);

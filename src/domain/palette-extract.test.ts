@@ -4,14 +4,16 @@ import {
   collectPixels,
   extractPalette,
   hslToRgb,
+  paletteToCustomColors,
   rgbToHex,
   rgbToHsl,
   scoreColor,
   shadeRamp,
+  type ExtractedPalette,
   type ImageLike
 } from "./palette-extract";
 
-/** 图片色板提取（借鉴 CSH #12）：色彩空间换算往返 / 像素采集 / 柔和区间 /
+/** 图片色板提取：色彩空间换算往返 / 像素采集 / 柔和区间 /
  *  梯度档数 / 合成图种子色命中主色块。 */
 
 function solidImage(w: number, h: number, fill: [number, number, number, number?]): ImageLike {
@@ -104,5 +106,25 @@ describe("extractPalette 端到端（合成图）", () => {
   it("全透明/全灰图返回 null", () => {
     expect(extractPalette({ data: [1, 2, 3, 0], width: 1, height: 1 })).toBeNull();
     expect(extractPalette(solidImage(10, 10, [128, 128, 128]))).toBeNull();
+  });
+});
+
+describe("paletteToCustomColors（整组套用）", () => {
+  it("梯度两端映射深浅双档：暗档最暗底/最亮文字，亮档镜像", () => {
+    const p: ExtractedPalette = {
+      seed: { hex: "#aabbcc", hsl: { h: 210, s: 20, l: 70 } },
+      shades: ["#101010", "#303030", "#505050", "#707070", "#909090", "#b0b0b0", "#e0e0e0"]
+    };
+    const c = paletteToCustomColors(p);
+    expect(c.dark).toEqual({ bg: "#101010", ink: "#e0e0e0" });
+    expect(c.light).toEqual({ bg: "#e0e0e0", ink: "#101010" });
+    // 双端亮度差 ≥ 6 档（60 L），可读性由构造成立。
+    const chan = (hex: string) => parseInt(hex.slice(1, 3), 16);
+    expect(chan(c.dark.ink) - chan(c.dark.bg)).toBeGreaterThan(96);
+  });
+  it("梯度不完整（<2 档）时双档回退基准色，不抛错", () => {
+    const c = paletteToCustomColors({ seed: { hex: "#808080", hsl: { h: 0, s: 0, l: 50 } }, shades: [] });
+    expect(c.dark).toEqual({ bg: "#808080", ink: "#808080" });
+    expect(c.light).toEqual({ bg: "#808080", ink: "#808080" });
   });
 });

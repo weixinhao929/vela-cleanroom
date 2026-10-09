@@ -10,7 +10,7 @@ import {
 } from "./anim";
 
 /**
- * A3 小增量降档：pickSpatialEase 阈值边界（19 / 20 / 21px）、负值按绝对值、
+ * 小增量降档：pickSpatialEase 阈值边界（19 / 20 / 21px）、负值按绝对值、
  * NaN / ±Infinity 回默认档；flipReorder 按每个元素的实际位移量分别选档，
  * reduce-motion 下直接 mutate 不写过渡。
  */

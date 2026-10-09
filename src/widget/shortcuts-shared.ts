@@ -6,7 +6,7 @@ export type CustomShortcut = {
   path: string;
   kind: "file" | "folder" | "url";
   /**
-   * 目标当前不存在（BentoDesk file_missing 语义）：只标记不删除——移动盘未接、
+   * 目标当前不存在：只标记不删除——移动盘未接、
    * 临时移除这类失效是可恢复的，恢复后由周期复检自动解除。标记期间禁打开。
    */
   missing?: boolean;
@@ -214,7 +214,7 @@ export function reorderChildIds(order: readonly string[], dragId: string, before
 export type SfDropTarget = { kind: "canvas"; cell: ShortcutCell } | { kind: "folder"; folderId: string };
 
 /**
- * 文件夹弹层的打开方式（BentoDesk 三显示模式）：click 单击展开（默认）；
+ * 文件夹弹层的打开方式：click 单击展开（默认）；
  * hover 悬停展开 + 离开宽限自动收回；pin 钉住（外点不关，仅 ×/Esc 收）。
  */
 export type SfOpenMode = "click" | "hover" | "pin";
@@ -236,21 +236,41 @@ export function pruneFolderChildren(folders: ShortcutFolder[], removedIds: Reado
 }
 
 /**
+ * watch 变更提交前的行级合并（纯函数）：latest 中被 watch 改过的行（next 里
+ * 同 id 的新对象引用）替换为改后行，等待期间并发新增（next 没有、latest 有）
+ * 的行原样保留，next 中多出的行追加；无任何实际差异返回 null（调用方不发
+ * 空写）。行差异用**引用**比较——next 由 watch 处理对命中行重建对象，未命中
+ * 行沿用 cur 的引用，引用比较既正确又零序列化。
+ */
+export function mergeWatchRows(latest: CustomShortcut[], next: CustomShortcut[]): CustomShortcut[] | null {
+  const byId = new Map(next.map((s) => [s.id, s]));
+  const merged = latest.map((s) => byId.get(s.id) ?? s);
+  const latestIds = new Set(latest.map((s) => s.id));
+  for (const s of next) if (!latestIds.has(s.id)) merged.push(s);
+  // 追加行使 merged[i]（对象）≠ latest[i]（undefined），一处 some 全覆盖；
+  // 此前组件内用 join("|") 比较，对象串成 "[object Object]" 内容差异恒假。
+  return merged.some((s, i) => s !== latest[i]) ? merged : null;
+}
+
+/**
  * 下一个空闲格位：先取拖放落点格（占用时向后线性探测），没有落点则按
  * 行优先扫到第一个空格。用于新增条目的自动排布。
  */
 export function nextFreeCell(taken: Map<string, ShortcutCell>, columns: number, dropCell?: ShortcutCell): ShortcutCell {
+  // 防御钳制：columns ≤ 0 时行优先扫描的内层循环永不执行（y 无限自增），
+  // 落点探测也只向纵向绕行——共享工具不信任调用方算出的列数。
+  const cols = Math.max(1, Math.floor(columns));
   const occupied = new Set(Array.from(taken.values()).map((c) => `${c.x}:${c.y}`));
   const free = (c: ShortcutCell) => !occupied.has(`${c.x}:${c.y}`);
   if (dropCell) {
-    let c: ShortcutCell = { ...dropCell };
+    let c: ShortcutCell = { x: dropCell.x, y: dropCell.y };
     while (!free(c)) {
-      c = c.x + 1 < columns ? { x: c.x + 1, y: c.y } : { x: 0, y: c.y + 1 };
+      c = c.x + 1 < cols ? { x: c.x + 1, y: c.y } : { x: 0, y: c.y + 1 };
     }
     return c;
   }
   for (let y = 0; ; y++) {
-    for (let x = 0; x < columns; x++) {
+    for (let x = 0; x < cols; x++) {
       if (free({ x, y })) return { x, y };
     }
   }

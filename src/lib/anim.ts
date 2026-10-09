@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { animDurations } from "./durations";
+import { armPopupClickShield } from "./click-shield";
+import { uiZoom } from "./ui-zoom";
 
-/* C11：reduce-motion 偏好此前是模块加载时的一次性快照——OS 里切换
+/* reduce-motion 偏好此前是模块加载时的一次性快照——OS 里切换
    「减少动态」后 JS 动效（countup/粒子/高光循环）需重启应用才跟随。
    改为实时 matchMedia + change 订阅，并提供 React Hook 版本。 */
 const reduceMql =
@@ -10,7 +12,7 @@ const reduceMql =
     : null;
 
 /**
- * 同步读取「减少动态」偏好（C11 实时双信号）。
+ * 同步读取「减少动态」偏好（实时双信号）。
  * OS `prefers-reduced-motion` + 应用内开关（`html[data-reduce-motion]`，
  * 由 settings-store applySettings 写入）任一命中即为 true。实现廉价
  * （属性读 + 缓存 MQL.matches），可在渲染/动画热路径安全调用。
@@ -63,14 +65,14 @@ export function usePrefersReducedMotion(): boolean {
  *          取消：退场窗口内重开、以及挂载后 duration 内首次打开，都不会被旧
  *          计时器误卸载。reduce-motion（OS 或应用内「减少动态」开关）命中时
  *          跳过等待窗口立即卸载——退场动画已被全局门控压成瞬移，若仍等满
- *          duration，元素会以不透明冻结在原地再消失（F3「愣住再消失」）。
+ *          duration，元素会以不透明冻结在原地再消失（「愣住再消失」）。
  * @throws 无。
  *
  * @example
- * ```tsx
+ * `tsx
  * const visible = useDelayedUnmount(menuOpen, animDurations().fxFastMs);
  * return visible ? <div className={menuOpen ? "" : "is-closing"}>…</div> : null;
- * ```
+ * `
  */
 export function useDelayedUnmount(open: boolean, duration: number): boolean {
   const [render, setRender] = useState(open);
@@ -79,6 +81,10 @@ export function useDelayedUnmount(open: boolean, duration: number): boolean {
       setRender(true);
       return;
     }
+    // [CLICK-SHIELD]：退场开始的瞬间屏蔽紧邻的
+    // 连点（默认关；弹窗恰好停在可点元素上方时，第二次点击不再穿透到
+    // 下层）。放这里 = 全部统一退场弹窗一处覆盖。
+    armPopupClickShield();
     if (prefersReducedMotion()) {
       setRender(false);
       return;
@@ -96,15 +102,15 @@ export function useDelayedUnmount(open: boolean, duration: number): boolean {
  *
  * @param value - 目标数值。
  * @param opts - `duration` 补间毫秒（默认 420）、`decimals` 小数位
- *               （默认 0）、`disabled` 强制直出真实值（D10：增强档关闭时
+ *               （默认 0）、`disabled` 强制直出真实值（增强档关闭时
  *               由调用方置 true）。
  * @returns 格式化后的显示字符串（toFixed(decimals)）。
  * @throws 无。
  *
  * @example
- * ```tsx
+ * `tsx
  * <span>{useCountUp(cpu, { decimals: 1 })}%</span>
- * ```
+ * `
  */
 export function useCountUp(
   value: number,
@@ -115,7 +121,7 @@ export function useCountUp(
   }: {
     duration?: number;
     decimals?: number;
-    /** D10：调用方（FxCount）在增强档关闭时置 true，直接跳变显示真实值。 */ disabled?: boolean;
+    /** 调用方（FxCount）在增强档关闭时置 true，直接跳变显示真实值。 */ disabled?: boolean;
   } = {}
 ): string {
   const safe = Number.isFinite(value) ? value : 0;
@@ -145,7 +151,7 @@ export function useCountUp(
   return display.toFixed(decimals);
 }
 
-/* ══ A3 小增量降档（Keystone 规则的 JS 判定）══
+/* ══ 小增量降档（Keystone 规则的 JS 判定）══
    几何变化 ≤ SMALL_INCREMENT_PX 的位移/缩放取 elementMove 快档，更大的位移
    或整体重排取 cardReflow 默认档。曲线本体只定义在 feature-animations.css
    :root（check-transitions ease-contract 守卫），JS 只返回别名，不复制值。 */
@@ -164,7 +170,7 @@ export const DUR_CARD_REFLOW_MS = 500;
 export type SpatialEase = { ease: string; durMs: number };
 
 /**
- * 按几何变化量选空间动效档位（A3 小增量降档）。
+ * 按几何变化量选空间动效档位（小增量降档）。
  *
  * @param deltaPx - 位移或尺寸变化量（px），正负皆可，按绝对值比较。
  * @returns `{ ease, durMs }`：|delta| ≤ SMALL_INCREMENT_PX → elementMove
@@ -175,10 +181,10 @@ export type SpatialEase = { ease: string; durMs: number };
  * @throws 无。
  *
  * @example
- * ```ts
+ * `ts
  * const { ease, durMs } = pickSpatialEase(target.left - current.left);
  * el.style.transition = `left ${durMs}ms ${ease}`;
- * ```
+ * `
  */
 export function pickSpatialEase(deltaPx: number): SpatialEase {
   const d = Math.abs(deltaPx);
@@ -190,11 +196,11 @@ export function pickSpatialEase(deltaPx: number): SpatialEase {
 }
 
 /**
- * 零依赖 FLIP 重排过渡（D8，First-Last-Invert-Play 模式）。
+ * 零依赖 FLIP 重排过渡（First-Last-Invert-Play 模式）。
  * First：记录 mutate 前各元素位置 → 执行 mutate（触发 React 重排）→
  * Last：双 rAF 等提交后读取新位置，把差值写为起始 transform → 过渡回 0。
  * 用于列表拖拽/键盘排序的「落位回弹」。reduce-motion 直接执行 mutate。
- * Play 阶段逐元素按实际位移量走 A3 小增量降档（pickSpatialEase）：
+ * Play 阶段逐元素按实际位移量走 小增量降档（pickSpatialEase）：
  * 相邻行互换等 ≤20px 的小步进用 elementMove 快档，跨多行的大位移用
  * cardReflow 默认档，同一次重排里两档可并存。
  *
@@ -207,9 +213,9 @@ export function pickSpatialEase(deltaPx: number): SpatialEase {
  * @throws 无（querySelectorAll 为空时安全 no-op）。
  *
  * @example
- * ```ts
+ * `ts
  * flipReorder(listEl, ".bookmark-row", () => reorder(ids));
- * ```
+ * `
  */
 export function flipReorder(
   container: HTMLElement,
@@ -229,12 +235,16 @@ export function flipReorder(
   // 双 rAF：确保 React 已提交新的 DOM 顺序后再测量 Last。
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
+      /* gBCR 是视觉坐标、transform 是布局单位（html zoom 下渲染 ×zoom，
+         ui-zoom 坐标模型）——差值 ÷zoom 后写入，缩放 ≠100% 时 FLIP 起始
+         补偿不再按 z 倍过冲。 */
+      const z = uiZoom();
       for (const el of Array.from(container.querySelectorAll<HTMLElement>(itemSelector))) {
         const f = first.get(el);
         if (!f) continue;
         const l = el.getBoundingClientRect();
-        const dx = f.left - l.left;
-        const dy = f.top - l.top;
+        const dx = (f.left - l.left) / z;
+        const dy = (f.top - l.top) / z;
         if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
         const { ease, durMs } = pickSpatialEase(Math.max(Math.abs(dx), Math.abs(dy)));
         const duration = opts?.duration ?? durMs;
@@ -244,6 +254,9 @@ export function flipReorder(
         el.style.transition = `transform ${duration}ms ${ease}`;
         el.style.transform = "";
         window.setTimeout(() => {
+          // 拖拽排序进行中（容器挂 is-sorting）不让位内联被兜底清理抹掉——
+          // 会话结束时统一 clearInline；此时清掉会被下一帧让位重写前的空窗闪回。
+          if (el.closest(".is-sorting")) return;
           el.style.transition = "";
           el.style.transform = "";
         }, duration + 60);
@@ -252,7 +265,7 @@ export function flipReorder(
   });
 }
 
-/* ══ P3 窗口隐藏挂起（app-hidden 循环暂停基建）══
+/* ══ 窗口隐藏挂起（app-hidden 循环暂停基建）══
    遮挡/最小化期间给根节点写 data-app-hidden，配合 global.css 把全部动画
    play-state 置 paused：WebView 的合成器节流跨平台不一致，显式暂停兜底，
    常驻装饰循环（光晕/跑马/呼吸）隐藏期间不再空转。 */

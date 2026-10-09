@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  applyRemoteDock,
   createDockTile,
   createDockTileAutoBound,
+  currentScreenId,
   DEFAULT_DOCK,
   DOCK_TILES_DEGRADED_EVENT,
   findDockTileConflict,
@@ -22,6 +24,44 @@ import { DOCK_DEFAULTS, cloneDockDefaults, migrateDockConfig, seedDockTileConfig
 const KEY = "focus-desk.screen.0.dock.v1";
 const types = (cfg: DockConfig) => cfg.tiles.map((t) => t.type);
 const stored = () => JSON.parse(localStorage.getItem(KEY) ?? "null") as DockConfig | null;
+
+describe("applyRemoteDock：等值短路", () => {
+  it("与本窗内存一致的整包（重播/回读竞态）：不 setState（磁贴身份不变）、不重写 LS 镜像", () => {
+    useWidgetStore.setState({ dock: { ...DEFAULT_DOCK, tiles: [] } });
+    const pkt = {
+      instanceId: "peer",
+      rev: 1,
+      screenId: currentScreenId(),
+      dock: { ...DEFAULT_DOCK, enabled: true, tiles: [{ id: "t1", type: "clock" }] }
+    };
+    applyRemoteDock(pkt);
+    const before = useWidgetStore.getState().dock;
+    const tileRef = before.tiles;
+    let changed = 0;
+    const unsub = useWidgetStore.subscribe(() => {
+      changed += 1;
+    });
+    localStorage.setItem(KEY, "sentinel");
+    applyRemoteDock(pkt); // 同一整包重播：内容未变
+    unsub();
+    expect(changed).toBe(0);
+    expect(useWidgetStore.getState().dock).toBe(before);
+    expect(useWidgetStore.getState().dock.tiles).toBe(tileRef);
+    expect(localStorage.getItem(KEY)).toBe("sentinel");
+  });
+
+  it("内容不同的整包：照常采纳并写 LS 镜像", () => {
+    useWidgetStore.setState({ dock: { ...DEFAULT_DOCK, tiles: [] } });
+    applyRemoteDock({
+      instanceId: "peer",
+      rev: 1,
+      screenId: currentScreenId(),
+      dock: { ...DEFAULT_DOCK, enabled: true, tiles: [{ id: "t2", type: "pomodoro" }] }
+    });
+    expect(useWidgetStore.getState().dock.tiles.map((t) => t.id)).toEqual(["t2"]);
+    expect(stored()?.tiles.map((t: DockTile) => t.id)).toEqual(["t2"]);
+  });
+});
 
 describe("parseDockConfig：v1 → v2 迁移", () => {
   it("组合一：三磁贴全开 + 顶部 → 三枚 {id,type}，其余字段回默认", () => {
@@ -76,7 +116,7 @@ describe("parseDockConfig：v1 → v2 迁移", () => {
     expect(parseDockConfig('"str"')).toEqual(DEFAULT_DOCK);
     expect(parseDockConfig("[1,2]")).toEqual(DEFAULT_DOCK);
     expect(parseDockConfig(null).tiles[0]).not.toBe(DEFAULT_DOCK.tiles[0]);
-    // I-08：mouse / takeover / panel 子对象不得与 DOCK_DEFAULTS / DEFAULT_DOCK 共享引用——
+    // mouse / takeover / panel 子对象不得与 DOCK_DEFAULTS / DEFAULT_DOCK 共享引用——
     // 任何一处就地赋值都会污染模块常量（默认值）。
     for (const cfg of [parseDockConfig(null), parseDockConfig("{bad"), migrateDockConfig({}), cloneDockDefaults()]) {
       expect(cfg.mouse).not.toBe(DOCK_DEFAULTS.mouse);
@@ -299,7 +339,7 @@ describe("绑定实例失效对账（reconcileDockTiles）", () => {
     expect(events).toHaveLength(1);
   });
 
-  it("降级后与岛上既有的无实例同类磁贴同身份 → 移除该枚而非保留两枚（仍计入降级事件）", () => {
+  it("降级后与岛上既有的无实例同类磁贴同身份 → 移除该枚而非保留两枚（P3：移除不派降级事件——它不是降级）", () => {
     useWidgetStore.setState((s) => ({
       dock: { ...s.dock, tiles: [...s.dock.tiles, { id: "t-weather-plain", type: "weather" }] }
     }));
@@ -307,24 +347,29 @@ describe("绑定实例失效对账（reconcileDockTiles）", () => {
     expect(degraded.map((t) => t.id)).toEqual(["t-gone"]);
     const ids = useWidgetStore.getState().dock.tiles.map((t) => t.id);
     expect(ids).toEqual(["t-home", "t-work", "t-trash", "t-plain", "t-weather-plain"]);
+    // 被整体移除的磁贴不再混进「已降级」toast 的事件明细。
+    expect(events).toHaveLength(0);
   });
 
-  it("移入回收站不降级；清空回收站 / 删视图 才降级（动作内自动对账）", () => {
+  it("移入回收站不降级（含删视图）；清空回收站才降级（动作内自动对账）", () => {
     const st = useWidgetStore.getState();
     st.removeWidget("w-home");
     expect(useWidgetStore.getState().dock.tiles.find((t) => t.id === "t-home")?.instanceId).toBe("w-home");
     // 上一步的自动对账已把 t-gone 降级（预置的孤儿），事件计 1 次。
     expect(events).toHaveLength(1);
-    st.emptyWidgetTrash();
-    let tiles = useWidgetStore.getState().dock.tiles;
-    expect(tiles.find((t) => t.id === "t-home")?.instanceId).toBeUndefined();
-    expect(tiles.find((t) => t.id === "t-trash")?.instanceId).toBeUndefined();
-    expect(events).toHaveLength(2);
-    expect(events[1].map((t) => t.id).sort()).toEqual(["t-home", "t-trash"]);
+    /* 删视图自「删/清视图进回收站」批起与单个删除同契约：w-work 进回收站，
+       t-work 保持绑定（可随恢复点亮）；降级推迟到清空回收站。 */
     st.removeView("work");
-    tiles = useWidgetStore.getState().dock.tiles;
-    expect(tiles.find((t) => t.id === "t-work")?.instanceId).toBeUndefined();
-    expect(events).toHaveLength(3);
+    expect(useWidgetStore.getState().dock.tiles.find((t) => t.id === "t-work")?.instanceId).toBe("w-work");
+    expect(events).toHaveLength(1);
+    st.emptyWidgetTrash();
+    const tiles = useWidgetStore.getState().dock.tiles;
+    expect(tiles.find((t) => t.id === "t-home")).toBeUndefined();
+    expect(tiles.find((t) => t.id === "t-trash")).toBeUndefined();
+    expect(tiles.find((t) => t.id === "t-work")).toBeUndefined();
+    /* t-home / t-trash / t-work 降级时与已存续的无实例 weather 磁贴（t-gone）
+       同身份 → 按去重规则整体移除而非保留——移除不是降级，不再派「已降级」事件。 */
+    expect(events).toHaveLength(1);
   });
 });
 

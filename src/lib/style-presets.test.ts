@@ -1,5 +1,5 @@
 /**
- * 样式预设卡（DeskOrder 借鉴 #4）核心逻辑测试：
+ * 样式预设卡核心逻辑测试：
  *  - 保存/列表/删除往返；同名覆盖保留 id 与 createdAt；
  *  - 「预设描述样式、不描述内容」：shortcuts 的条目/格位/顺序、files 的
  *    lastPath 被剥离；配置过 schema 清洗（损坏字段剔除、默认值补齐）；
@@ -106,9 +106,14 @@ describe("预设描述样式、不描述内容", () => {
   });
 
   it("保存时过 schema 清洗：类型不符回默认值", () => {
-    const preset = saveStylePreset({ widgetType: "shortcuts", name: "清洗", config: { columns: 99, marquee: "yes" } });
+    const preset = saveStylePreset({
+      widgetType: "shortcuts",
+      name: "清洗",
+      config: { columns: 99, showLabels: "yes" }
+    });
     expect(preset.config.columns).toBe(2); // 越界/类型不符 → 回 schema 默认
-    expect(preset.config.marquee).toBe(false);
+    // showLabels 默认值现为 true（滚动带改为标签常显），"yes" 仍按默认值清洗。
+    expect(preset.config.showLabels).toBe(true);
   });
 });
 
@@ -141,7 +146,7 @@ describe("自动编号", () => {
   });
 });
 
-describe("预设包导入（BentoDesk 借鉴 #12）", () => {
+describe("预设包导入", () => {
   it("合法条目入库并重生成 id；同类型同名跳过；坏条目不计", () => {
     saveStylePreset({ widgetType: "clock", name: "本地已有", config: {} });
     const raw = JSON.stringify([

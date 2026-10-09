@@ -2,8 +2,23 @@
  * 设置页 · 视图管理页组：视图列表增删改名、每屏视图分配与默认视图设置；
  * 布局数据经 widget-store 双后端持久化。
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ArrowLeft, ArrowRight, Check, LayoutGrid, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Layers,
+  LayoutGrid,
+  Monitor,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  X
+} from "lucide-react";
 import { useSettingsStore } from "../../../store/settings-store";
 import {
   getWidgetMeta,
@@ -13,12 +28,17 @@ import {
   type WidgetMeta
 } from "../../../widget/registry";
 import { loadInstances, useWidgetStore } from "../../../widget/widget-store";
+import { widgetDisplayName } from "../../../widget/display-name";
+import { promptRenameInstance, promptViewName } from "../../../widget/rename";
 import { useT } from "../../../i18n-lite";
-import { alertDialog, confirmDialog, promptDialog } from "../../../components/PromptDialog";
+import { alertDialog, confirmDialog } from "../../../components/PromptDialog";
+import { pushAppToast } from "../../../components/ToastHost";
+import { FxText } from "../../../lib/fx";
 import { useSafeTimeout } from "../../../lib/use-safe-timeout";
 import { useDelayedUnmount } from "../../../lib/anim";
 import { animDurations } from "../../../lib/durations";
 import type { Page } from "../shared";
+import type { MonitorInfo } from "./DisplayPage";
 
 /**
  * Multi-view management: shows every dynamic view, its widget count, which one
@@ -27,7 +47,17 @@ import type { Page } from "../shared";
  * 同一动作）；要进某个视图的管理页走左侧边栏——此前行点击是跳管理页，列表不变只有
  * 标题和操作区换、入场错落重放，用户看到的就是「闪一下、没切换」。
  */
-export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: Page) => void }) {
+export function ViewPage({
+  view,
+  onNavigate,
+  monitors
+}: {
+  view: string;
+  onNavigate: (p: Page) => void;
+  /** 设置窗当前显示器列表（SettingsView 唯一数据源下发）；多屏时标题旁
+      显示「作用于哪块屏」徽标，单屏无歧义不显示。 */
+  monitors?: MonitorInfo[];
+}) {
   const tr = useT();
   const views = useWidgetStore((s) => s.views);
   const activeView = useWidgetStore((s) => s.activeView);
@@ -35,19 +65,92 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
   const renameView = useWidgetStore((s) => s.renameView);
   const removeView = useWidgetStore((s) => s.removeView);
   const resetView = useWidgetStore((s) => s.resetView);
+  const addView = useWidgetStore((s) => s.addView);
+  const duplicateView = useWidgetStore((s) => s.duplicateView);
+  const reorderViews = useWidgetStore((s) => s.reorderViews);
   const setSettingsOpen = useSettingsStore((s) => s.setSettingsOpen);
+  /* 视图页必须点明「正在管理哪块屏」——多屏下这里切换/删除的是管理
+     分区那块屏的视图，不是用户眼前这块屏；唯一提示原先只在显示器页。 */
+  const managedScreen = useWidgetStore((s) => s.screenId);
+  const managedName = monitors?.find((m) => String(m.id) === managedScreen)?.name;
+  const multiScreen = (monitors?.length ?? 0) > 1;
+  /* 视图计数：loadInstances 每次都全量读 localStorage + JSON.parse，此前在
+     views.map 渲染体内逐视图调用——本页任何重渲（store 任意变化）都重复解析
+     全部布局。改 useMemo 缓存，实例表引用变化作失效信号（侧栏同款手法，
+     见 SettingsView viewWidgetCounts）。 */
+  const layoutRev = useWidgetStore((s) => s.instances);
+  // layoutRev 仅作失效信号：实例表引用一变（含其它视图的保存）即重算计数。
+  const viewCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const v of views) counts[v.id] = loadInstances(v.id).length;
+    return counts;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [views, layoutRev]);
   const current = views.find((v) => v.id === view);
-  if (!current) return null;
+  /* 视图可能已被其它窗口删除（跨窗口同步）——此前 `return null` 整页
+     空白且无提示；重定向到剩余第一个视图的管理页，一个不剩时给出空态。 */
+  useEffect(() => {
+    if (current || views.length === 0) return;
+    const first = views[0];
+    if (first && first.id !== view) onNavigate(`view-${first.id}`);
+  }, [current, views, view, onNavigate]);
+  /* 拖拽排序：行拖拽与上移/下移共用 reorderViews。 */
+  const [dragViewId, setDragViewId] = useState<string | null>(null);
+  const moveView = (id: string, dir: -1 | 1) => {
+    const idx = views.findIndex((v) => v.id === id);
+    const neighbor = views[idx + dir];
+    if (idx < 0 || !neighbor) return;
+    reorderViews(id, neighbor.id);
+  };
 
   const switchToView = (id: string) => {
     setActiveView(id);
     setSettingsOpen(false);
   };
+
+  if (!current) {
+    return (
+      <section className="tm-section">
+        <div className="tm-section-title">
+          <FxText text={tr("视图")} />
+        </div>
+        <div className="tm-placeholder">{tr("该视图不存在或已被删除。")}</div>
+      </section>
+    );
+  }
+
   const switchTo = () => switchToView(view);
 
   const handleRename = async () => {
-    const name = await promptDialog({ title: tr("输入新的视图名称"), initialValue: current.name });
-    if (name && name.trim()) renameView(view, name.trim());
+    /* 命名约束（长度上限 + 重名拦截）与撤销 toast——与小组件/编组重命名
+       同一套三件套，此前视图命名无任何约束。 */
+    const name = await promptViewName(tr, {
+      title: tr("输入新的视图名称"),
+      initial: current.name,
+      existing: views,
+      selfId: view
+    });
+    if (!name || name === current.name) return;
+    const prevName = current.name;
+    renameView(view, name);
+    pushAppToast(tr("已重命名视图"), "", "info", {
+      action: { label: tr("撤销"), run: () => renameView(view, prevName) }
+    });
+  };
+
+  const handleAddView = async () => {
+    // 不做撞名拦截：store 的 addView 自动加序号（"Work" → "Work 2"）。
+    const name = await promptViewName(tr, { title: tr("输入新视图名称") });
+    if (!name) return;
+    const id = addView(name);
+    if (id) onNavigate(`view-${id}`);
+  };
+
+  /** 复制视图：克隆当前视图（实例重造 id + 数据桶搬家，store 内完成），
+      名称以「（副本）」为基，撞名由 store 自动加序号。 */
+  const handleDuplicate = () => {
+    const id = duplicateView(view, `${current.name}（${tr("副本")}）`);
+    if (id) onNavigate(`view-${id}`);
   };
 
   /**
@@ -61,10 +164,14 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
       await alertDialog({ title: tr("无法删除"), message: tr("至少需要保留一个视图。") });
       return;
     }
+    /* 删视图 = 组件进回收站（store 内实现），确认文案如实说明可恢复。 */
     if (
       !(await confirmDialog({
         title: tr("删除视图"),
-        message: `${tr("确定删除视图「")}${name}${tr("」吗？其布局将被清除。")}`,
+        message: tr("确定删除视图「{name}」吗？其中 {n} 个小组件将移入回收站，30 天内可恢复。", {
+          name,
+          n: viewCounts[id] ?? 0
+        }),
         confirmLabel: tr("删除"),
         danger: true
       }))
@@ -79,7 +186,9 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
     if (
       await confirmDialog({
         title: tr("清空视图"),
-        message: `${tr("清空「")}${current.name}${tr("」视图的全部小组件？…")}`,
+        message: tr("清空「{name}」视图的全部小组件？它们将移入回收站，30 天内可恢复。", {
+          name: current.name
+        }),
         confirmLabel: tr("清空"),
         danger: true
       })
@@ -90,16 +199,27 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
 
   return (
     <section className="tm-section">
-      <div className="tm-section-title">{tr("{name} 视图", { name: current.name })}</div>
+      <div className="tm-section-title">
+        <FxText text={tr("{name} 视图", { name: current.name })} />
+        {multiScreen && managedName && (
+          <button
+            className="tm-managed-chip"
+            onClick={() => onNavigate("display")}
+            title={tr("视图与小组件的添加、配置作用于：") + managedName}
+          >
+            <Monitor size={12} /> {tr("作用于：{name}", { name: managedName })}
+          </button>
+        )}
+      </div>
 
       <div className="tm-view-list">
         {views.map((v, vi) => {
-          const n = loadInstances(v.id).length;
+          const n = viewCounts[v.id] ?? 0;
           const active = activeView === v.id;
           return (
             <div
               key={v.id}
-              className={`tm-view-row${active ? " active" : ""}`}
+              className={`tm-view-row${active ? " active" : ""}${dragViewId === v.id ? " dragging" : ""}`}
               style={{ "--sti": vi } as CSSProperties}
               onClick={() => switchToView(v.id)}
               onKeyDown={(e) => {
@@ -112,6 +232,20 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
               tabIndex={0}
               title={tr("切换到 {name}", { name: v.name })}
               data-interactive
+              draggable
+              onDragStart={(e) => {
+                setDragViewId(v.id);
+                e.dataTransfer.effectAllowed = "move";
+              }}
+              onDragOver={(e) => {
+                if (dragViewId && dragViewId !== v.id) e.preventDefault();
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragViewId && dragViewId !== v.id) reorderViews(dragViewId, v.id);
+                setDragViewId(null);
+              }}
+              onDragEnd={() => setDragViewId(null)}
             >
               <div className="tm-view-icon">
                 <LayoutGrid size={16} />
@@ -137,9 +271,36 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
                   <ArrowRight size={12} />
                 </button>
               )}
+              {/* 上移/下移（拖拽的键盘等价物；行首/行尾禁用）。 */}
+              <span className="tm-view-move">
+                <button
+                  aria-label={tr("上移")}
+                  title={tr("上移")}
+                  disabled={vi === 0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    moveView(v.id, -1);
+                  }}
+                  data-interactive
+                >
+                  <ChevronUp size={13} />
+                </button>
+                <button
+                  aria-label={tr("下移")}
+                  title={tr("下移")}
+                  disabled={vi === views.length - 1}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    moveView(v.id, 1);
+                  }}
+                  data-interactive
+                >
+                  <ChevronDown size={13} />
+                </button>
+              </span>
               <button
                 className="tm-view-del"
-                aria-label={`${tr("删除视图")} ${v.name}`}
+                aria-label={tr("删除视图 {name}", { name: v.name })}
                 title={tr("删除视图")}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -164,6 +325,15 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
           <Pencil size={15} />
           <span>{tr("重命名")}</span>
         </button>
+        {/* 页内补齐「添加视图」（此前只在侧栏底部）与「复制视图」。 */}
+        <button className="tm-action-row" onClick={() => void handleAddView()}>
+          <Plus size={15} />
+          <span>{tr("添加视图")}</span>
+        </button>
+        <button className="tm-action-row" onClick={handleDuplicate}>
+          <Copy size={15} />
+          <span>{tr("复制视图")}</span>
+        </button>
         <button className="tm-action-row danger" onClick={handleReset}>
           <Trash2 size={15} />
           <span>{tr("清空本视图")}</span>
@@ -186,18 +356,36 @@ export function ViewPage({ view, onNavigate }: { view: string; onNavigate: (p: P
  * widgets already added to the active view (name + delete) and offers an
  * "添加小组件" picker backed by WIDGET_REGISTRY. Works without edit mode.
  */
-export function WidgetsPage() {
+export function WidgetsPage({
+  onNavigate,
+  monitors
+}: {
+  onNavigate: (p: Page) => void;
+  /** 同 ViewPage：多屏时标题旁显示管理分区指向哪块屏。 */
+  monitors?: MonitorInfo[];
+}) {
   const tr = useT();
   const safeTimeout = useSafeTimeout();
   const instances = useWidgetStore((s) => s.instances);
   const activeView = useWidgetStore((s) => s.activeView);
   const views = useWidgetStore((s) => s.views);
   const trash = useWidgetStore((s) => s.trash);
+  /* 与 ViewPage 同款管理分区徽标。 */
+  const managedScreen = useWidgetStore((s) => s.screenId);
+  const managedName = monitors?.find((m) => String(m.id) === managedScreen)?.name;
+  const multiScreen = (monitors?.length ?? 0) > 1;
+  /* 编组归属徽标的数据源——小组件住进编组后从桌面消失，列表里指明
+     它住在哪个组（点击直达组页）。 */
+  const groups = useWidgetStore((s) => s.groups);
   const removeWidget = useWidgetStore((s) => s.removeWidget);
   const restoreWidget = useWidgetStore((s) => s.restoreWidget);
   const purgeWidget = useWidgetStore((s) => s.purgeWidget);
   const emptyWidgetTrash = useWidgetStore((s) => s.emptyWidgetTrash);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /* 关闭回调必须引用稳定——此前调用处传内联箭头函数，父组件任何重渲
+     （store 任意字段变化）都会让 WidgetPicker 的 [onClose] effect 重跑并经
+     rAF 抢回焦点，用户正在操作的别处控件被拽走。 */
+  const closePicker = useCallback(() => setPickerOpen(false), []);
   /* 关闭退场：面板 pop-out（--dur-fx-xfast 档）播完再卸载，时长同源跟随速度档。 */
   const pickerRender = useDelayedUnmount(pickerOpen, animDurations().fxXfastMs);
   const viewName = views.find((v) => v.id === activeView)?.name ?? activeView;
@@ -224,9 +412,16 @@ export function WidgetsPage() {
   return (
     <section className="tm-section">
       <div className="tm-section-title">
-        {tr("当前视图小组件（")}
-        {viewName}
-        {tr("）")}
+        <FxText text={tr("当前视图小组件（{name}）", { name: viewName })} />
+        {multiScreen && managedName && (
+          <button
+            className="tm-managed-chip"
+            onClick={() => onNavigate("display")}
+            title={tr("视图与小组件的添加、配置作用于：") + managedName}
+          >
+            <Monitor size={12} /> {tr("作用于：{name}", { name: managedName })}
+          </button>
+        )}
       </div>
       {instances.length === 0 ? (
         <div className="tm-placeholder">{tr("当前视图还没有小组件。")}</div>
@@ -234,13 +429,40 @@ export function WidgetsPage() {
         <div className="tm-widget-list">
           {instances.map((inst, i) => {
             const meta = getWidgetMeta(inst.type);
+            const Icon = meta?.icon ?? LayoutGrid;
+            /* 所属编组（有则显示徽标，点击直达组页）。 */
+            const owner = groups.find((g) => g.memberIds.includes(inst.id));
             return (
               <div
                 className={`tm-widget-row${rowOut.has(inst.id) ? " is-closing" : ""}`}
                 key={inst.id}
                 style={{ "--sti": i } as CSSProperties}
               >
-                <span className="tm-widget-name">{meta ? tr(meta.name) : inst.type}</span>
+                {/* 列表行走 widgetDisplayName（重命名 label + 同类型序号）——
+                    与桌面卡片标题/组标签同源，此前两个时钟显示同名无法区分。 */}
+                <span className="tm-widget-name" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Icon size={15} />
+                  {widgetDisplayName(inst.type, inst.id, instances, tr)}
+                </span>
+                {owner && (
+                  <button
+                    className="tm-btn-secondary"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}
+                    onClick={() => onNavigate(`group-config-${owner.id}`)}
+                    title={tr("查看编组")}
+                    data-interactive
+                  >
+                    <Layers size={12} /> {owner.name?.trim() || tr("编组")}
+                  </button>
+                )}
+                {/* 列表页重命名入口（与卡片右键/配置弹层/组页同一共享实现）。 */}
+                <button
+                  className="tm-btn-secondary"
+                  onClick={() => void promptRenameInstance(inst.id, tr)}
+                  data-interactive
+                >
+                  {tr("重命名")}
+                </button>
                 <button className="tm-btn-danger" onClick={() => rowRemove(inst.id, () => removeWidget(inst.id))}>
                   <Trash2 size={14} /> {tr("删除")}
                 </button>
@@ -254,11 +476,11 @@ export function WidgetsPage() {
           <Plus size={14} /> {tr("添加小组件")}
         </button>
       </div>
-      {pickerRender && <WidgetPicker onClose={() => setPickerOpen(false)} closing={!pickerOpen} />}
+      {pickerRender && <WidgetPicker onClose={closePicker} closing={!pickerOpen} />}
 
       {/* 回收站：删除的小组件先进这里，30 天内可恢复 */}
       <div className="tm-section-title" style={{ marginTop: 20 }}>
-        {tr("回收站")}
+        <FxText text={tr("回收站")} />
       </div>
       <p className="tm-setting-desc" style={{ margin: "2px 0 8px" }}>
         {tr("删除的小组件可在 30 天内恢复")}
@@ -277,9 +499,14 @@ export function WidgetsPage() {
                 style={{ "--sti": i } as CSSProperties}
               >
                 <span className="tm-widget-name">
-                  {meta ? tr(meta.name) : t.type}
+                  {/* 回收站行优先显示删除时的自定义名（label 随条目快照带入，
+                      恢复时原样带回）；此处无实例表，不做同类型序号。 */}
+                  {t.label?.trim() || (meta ? tr(meta.name) : t.type)}
                   <span className="tm-widget-sub">
-                    {tr("删除于")} {new Date(t.deletedAt).toLocaleString()} · {viewName2}
+                    {tr("删除于 {date} · {view}", {
+                      date: new Date(t.deletedAt).toLocaleString(),
+                      view: viewName2
+                    })}
                   </span>
                 </span>
                 <button className="tm-btn-secondary" onClick={() => rowRemove(t.id, () => restoreWidget(t.id))}>
@@ -288,7 +515,7 @@ export function WidgetsPage() {
                 <button
                   className="tm-btn-danger"
                   onClick={async () => {
-                    /* B1：彻底删除不可恢复，与同页「清空回收站」统一走确认弹窗。 */
+                    /* 彻底删除不可恢复，与同页「清空回收站」统一走确认弹窗。 */
                     if (
                       await confirmDialog({
                         title: tr("彻底删除"),
@@ -332,13 +559,32 @@ export function WidgetsPage() {
 }
 
 /** Modal picker that adds a widget (from WIDGET_REGISTRY) to the current view.
- *  B5（可达性）：补 role=dialog/aria-modal、Esc 关闭与打开时首焦。 */
+ *  （可达性）：补 role=dialog/aria-modal、Esc 关闭与打开时首焦。
+ *  顶部搜索框（双语匹配，与 Gallery 同口径）——此前弹层只能逐格翻找。 */
 function WidgetPicker({ onClose, closing }: { onClose: () => void; closing: boolean }) {
   const tr = useT();
   const addWidget = useWidgetStore((s) => s.addWidget);
+  const [query, setQuery] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return WIDGET_REGISTRY.filter(
+      (w) =>
+        !w.dockOnly &&
+        !w.hidden &&
+        (!q ||
+          w.name.toLowerCase().includes(q) ||
+          w.desc.toLowerCase().includes(q) ||
+          tr(w.name).toLowerCase().includes(q) ||
+          tr(w.desc).toLowerCase().includes(q))
+    );
+    // tr 引用稳定但内容随语言变：useT 的 useCallback 以语言为依赖，语言切换
+    // 会换引用并触发本 memo 重算（tr 本身就在依赖里，无需额外失效键）。
+  }, [query, tr]);
+  /* 首焦只做一次（ref 兜底，effect 因任何原因重跑不再抢焦点）。 */
+  const didFocusRef = useRef(false);
   useEffect(() => {
-    /* B5：Esc 关闭 + Tab 焦点陷阱（移植 PromptDialog 模型）——
+    /* Esc 关闭 + Tab 焦点陷阱（移植 PromptDialog 模型）——
        Tab/Shift+Tab 循环限制在弹层内，焦点意外逃逸时拉回首元素。 */
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -367,10 +613,15 @@ function WidgetPicker({ onClose, closing }: { onClose: () => void; closing: bool
       }
     };
     window.addEventListener("keydown", onKey);
-    requestAnimationFrame(() => {
+    const raf = requestAnimationFrame(() => {
+      if (didFocusRef.current) return;
+      didFocusRef.current = true;
       panelRef.current?.querySelector<HTMLButtonElement>(".widget-picker-card")?.focus();
     });
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      cancelAnimationFrame(raf);
+    };
   }, [onClose]);
   return (
     <div className={`widget-picker-overlay${closing ? " is-closing" : ""}`} onClick={onClose}>
@@ -388,8 +639,20 @@ function WidgetPicker({ onClose, closing }: { onClose: () => void; closing: bool
             <X size={15} />
           </button>
         </div>
+        {/* 弹层内搜索（双语），与 Gallery 页同口径。 */}
+        <div className="widget-picker-search">
+          <Search size={13} />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={tr("搜索小组件…")}
+            aria-label={tr("搜索小组件")}
+            spellCheck={false}
+            data-interactive
+          />
+        </div>
         <div className="widget-picker-grid">
-          {WIDGET_REGISTRY.filter((w) => !w.dockOnly && !w.hidden).map((w) => {
+          {filtered.map((w) => {
             const Icon = w.icon;
             return (
               <button
@@ -406,6 +669,7 @@ function WidgetPicker({ onClose, closing }: { onClose: () => void; closing: bool
               </button>
             );
           })}
+          {filtered.length === 0 && <div className="tm-placeholder">{tr("没有匹配的小组件")}</div>}
         </div>
       </div>
     </div>
@@ -433,14 +697,21 @@ export function WidgetGalleryPage({ onBack }: { onBack: () => void }) {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return WIDGET_REGISTRY.filter(
-      (w) =>
-        !w.dockOnly &&
-        !w.hidden &&
-        (cat === "all" || w.category === cat) &&
-        (!q || w.name.toLowerCase().includes(q) || w.desc.toLowerCase().includes(q))
-    );
-  }, [query, cat]);
+    return WIDGET_REGISTRY.filter((w) => {
+      if (w.dockOnly || w.hidden) return false;
+      if (cat !== "all" && w.category !== cat) return false;
+      if (!q) return true;
+      /* 双语匹配——注册表原名（中文）+ 界面语言译文。此前只匹配原文，
+         英文界面搜 "clock" 零结果（卡片显示的却正是英文名）。 */
+      return (
+        w.name.toLowerCase().includes(q) ||
+        w.desc.toLowerCase().includes(q) ||
+        tr(w.name).toLowerCase().includes(q) ||
+        tr(w.desc).toLowerCase().includes(q)
+      );
+    });
+    // tr 在依赖里且随语言换引用（useT 的 useCallback）：语言切换自动重算命中。
+  }, [query, cat, tr]);
 
   const handleAdd = (w: WidgetMeta) => {
     addWidget(w.type, w.defaultSize);

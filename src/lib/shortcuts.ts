@@ -2,11 +2,11 @@
  * §4.5 全局快捷键配置的前端侧：动作表、录制解析与查重。
  *
  * 组合键字符串与 Rust（global-hotkey 解析器）约定：修饰键在前（大小写不
- * 敏感），主键用 `event.code` 名或简写（`D`/`KeyD`、`1`/`Digit1`、`F9`、
+ * 敏感），主键用 `event.code` 名或简写（`D`/`KeyD`、`1`/`Digit1`、、
  * `ArrowUp`、`Numpad0`…）。存储/展示用 `Win`，下发 Rust 前换成 `Super`
  * （解析器不识别 `Win` 这个别名）。
  *
- * [TB-TRAY]（F-11）**未绑定**：空串 {@link SHORTCUT_UNBOUND} 表示动作没有组合键
+ * [TB-TRAY]**未绑定**：空串 {@link SHORTCUT_UNBOUND} 表示动作没有组合键
  * （出厂仅 `taskbar:toggle`）。Rust `parse_config` 对无默认键的动作接受空串 =
  * 不注册；`normalizeShortcuts` 的「非空 + 修饰键，否则回默认」对它自然收敛到空串；
  * 查重 / 速查表按空串 = 无键处理。
@@ -25,7 +25,19 @@ export const SHORTCUT_ACTIONS = [
   "open-dock-panel",
   "taskbar:toggle",
   "taskbar:reset-state",
-  "screenshot"
+  "screenshot",
+  // [WIN-OPS]/[WIN-ACTIONS]：前台窗口与系统动作，
+  // 用户裁定全部出厂不绑定（需要者自行录制）。
+  "win-topmost",
+  "win-opacity-up",
+  "win-opacity-down",
+  "win-center",
+  "win-snap-left",
+  "win-snap-right",
+  "vd-move-left",
+  "vd-move-right",
+  "sys-proxy",
+  "sys-contrast"
 ] as const;
 
 export type ShortcutAction = (typeof SHORTCUT_ACTIONS)[number];
@@ -50,11 +62,22 @@ export const DEFAULT_SHORTCUTS: ShortcutConfig = {
   "toggle-palette": "Ctrl+Alt+K",
   "toggle-dock": "Ctrl+Alt+I",
   "open-dock-panel": "Ctrl+Alt+O",
-  // [TB-TRAY] F-11：总开关出厂不绑定；重置动态状态默认 Ctrl+Alt+Shift+F1（与常见任务栏增强工具一致）。
+  // [TB-TRAY] ：总开关出厂不绑定；重置动态状态与常见任务栏增强工具一致的 Ctrl+Alt+Shift+。
   "taskbar:toggle": SHORTCUT_UNBOUND,
   "taskbar:reset-state": "Ctrl+Alt+Shift+F1",
-  // [SNIP] 截图（借鉴 ClassSoftwareHub #4）：冻结帧框选 + 标注 + 钉图。
-  screenshot: "Ctrl+Alt+X"
+  // [SNIP] 截图：冻结帧框选 + 标注 + 钉图。
+  screenshot: "Ctrl+Alt+X",
+  // [WIN-OPS]/[WIN-ACTIONS]：全部出厂不绑定（用户裁定）。
+  "win-topmost": SHORTCUT_UNBOUND,
+  "win-opacity-up": SHORTCUT_UNBOUND,
+  "win-opacity-down": SHORTCUT_UNBOUND,
+  "win-center": SHORTCUT_UNBOUND,
+  "win-snap-left": SHORTCUT_UNBOUND,
+  "win-snap-right": SHORTCUT_UNBOUND,
+  "vd-move-left": SHORTCUT_UNBOUND,
+  "vd-move-right": SHORTCUT_UNBOUND,
+  "sys-proxy": SHORTCUT_UNBOUND,
+  "sys-contrast": SHORTCUT_UNBOUND
 };
 
 /** 设置页展示标签（i18n 键）。 */
@@ -68,13 +91,24 @@ export const SHORTCUT_LABELS: Record<ShortcutAction, string> = {
   // 不叫「命令面板」：速查表有同名分区标题，行标签重名会让按文本定位的
   // 测试/辅助技术命中两处。
   "toggle-palette": "呼出命令面板",
-  // 灵动岛（F-10）：标签同样避开「灵动岛」「灵动岛面板」这两个既有 UI 标题。
+  // 灵动岛：标签同样避开「灵动岛」「灵动岛面板」这两个既有 UI 标题。
   "toggle-dock": "显隐灵动岛",
   "open-dock-panel": "打开灵动岛面板",
-  // 任务栏（F-11）：避开设置页总开关行标题「自定义任务栏外观」与状态条按钮「重新应用」。
+  // 任务栏：避开设置页总开关行标题「自定义任务栏外观」与状态条按钮「重新应用」。
   "taskbar:toggle": "开关任务栏外观",
   "taskbar:reset-state": "重置任务栏状态",
-  screenshot: "截图"
+  screenshot: "截图",
+  // [WIN-OPS]/[WIN-ACTIONS]。
+  "win-topmost": "前台窗口置顶切换",
+  "win-opacity-up": "前台窗口透明度 +",
+  "win-opacity-down": "前台窗口透明度 -",
+  "win-center": "前台窗口居中",
+  "win-snap-left": "前台窗口贴左半屏",
+  "win-snap-right": "前台窗口贴右半屏",
+  "vd-move-left": "前台窗口移到上一虚拟桌面",
+  "vd-move-right": "前台窗口移到下一虚拟桌面",
+  "sys-proxy": "切换系统代理",
+  "sys-contrast": "切换高对比度"
 };
 
 /** 按下这些键本身不构成组合（等待主键）。 */
@@ -97,7 +131,7 @@ export function keyNameFromCode(code: string): string {
   if (letter) return letter[1];
   const digit = /^Digit(\d)$/.exec(code);
   if (digit) return digit[1];
-  return code; // Space/F1/ArrowUp/Numpad0/Minus… 解析器按原名识别
+  return code; // Space//ArrowUp/Numpad0/Minus… 解析器按原名识别
 }
 
 /**
@@ -223,7 +257,7 @@ export const APP_SHORTCUT_DESCS: Record<AppShortcutId, string> = {
   "view-1": "主窗口内切到第一个视图",
   "view-2": "主窗口内切到第二个视图",
   "view-3": "主窗口内切到第三个视图",
-  /* J-3：两键默认同为 Ctrl+K 但分属两个窗口——用户在设置页看到「呼出命令
+  /* 两键默认同为 Ctrl+K 但分属两个窗口——用户在设置页看到「呼出命令
      面板: Ctrl+K」却在设置窗内按出搜索框，误以为文案失实。描述里把
      「另一窗口内同键干什么」写明，归属可预测。 */
   palette: "桌面小组件层呼出 / 收起命令面板；设置窗口内同一按键改为聚焦设置搜索",

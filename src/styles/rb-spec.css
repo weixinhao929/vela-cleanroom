@@ -1,0 +1,55 @@
+/* ==================================================================
+   SpecularFrame：选中态边框的圆周高光环（Specular Button 复刻，
+   配合 src/lib/rb.tsx 的 SpecularFrame 组件）。
+   本规则原先在 rb.css（只随设置窗懒 chunk 加载），
+   但 SpecularFrame 经共享 Segmented（controls.tsx）进入桌面小组件窗
+   （DockTileConfigPopover / WidgetConfigPopoverInner）——设置窗专属的
+   rb.css 覆盖不到，小组件弹层选中项高光框静默缺失。改走组件附带范式：
+   在定义处 src/lib/rb.tsx import 本文件，css 随模块走，两窗皆可达。
+   ================================================================== */
+
+/* 载体元素（.tm-segmented-item 等）需要 relative 定位承载绝对定位的光环。 */
+.tm-segmented-item:has(> .rb-spec),
+.tm-preset-card:has(> .rb-spec) {
+  position: relative;
+}
+
+.rb-spec {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: var(--spec-w, 1.5px);
+  pointer-events: none;
+  z-index: 1;
+  /* 圆周高光：一个窄亮弧随 --spec-ang 旋转（idle 自转 / 指针跟随）。 */
+  background: conic-gradient(
+    from var(--spec-ang, 215deg),
+    transparent 0deg 288deg,
+    color-mix(in srgb, var(--accent) 55%, #fff) 318deg,
+    #fff 336deg,
+    color-mix(in srgb, var(--accent) 55%, #fff) 354deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+/* 系统减少动态：光环静止在一个固定角度（仍在，只是不转）。 */
+@media (prefers-reduced-motion: reduce) {
+  .rb-spec {
+    background: conic-gradient(
+      from 215deg,
+      transparent 0deg 288deg,
+      color-mix(in srgb, var(--accent) 55%, #fff) 318deg,
+      #fff 336deg,
+      color-mix(in srgb, var(--accent) 55%, #fff) 354deg,
+      transparent 360deg
+    );
+  }
+}

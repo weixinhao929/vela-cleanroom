@@ -168,11 +168,13 @@ describe("migrateDockConfig（v1 → v2，纯函数）", () => {
         { id: "id-3", type: "notifications" }
       ]
     });
+    // edge 一律归 top（贴底已退役、竖边无实现；此前保留逻辑被调用点
+    // edge:"top" 覆盖成死代码，现归迁移函数自身完成）。
     const bottom = migrateDockConfig({ enabled: false, edge: "bottom", tiles: ["pomodoro"] }, seq());
     expect(bottom).toEqual({
       ...DOCK_DEFAULTS,
       enabled: false,
-      edge: "bottom",
+      edge: "top",
       tiles: [{ id: "id-1", type: "pomodoro" }]
     });
     const subset = migrateDockConfig({ enabled: true, edge: "top", tiles: ["notifications", "clock"] }, seq());
@@ -198,7 +200,7 @@ describe("migrateDockConfig（v1 → v2，纯函数）", () => {
     expect(migrateDockConfig({ tiles: [] }, seq()).tiles).toEqual([]);
   });
 
-  it("缺字段：{} / null / 非对象 → 默认三磁贴 + 全默认字段；预留边 left/right 被接受", () => {
+  it("缺字段：{} / null / 非对象 → 默认三磁贴 + 全默认字段；一切旧边值（含 left/right）都归 top", () => {
     for (const v1 of [{}, null, undefined, "junk", 12]) {
       const cfg = migrateDockConfig(v1, seq());
       expect(cfg.tiles.map((t) => t.type)).toEqual(["clock", "pomodoro", "notifications"]);
@@ -206,8 +208,26 @@ describe("migrateDockConfig（v1 → v2，纯函数）", () => {
       expect(cfg.edge).toBe("top");
       expect(cfg.version).toBe(2);
     }
-    expect(migrateDockConfig({ edge: "left" }, seq()).edge).toBe("left");
-    expect(migrateDockConfig({ edge: "right" }, seq()).edge).toBe("right");
+    expect(migrateDockConfig({ edge: "left" }, seq()).edge).toBe("top");
+    expect(migrateDockConfig({ edge: "right" }, seq()).edge).toBe("top");
+  });
+
+  it("P3：autoHide 合法值保留、旧三态折算（never→false / fullscreen·idle→true / when-playing 直传）、垃圾回默认", () => {
+    expect(migrateDockConfig({ autoHide: true }, seq()).autoHide).toBe(true);
+    expect(migrateDockConfig({ autoHide: false }, seq()).autoHide).toBe(false);
+    expect(migrateDockConfig({ autoHide: "when-playing" }, seq()).autoHide).toBe("when-playing");
+    expect(migrateDockConfig({ autoHide: "never" }, seq()).autoHide).toBe(false);
+    expect(migrateDockConfig({ autoHide: "fullscreen" }, seq()).autoHide).toBe(true);
+    expect(migrateDockConfig({ autoHide: "idle" }, seq()).autoHide).toBe(true);
+    expect(migrateDockConfig({ autoHide: "junk" }, seq()).autoHide).toBe(DOCK_DEFAULTS.autoHide);
+  });
+
+  it("P3：idGen 按磁贴类型取 id（生产注入确定性 `dock-tile-<type>`，多窗口并发迁移不再各造 uuid）", () => {
+    const cfg = migrateDockConfig({ tiles: ["clock", "pomodoro"] }, (t) => `dock-tile-${t}`);
+    expect(cfg.tiles).toEqual([
+      { id: "dock-tile-clock", type: "clock" },
+      { id: "dock-tile-pomodoro", type: "pomodoro" }
+    ]);
   });
 
   it("缺省 idGen 产生非空且互不相同的 id（crypto.randomUUID）", () => {
@@ -333,11 +353,11 @@ describe("格式与进度", () => {
   });
 });
 
-/* ══ 借鉴 NotchPeninsula 的增强（一.4 / 一.6 / 二.12）══ */
+/* ══ 借鉴 同类灵动岛工具 的增强（一.4 / 一.6 / 二.12）══ */
 
 describe("link 接管（一.4）：优先级与媒体同级、压过通知", () => {
   const now = 1_000_000;
-  it("链接抢占未过期的通知接管（NPS 排序：剪贴板链接 > 通知镜像）", () => {
+  it("链接抢占未过期的通知接管", () => {
     const notif = resolveTakeover(null, { kind: "notification", title: "n" }, now);
     const link = resolveTakeover(notif, { kind: "link", title: "u", url: "https://x" }, now + 100);
     expect(link.kind).toBe("link");
@@ -374,7 +394,7 @@ describe("dockForceVisible / dockTucked（二.12 强制弹出单一真源 + 一.
     expect(dockForceVisible({ ...idle, revealed: true })).toBe(true);
     // 全 kind 穷举：任何接管（含新增 link）都算——新增临时内容必须进排除清单。
     for (const kind of ["pomodoro", "media", "notification", "brightness", "volume", "link"] as const) {
-      expect(dockForceVisible({ ...idle, takeover: { kind, title: "t", until: 1 } })).toBe(true);
+      expect(dockForceVisible({ ...idle, takeover: { kind, title: "t" } })).toBe(true);
     }
     expect(dockForceVisible(idle)).toBe(false);
   });

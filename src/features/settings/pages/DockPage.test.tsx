@@ -1,8 +1,8 @@
 /**
- * 设置页「灵动岛」（ISLAND-CFG · F-6）组件测试：v2 全部字段（含外形 bangs / QQ 式
+ * 设置页「灵动岛」（ISLAND-CFG · ）组件测试：v2 全部字段（含外形 bangs / QQ 式
  * 自动隐藏开关 / 顶部内边距）经页面控件改动后即时写入 widget-store.dock 并按屏落盘
  * （focus-desk.screen.0.dock.v1），重新解析持久化载荷与内存一致（刷新保持）；
- * B2 行可达性（leading 图标 / aria-label）；settings-search 索引命中「灵动岛」「接管」；
+ * 行可达性（leading 图标 / aria-label）；settings-search 索引命中「灵动岛」「接管」；
  * Dropdown 键盘可达回归。「贴边 顶 / 底」选择已移除，页面不再有该分段。
  */
 import { beforeEach, describe, expect, it } from "vitest";

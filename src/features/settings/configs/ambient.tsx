@@ -5,31 +5,35 @@
 import { useEffect, useState } from "react";
 import { useT } from "../../../i18n-lite";
 import { invoke, isTauri } from "../../../lib/tauri";
+import { useSliderDraft } from "../../../lib/use-slider-draft";
 import type { NetworkDetail } from "../../../lib/system-stats";
 import type { WidgetConfig } from "../../../widget/widget-config";
 import { Dropdown, Segmented, SettingToggleRow } from "../shared";
 import { M3Slider as Slider } from "../../../components/ui/M3Slider";
 
+/** 时钟可选时区（从 ClockConfig 提为模块常量——每次渲染重建 16 元素
+ *  数组，且列表本身是不可变的静态数据）。 */
+const TIMEZONES: { id: string; label: string }[] = [
+  { id: "auto", label: "本地时区" },
+  { id: "Asia/Shanghai", label: "北京 / 上海 (UTC+8)" },
+  { id: "Asia/Tokyo", label: "东京 (UTC+9)" },
+  { id: "Asia/Seoul", label: "首尔 (UTC+9)" },
+  { id: "Asia/Singapore", label: "新加坡 (UTC+8)" },
+  { id: "Asia/Dubai", label: "迪拜 (UTC+4)" },
+  { id: "Europe/London", label: "伦敦 (UTC+0)" },
+  { id: "Europe/Paris", label: "巴黎 / 柏林 (UTC+1)" },
+  { id: "Europe/Moscow", label: "莫斯科 (UTC+3)" },
+  { id: "America/New_York", label: "纽约 (UTC-5)" },
+  { id: "America/Chicago", label: "芝加哥 (UTC-6)" },
+  { id: "America/Denver", label: "丹佛 (UTC-7)" },
+  { id: "America/Los_Angeles", label: "洛杉矶 (UTC-8)" },
+  { id: "America/Sao_Paulo", label: "圣保罗 (UTC-3)" },
+  { id: "Australia/Sydney", label: "悉尼 (UTC+10)" },
+  { id: "Pacific/Auckland", label: "奥克兰 (UTC+12)" }
+];
+
 export function ClockConfig({ config, update }: { config: WidgetConfig; update: (p: Partial<WidgetConfig>) => void }) {
   const tr = useT();
-  const TIMEZONES: { id: string; label: string }[] = [
-    { id: "auto", label: "本地时区" },
-    { id: "Asia/Shanghai", label: "北京 / 上海 (UTC+8)" },
-    { id: "Asia/Tokyo", label: "东京 (UTC+9)" },
-    { id: "Asia/Seoul", label: "首尔 (UTC+9)" },
-    { id: "Asia/Singapore", label: "新加坡 (UTC+8)" },
-    { id: "Asia/Dubai", label: "迪拜 (UTC+4)" },
-    { id: "Europe/London", label: "伦敦 (UTC+0)" },
-    { id: "Europe/Paris", label: "巴黎 / 柏林 (UTC+1)" },
-    { id: "Europe/Moscow", label: "莫斯科 (UTC+3)" },
-    { id: "America/New_York", label: "纽约 (UTC-5)" },
-    { id: "America/Chicago", label: "芝加哥 (UTC-6)" },
-    { id: "America/Denver", label: "丹佛 (UTC-7)" },
-    { id: "America/Los_Angeles", label: "洛杉矶 (UTC-8)" },
-    { id: "America/Sao_Paulo", label: "圣保罗 (UTC-3)" },
-    { id: "Australia/Sydney", label: "悉尼 (UTC+10)" },
-    { id: "Pacific/Auckland", label: "奥克兰 (UTC+12)" }
-  ];
   return (
     <>
       <SettingToggleRow
@@ -122,6 +126,8 @@ export function WeatherConfig({
   update: (p: Partial<WidgetConfig>) => void;
 }) {
   const tr = useT();
+  /* 刷新间隔滑杆走草稿、松手（onCommitEnd）一次 update()。 */
+  const refreshInterval = useSliderDraft((v) => update({ refreshInterval: v }));
   return (
     <>
       <div className="tm-setting-row">
@@ -187,19 +193,20 @@ export function WeatherConfig({
         </div>
         <Slider
           label="刷新间隔"
-          value={(config.refreshInterval as number) || 30}
+          value={refreshInterval.draft ?? ((config.refreshInterval as number) || 30)}
           min={5}
           max={120}
           step={5}
           suffix="分钟"
-          onChange={(v) => update({ refreshInterval: v })}
+          onChange={refreshInterval.slide}
+          onCommitEnd={refreshInterval.commitEnd}
         />
       </div>
     </>
   );
 }
 
-/** W-145 指定网卡选择行：显示时按需拉一次网卡列表（get_network_details）。 */
+/** 指定网卡选择行：显示时按需拉一次网卡列表（get_network_details）。 */
 function AdapterSelectRow({
   show,
   value,
@@ -211,18 +218,25 @@ function AdapterSelectRow({
 }) {
   const tr = useT();
   const [adapters, setAdapters] = useState<NetworkDetail[]>([]);
+  /* 枚举失败态与空列表区分开——失败保留原提示文案，并给「重试」
+     按钮复用同一刷新回调（retry 作 effect 依赖，点击即重拉一次）。 */
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (!show || !isTauri()) return;
     let alive = true;
+    setFailed(false);
     void invoke<NetworkDetail[]>("get_network_details")
       .then((d) => {
         if (alive) setAdapters(d ?? []);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
     return () => {
       alive = false;
     };
-  }, [show]);
+  }, [show, retry]);
   if (!show) return null;
   const options = adapters.map((a) => ({ id: a.name, label: a.name }));
   return (
@@ -233,6 +247,11 @@ function AdapterSelectRow({
           {adapters.length === 0 ? tr("未枚举到网卡，可稍后重试") : tr("指定后只显示该网卡的速率")}
         </span>
       </div>
+      {(failed || adapters.length === 0) && (
+        <button className="tm-btn-secondary" onClick={() => setRetry((n) => n + 1)} data-interactive>
+          {tr("重试")}
+        </button>
+      )}
       <Dropdown
         value={options.some((o) => o.id === value) ? value : ""}
         options={options.length > 0 ? options : [{ id: "", label: tr("暂无网卡") }]}
@@ -250,6 +269,9 @@ export function SystemMonitorConfig({
   update: (p: Partial<WidgetConfig>) => void;
 }) {
   const tr = useT();
+  /* 刷新间隔滑杆走草稿、松手一次 update()（监控组件刷新间隔变更
+     会重启采集定时器，逐 input 事件提交尤其浪费）。 */
+  const refreshInterval = useSliderDraft((v) => update({ refreshInterval: v }));
   return (
     <>
       <SettingToggleRow
@@ -302,10 +324,25 @@ export function SystemMonitorConfig({
       />
       <SettingToggleRow
         title={tr("阈值告警")}
-        desc={tr("CPU/内存 >80% 时进度条与数值变红")}
+        desc={tr("高于阈值时进度条与数值变红")}
         on={config.thresholdAlert !== false}
         onChange={(v) => update({ thresholdAlert: v })}
       />
+      <div className="tm-setting-row">
+        <div className="tm-setting-text">
+          <span className="tm-setting-title">{tr("告警阈值")}</span>
+          <span className="tm-setting-desc">{tr("高于此值进度条与数值变红（%）")}</span>
+        </div>
+        <Slider
+          label={tr("告警阈值")}
+          value={(config.alertThreshold as number) || 80}
+          min={10}
+          max={100}
+          step={5}
+          suffix="%"
+          onChange={(v) => update({ alertThreshold: v })}
+        />
+      </div>
       <div className="tm-setting-row">
         <div className="tm-setting-text">
           <span className="tm-setting-title">{tr("网卡显示")}</span>
@@ -340,12 +377,13 @@ export function SystemMonitorConfig({
         </div>
         <Slider
           label="刷新间隔"
-          value={(config.refreshInterval as number) || 3}
+          value={refreshInterval.draft ?? ((config.refreshInterval as number) || 3)}
           min={1}
           max={30}
           step={1}
           suffix="秒"
-          onChange={(v) => update({ refreshInterval: v })}
+          onChange={refreshInterval.slide}
+          onCommitEnd={refreshInterval.commitEnd}
         />
       </div>
     </>
@@ -360,6 +398,9 @@ export function HardwareConfig({
   update: (p: Partial<WidgetConfig>) => void;
 }) {
   const tr = useT();
+  /* 趋势窗口 / 刷新间隔两滑杆走草稿、松手一次 update()。 */
+  const historyLen = useSliderDraft((v) => update({ historyLen: v }));
+  const refreshInterval = useSliderDraft((v) => update({ refreshInterval: v }));
   return (
     <>
       <SettingToggleRow
@@ -423,12 +464,13 @@ export function HardwareConfig({
         </div>
         <Slider
           label="趋势窗口"
-          value={(config.historyLen as number) || 40}
+          value={historyLen.draft ?? ((config.historyLen as number) || 40)}
           min={10}
           max={120}
           step={5}
           suffix={tr("点")}
-          onChange={(v) => update({ historyLen: v })}
+          onChange={historyLen.slide}
+          onCommitEnd={historyLen.commitEnd}
         />
       </div>
       <SettingToggleRow
@@ -444,12 +486,13 @@ export function HardwareConfig({
         </div>
         <Slider
           label="刷新间隔"
-          value={(config.refreshInterval as number) || 3}
+          value={refreshInterval.draft ?? ((config.refreshInterval as number) || 3)}
           min={1}
           max={30}
           step={1}
           suffix="秒"
-          onChange={(v) => update({ refreshInterval: v })}
+          onChange={refreshInterval.slide}
+          onCommitEnd={refreshInterval.commitEnd}
         />
       </div>
     </>

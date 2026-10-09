@@ -1,11 +1,10 @@
-//! 开始菜单状态源（F-3；标杆 CreateAppVisibility :830-848 /
-//! IsStartMenuOpened :1034-1051）。
+//! 开始菜单状态源。
 //!
 //! `CoCreateInstance(CLSID_AppVisibility)` + `Advise(IAppVisibilityEvents)`
 //! 订阅 Launcher 可见性；初始值 `IsLauncherVisible()`。回调（COM 会在任意
 //! RPC 线程上调）只往无界 channel 发 `EngineMsg::Start(bool)`——显示器
-//! 归属在状态机线程处理（标杆口径：事件后 Sleep(5) + 前台窗口所在显示
-//! 器，GetStartMenuMonitor hpp:236-247，已知不精确的启发式）。
+//! 归属在状态机线程处理（事件后 Sleep(5) + 前台窗口所在显示
+//! 器，已知不精确的启发式）。
 //!
 //! 引用计数协议：sink 以引用数 1 出生，该引用的所有权交给
 //! `IAppVisibilityEvents::from_raw` 的类型化包装器；[`StartWatch`] 同时
@@ -59,7 +58,7 @@ pub fn watch_start(tx: Sender<EngineMsg>) -> Result<StartWatch, String> {
             .Advise(&sink)
             .map_err(|e| format!("AppVisibility::Advise 失败: {e}"))?
     };
-    // 初始读数（失败按关闭，与标杆 IsStartMenuOpened 失败回 false 一致）。
+    // 初始读数（失败按关闭，与 IsStartMenuOpened 失败回 false 一致）。
     let initial = unsafe {
         app_visibility
             .IsLauncherVisible()
@@ -146,9 +145,14 @@ impl LauncherVisibilitySink {
 
     unsafe extern "system" fn release(this: *mut core::ffi::c_void) -> u32 {
         // SAFETY: 归零时 this 是 Box::into_raw 的原指针，还原为 Box 释放。
+        // 减计用 AcqRel——末次释放线程必须 Acquire 其它持有线程
+        // fetch_sub(Release) 之前的全部写（含 sink 字段初始化与回调期间的
+        // 状态），Box::from_raw 析构才不与并发访问竞争（对照 taskbar_tap
+        // blur_brush.rs release_reference 的正确示范；原先只用 Release，末
+        // 次 fetch_sub 与析构之间缺 Acquire 半边）。
         unsafe {
             let sink = &*(this as *mut LauncherVisibilitySink);
-            let remaining = sink.refs.fetch_sub(1, Ordering::Release);
+            let remaining = sink.refs.fetch_sub(1, Ordering::AcqRel);
             if remaining == 1 {
                 drop(Box::from_raw(this as *mut LauncherVisibilitySink));
                 return 0;
@@ -170,11 +174,13 @@ impl LauncherVisibilitySink {
         this: *mut core::ffi::c_void,
         visible: windows::core::BOOL,
     ) -> HRESULT {
-        // SAFETY: this 为 Advise 时传入的 sink。
-        unsafe {
+        // panic 穿越 COM 回调是 UB——对齐 search.rs HandlerSink::invoke
+        // / win_event.rs 钩子的 catch_unwind 基线，回调体包隔离（COM 会在
+        // 任意 RPC 线程上调本入口）。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             let sink = &*(this as *mut LauncherVisibilitySink);
             let _ = sink.tx.send(EngineMsg::Start(visible.as_bool()));
-        }
+        }));
         HRESULT(0)
     }
 }

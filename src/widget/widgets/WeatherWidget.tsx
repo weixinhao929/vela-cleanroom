@@ -4,7 +4,6 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlarmClock, ChevronDown, CloudRain, CloudSun, RefreshCw, Sunrise, Sunset, WifiOff, X } from "lucide-react";
-import { fetchJson } from "../../lib/network";
 import { fetchIpGeo, readIpGeoCache } from "../../lib/ip-geo";
 import { isAbortError } from "../../lib/retry";
 import { isOnline, subscribeOnline, useOnline } from "../../lib/online-status";
@@ -15,9 +14,16 @@ import { animDurations } from "../../lib/durations";
 import { useWidgetConfig } from "../widget-config";
 import { sourceNotify } from "../../lib/notifications";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
-import { aqiLevel, moodOf, weatherIcon, WEEKDAY_CN } from "./weather-shared";
-import { readWeatherCache, weatherCacheSlot, writeWeatherCacheSlot } from "./weather-cache";
-import { localTimeToMs, hourLabel, nextHourPrecip, summarizeNextHour, type PrecipSlot } from "../weather-station-data";
+import { aqiLevel, fetchJsonShared, moodOf, weatherIcon, WEEKDAY_CN } from "./weather-shared";
+import { markAlertNotified, readWeatherCache, weatherCacheSlot, writeWeatherCacheSlot } from "./weather-cache";
+import {
+  alertTimeMs,
+  localTimeToMs,
+  hourLabel,
+  nextHourPrecip,
+  summarizeNextHour,
+  type PrecipSlot
+} from "../weather-station-data";
 
 type CurrentWeather = {
   temperature: number;
@@ -73,7 +79,7 @@ type OpenMeteoResponse = {
 
 /* 时间工具 / 图标映射 / AQI 分级已上移 weather-shared.ts 与 weather-station-data.ts（与 WeatherStation 沉浸页共用）。 */
 
-/** W-008 Open-Meteo 空气质量接口（独立域名，仅 current 欧洲 AQI + UV 指数）。 */
+/** Open-Meteo 空气质量接口（独立域名，仅 current 欧洲 AQI + UV 指数）。 */
 type AirQualityResponse = {
   current?: { european_aqi?: number; uv_index?: number };
 };
@@ -88,16 +94,25 @@ type WeatherSnapshot = {
   at: number;
   aqi?: number | null;
   uv?: number | null;
-  /* W-009 全天逐时（供逐日详情曲线；老缓存无此字段回退 hourly）。 */
+  /* 全天逐时（供逐日详情曲线；老缓存无此字段回退 hourly）。 */
   allHourly?: HourlyPoint[];
   /* §4.7 未来一小时降雨槽（拉取时刻换算好的 4×15min mm/h；老缓存无此字段 → 隐藏）。 */
   minutely?: PrecipSlot[];
+  /* 拉取时刻的 utc_offset_seconds：缓存重放时预警生效窗口的换算依据（老缓存无 → 本机时区兜底）。 */
+  utcOffset?: number;
 };
 
 /* 缓存槽读写走 weather-cache（WeatherMini 等只读方据此订阅刷新）。 */
 const cacheSlot = weatherCacheSlot;
 const readCache = () => readWeatherCache<WeatherSnapshot>();
 const writeCache = (slot: string, snap: WeatherSnapshot): void => writeWeatherCacheSlot(slot, snap);
+
+/* 天气多实例重复轮询/预警双推：
+ *  - 同 URL 的在途请求跨实例合并 → fetchJsonShared（weather-shared，abort 解绑语义见其注释）；
+ *  - 预警推送去重基线持久化在 localStorage（weather-cache markAlertNotified），
+ *    同窗口多实例与多显示器多窗口都不再同一预警重复推送；key 含城市槽位，
+ *    不同城市的同名同时预警各自有基线。 */
+const alertKey = (slot: string, event: string, start: string) => `${slot}|${event}|${start}`;
 
 /**
  * Weather widget backed by Open-Meteo (free, no API key). The city/coordinates
@@ -111,11 +126,11 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
   const [weather, setWeather] = useState<CurrentWeather | null>(null);
   const [forecast, setForecast] = useState<DailyForecast | null>(null);
   const [hourly, setHourly] = useState<HourlyPoint[]>([]);
-  /* W-009 全天逐时数据（详情曲线用），与 8 点显示条分离。 */
+  /* 全天逐时数据（详情曲线用），与 8 点显示条分离。 */
   const [allHourly, setAllHourly] = useState<HourlyPoint[]>([]);
   const [error, setError] = useState(false);
   const [stale, setStale] = useState(false);
-  /* W-010 城市选择持久化到组件配置，刷新/重启后不再回退主城市。 */
+  /* 城市选择持久化到组件配置，刷新/重启后不再回退主城市。 */
   const [cityIndex, setCityIndex] = useState(() => {
     const v = config.cityIndex;
     // useWidgetConfig 读的是原始值：手改/损坏配置里的 -5 / NaN 会让下面
@@ -123,17 +138,19 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
     return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0;
   });
   const [retryKey, setRetryKey] = useState(0);
-  /* W-007 手动刷新：请求在途时刷新图标旋转。 */
+  /* 手动刷新：请求在途时刷新图标旋转。 */
   const [refreshing, setRefreshing] = useState(false);
-  /* W-008 空气质量 + 紫外线。 */
+  /* 空气质量 + 紫外线。 */
   const [aqi, setAqi] = useState<number | null>(null);
   const [uv, setUv] = useState<number | null>(null);
   /* §4.7 未来一小时降雨（minutely_15 → 4 槽 mm/h；拉取/失败均静默降级为隐藏）。 */
   const [minutely, setMinutely] = useState<PrecipSlot[]>([]);
-  /* W-009 逐日详情展开层：展开的是 forecast 索引（0=今天）。 */
+  /* 逐日详情展开层：展开的是 forecast 索引（0=今天）。 */
   const [openDay, setOpenDay] = useState<number | null>(null);
-  /* 详情层退场：关闭后播 .is-closing 再卸载，期间以最后一次打开的天快照渲染。 */
-  const detailVisible = useDelayedUnmount(openDay != null, Math.round(animDurations().fxMs));
+  /* 详情层退场：关闭后播 .is-closing 再卸载，期间以最后一次打开的天快照渲染。
+     等待时长与 .widget-weather-daydetail.is-closing 的
+     --dur-fx-fast 对齐（此前用 fxMs 多挂 50ms 空档）。 */
+  const detailVisible = useDelayedUnmount(openDay != null, Math.round(animDurations().fxFastMs));
   const lastOpenDay = useRef<number | null>(openDay);
   if (openDay != null) lastOpenDay.current = openDay;
   const shownDay = openDay ?? lastOpenDay.current;
@@ -153,6 +170,8 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
   const refreshInterval = Math.max(5, (config.refreshInterval as number) || 30) * 60 * 1000;
   const [humidity, setHumidity] = useState<number | null>(null);
   const [alerts, setAlerts] = useState<WeatherAlert[]>([]);
+  /* 拉取响应的 utc_offset_seconds：预警生效窗口按城市本地时间换算的依据。 */
+  const [utcOffset, setUtcOffset] = useState<number | undefined>(undefined);
   const [showAlertDetail, setShowAlertDetail] = useState(false);
 
   const cities = useMemo(() => [{ name: city || "未知位置", lat, lon }, ...extraCities], [city, lat, lon, extraCities]);
@@ -160,10 +179,18 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
   const activeLat = active.lat;
   const activeLon = active.lon;
 
-  /* W-012 已推送过的预警 key（event+start），避免同一预警在轮询里反复推送。 */
-  const notifiedAlerts = useRef<Set<string>>(new Set());
+  /* 附加城市在设置里删除后 cityIndex 可能超界：显示侧虽被 Math.min 钳制，
+   * 但 chips 无高亮项、配置里也留着脏索引（下次重开仍指着已不存在的槽）。
+   * 收缩时同步钳制并回写配置。 */
+  useEffect(() => {
+    const max = cities.length - 1;
+    if (cityIndex > max) {
+      setCityIndex(max);
+      update({ cityIndex: max });
+    }
+  }, [cities.length, cityIndex, update]);
 
-  // B-8：轮询闭包持有 effect 创建时的旧 alertNotify/tr/aqi/uv——改"预警通知"
+  // 轮询闭包持有 effect 创建时的旧 alertNotify/tr/aqi/uv——改"预警通知"
   // 开关或切语言后，下一次轮询仍读到旧值（首轮 aqi/uv 为 null 还会覆写缓存）。
   // 在 render 期同步的 ref 保活最新值，writeCache 与预警推送都读 ref：
   const alertNotifyRef = useRef(alertNotify);
@@ -207,6 +234,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
       setAqi(cached.aqi ?? null);
       setUv(cached.uv ?? null);
       setMinutely(cached.minutely ?? []);
+      setUtcOffset(cached.utcOffset);
       setStale(true);
     } else {
       setWeather(null);
@@ -218,9 +246,11 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
       setAqi(null);
       setUv(null);
       setMinutely([]);
+      setUtcOffset(undefined);
       setStale(false);
     }
-    for (const a of cached?.alerts ?? []) notifiedAlerts.current.add(`${a.event}|${a.start}`);
+    /* 缓存里的预警视为已处理（含他窗已推过的），进基线避免重挂载/换城后再推。 */
+    for (const a of cached?.alerts ?? []) markAlertNotified(alertKey(slot, a.event, a.start));
     const load = () => {
       if (!isOnline()) {
         if (!readCache()[slot]) setError(true);
@@ -228,9 +258,11 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
       }
       setRefreshing(true);
       const url = `https://api.open-meteo.com/v1/forecast?latitude=${activeLat}&longitude=${activeLon}&current_weather=true&current=relative_humidity_2m,apparent_temperature&hourly=temperature_2m,weathercode,precipitation_probability&daily=weathercode,temperature_2m_max,temperature_2m_min,sunrise,sunset&minutely_15=precipitation&timezone=auto&forecast_days=5&alerts=true`;
-      fetchJson<OpenMeteoResponse>(url, { retries: 2, signal: controller.signal })
+      fetchJsonShared<OpenMeteoResponse>(url, { retries: 2, signal: controller.signal })
         .then((data) => {
           if (cancelled || controller.signal.aborted) return;
+          /* 本轮主快照写入时刻：AQI 回写只并入「仍属于本轮」的缓存（见下）。 */
+          let mainAt = 0;
           if (data?.current_weather) {
             const nextWeather: CurrentWeather = {
               temperature: data.current_weather.temperature,
@@ -277,8 +309,10 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
             setHumidity(nextHumidity);
             const nextAlerts = Array.isArray(data.alerts) ? data.alerts : [];
             setAlerts(nextAlerts);
+            setUtcOffset(typeof data.utc_offset_seconds === "number" ? data.utc_offset_seconds : undefined);
             setError(false);
             setStale(false);
+            mainAt = Date.now();
             writeCache(slot, {
               weather: nextWeather,
               forecast: nextForecast,
@@ -286,20 +320,26 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
               allHourly: nextAllHourly,
               humidity: nextHumidity,
               alerts: nextAlerts,
-              at: Date.now(),
+              at: mainAt,
               aqi: aqiRef.current,
               uv: uvRef.current,
-              minutely: nextMinutely
+              minutely: nextMinutely,
+              utcOffset: typeof data.utc_offset_seconds === "number" ? data.utc_offset_seconds : undefined
             });
-            /* W-012 新预警推送：只推「首次出现且生效中」的预警。 */
+            /* 记住本轮主快照时间：AQI 回写只并入「仍属于本轮」的缓存——期间
+               沉浸页/他窗若已刷出更新的快照（at > mainAt），不再把本轮 AQI 盖
+               上去（非原子回写竞态，对方有自己的 AQI 跟进）。 */
+            /* 新预警推送：只推「首次出现且生效中」的预警。生效窗口用
+               alertTimeMs 换算（timezone=auto 的无偏移本地时间 + 跨时区城市），
+               解析失败的端点按「已开始 / 未结束」处理——预警宁推勿漏。 */
             const nowT = Date.now();
             for (const a of nextAlerts) {
-              const key = `${a.event}|${a.start}`;
-              if (notifiedAlerts.current.has(key)) continue;
-              notifiedAlerts.current.add(key);
-              const end = a.end ? new Date(a.end).getTime() : 0;
-              const startOk = a.start ? new Date(a.start).getTime() <= nowT : true;
-              if (startOk && (!end || end > nowT) && alertNotifyRef.current) {
+              if (!markAlertNotified(alertKey(slot, a.event, a.start))) continue;
+              const end = a.end ? alertTimeMs(a.end, data.utc_offset_seconds) : NaN;
+              const startMs = a.start ? alertTimeMs(a.start, data.utc_offset_seconds) : NaN;
+              const startOk = !Number.isFinite(startMs) || startMs <= nowT;
+              const notEnded = !a.end || !Number.isFinite(end) || end > nowT;
+              if (startOk && notEnded && alertNotifyRef.current) {
                 void sourceNotify(
                   "weather",
                   `${trRef.current("天气预警")} · ${active.name}`,
@@ -309,9 +349,9 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
             }
           }
           setRefreshing(false);
-          /* W-008 空气质量第二请求：失败静默（面板隐藏该行即可）。 */
+          /* 空气质量第二请求：失败静默（面板隐藏该行即可）。 */
           const aqUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${activeLat}&longitude=${activeLon}&current=european_aqi,uv_index&timezone=auto`;
-          return fetchJson<AirQualityResponse>(aqUrl, { retries: 1, signal: controller.signal })
+          return fetchJsonShared<AirQualityResponse>(aqUrl, { retries: 1, signal: controller.signal })
             .then((aq) => {
               if (cancelled || controller.signal.aborted) return;
               const na = aq?.current?.european_aqi ?? null;
@@ -319,7 +359,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
               setAqi(na);
               setUv(nu);
               const snap = readCache()[slot];
-              if (snap) writeCache(slot, { ...snap, aqi: na, uv: nu });
+              if (snap && mainAt > 0 && snap.at <= mainAt) writeCache(slot, { ...snap, aqi: na, uv: nu });
             })
             .catch(() => {});
         })
@@ -360,6 +400,12 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
     const v = unit === "fahrenheit" ? (c * 9) / 5 + 32 : c;
     return `${Math.round(v)}°`;
   };
+  /* 风速在显示层换算 mph（华氏口径用户惯例）：缓存里恒存 km/h，切换单位后
+   * 旧缓存不会带错单位标签（请求层换算做不到这一点）。 */
+  const fmtWind = (kmh: number) =>
+    unit === "fahrenheit"
+      ? tr("风速 {n} mph", { n: (kmh / 1.609344).toFixed(0) })
+      : tr("风速 {n} km/h", { n: kmh.toFixed(0) });
   const clockFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
   const fmtClock = (iso?: string) => {
     if (!iso) return "";
@@ -380,14 +426,17 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
 
   const nowMs = Date.now();
   const activeAlert = alerts.find((a) => {
-    const end = a.end ? new Date(a.end) : null;
-    return !end || end.getTime() > nowMs;
+    if (!a.end) return true;
+    /* 生效窗口按城市本地时间换算（alertTimeMs）；解析失败的串按未结束处理
+       （横幅宁多勿漏——与推送口径一致）。 */
+    const end = alertTimeMs(a.end, utcOffset);
+    return !Number.isFinite(end) || end > nowMs;
   });
 
   /* §4.7 未来一小时降雨摘要（无槽数据 → null，条隐藏）。 */
   const minutelySummary = minutely.length > 0 ? summarizeNextHour(minutely) : null;
 
-  /* W-011 动态背景色调：晴天暖 / 雨天冷 / 雪天亮蓝 / 雷暴偏紫。 */
+  /* 动态背景色调：晴天暖 / 雨天冷 / 雪天亮蓝 / 雷暴偏紫。 */
   const mood = weather ? moodOf(weather.weathercode) : "cloudy";
   /* mood 交叉淡化：radial-gradient 之间 background 不可插值（transition 无效），
      双 overlay——旧 mood 层播 opacity 淡出，新层淡入。 */
@@ -400,7 +449,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
     safeTimeout(() => setMoodLayers((s) => ({ ...s, prev: null })), 1300);
   }, [moodLayers.prev, safeTimeout]);
 
-  /* W-009 逐日详情：某天（forecast 索引）的 24h 温度曲线 + 降水概率。 */
+  /* 逐日详情：某天（forecast 索引）的 24h 温度曲线 + 降水概率。 */
   const dayDetail = (idx: number) => {
     const day = forecast?.time?.[idx];
     if (!day) return null;
@@ -437,7 +486,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
           {tr("加载中…")}
         </div>
       )}
-      {/* W-007 手动刷新按钮：右上角悬停出现，刷新中旋转。 */}
+      {/* 手动刷新按钮：右上角悬停出现，刷新中旋转。 */}
       <button
         className={`widget-weather-refresh${refreshing ? " spinning" : ""}`}
         onClick={(e) => {
@@ -450,7 +499,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
       >
         <RefreshCw size={12} />
       </button>
-      {/* 天气预警横幅（F3）：有生效中预警时优先展示，可点击展开详情 */}
+      {/* 天气预警横幅：有生效中预警时优先展示，可点击展开详情 */}
       {activeAlert && (
         <div
           className={`widget-weather-alert${showAlertDetail ? " open" : ""}`}
@@ -471,7 +520,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
             <AlarmClock size={13} />
           </span>
           <span className="widget-weather-alert-text">{activeAlert.event || tr("天气预警")}</span>
-          {/* E9：几何字符 ▾/▸ 换 lucide 旋转箭头（随主题着色、跨平台一致）。 */}
+          {/* 几何字符 ▾/▸ 换 lucide 旋转箭头（随主题着色、跨平台一致）。 */}
           <span className={`widget-weather-alert-toggle${showAlertDetail ? " open" : ""}`}>
             <ChevronDown size={13} />
           </span>
@@ -482,7 +531,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
           )}
         </div>
       )}
-      {/* 多城市切换：附加城市存在时显示 chips（W-010 选择写入配置持久化） */}
+      {/* 多城市切换：附加城市存在时显示 chips（选择写入配置持久化） */}
       {cities.length > 1 && (
         <div className="widget-weather-cities" role="tablist" aria-label={tr("切换城市")}>
           {cities.map((c, i) => (
@@ -507,7 +556,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
       </div>
       <div className="widget-weather-main">
         <div className="widget-weather-temp" key={weather ? weather.temperature : -999}>
-          {/* 首载骨架条替代「—」硬替换（S7）：错误/离线仍显示占位符与重试。 */}
+          {/* 首载骨架条替代「—」硬替换：错误/离线仍显示占位符与重试。 */}
           {weather ? (
             fmtTemp(weather.temperature)
           ) : error ? (
@@ -537,9 +586,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
             {showCity && `${tr(active.name)}`}
             {stale && ` · ${tr("离线缓存")}`}
             {feels != null && Number.isFinite(feels) && ` · ${tr("体感 {t}", { t: fmtTemp(feels) })}`}
-            {showWindHumidity &&
-              Number.isFinite(weather.windspeed) &&
-              ` · ${tr("风速 {n} km/h", { n: weather.windspeed.toFixed(0) })}`}
+            {showWindHumidity && Number.isFinite(weather.windspeed) && ` · ${fmtWind(weather.windspeed)}`}
             {showWindHumidity && humidity != null && " · "}
             {showWindHumidity && humidity != null && tr("湿度 {n}%", { n: humidity })}
             {!showWindHumidity && !showCity && feels == null && tr("已更新")}
@@ -547,7 +594,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
         ) : null}
       </div>
 
-      {/* W-008 空气质量 + 紫外线行 */}
+      {/* 空气质量 + 紫外线行 */}
       {showAqi && weather && (aqi != null || uv != null) && (
         <div className="widget-weather-aqi">
           {aqi != null && (
@@ -647,7 +694,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
         </div>
       )}
 
-      {/* 未来预报：未来 4 天，图标 + 最高/最低温（W-009 点击展开当日详情） */}
+      {/* 未来预报：未来 4 天，图标 + 最高/最低温（点击展开当日详情） */}
       {forecastDays.length > 0 && forecast && (
         <div className="widget-weather-forecast">
           {forecastDays.map((day, i) => {
@@ -685,7 +732,7 @@ export function WeatherWidget({ instanceId }: { instanceId: string }) {
         </div>
       )}
 
-      {/* W-009 当日详情层：温度曲线 + 逐时降水概率。key=openDay 切换天时重挂
+      {/* 当日详情层：温度曲线 + 逐时降水概率。key=openDay 切换天时重挂
           重播曲线 draw；关闭播 .is-closing 淡出（useDelayedUnmount + 快照），
           不再瞬消/整层瞬换。 */}
       {detailVisible && shownDay != null && dayDetail(shownDay) && forecast && (

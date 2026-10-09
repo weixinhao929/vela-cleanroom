@@ -4,13 +4,14 @@
  */
 import { useDelayedUnmount } from "../../lib/anim";
 import { animDurations } from "../../lib/durations";
+import { useSliderDraft } from "../../lib/use-slider-draft";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useTauriEvent } from "../../lib/use-tauri-event";
 import { Check, LayoutGrid, Trash2 } from "lucide-react";
 import { invoke, isTauri } from "../../lib/tauri";
 import { pickFilePath } from "../../lib/file-dialog";
 import { getWidgetMeta } from "../../widget/registry";
-import { useWidgetStore } from "../../widget/widget-store";
+import { useWidgetStore, type DockTile } from "../../widget/widget-store";
 import { useSettingsStore } from "../../store/settings-store";
 import {
   loadWidgetConfig as loadSharedWidgetConfig,
@@ -18,14 +19,30 @@ import {
   CHANGE_EVENT,
   type WidgetConfig
 } from "../../widget/widget-config";
-import { loadCustomShortcuts, type CustomShortcut } from "../../widget/shortcuts-shared";
+import {
+  loadCustomShortcuts,
+  loadShortcutFolders,
+  loadShortcutPositions,
+  pruneFolderChildren,
+  type CustomShortcut
+} from "../../widget/shortcuts-shared";
 import { sanitizeWidgetConfig } from "../../widget/config-schemas";
-import { addMinutesToTime, DEFAULT_SECTION_TIMES, parseTimeList, sanitizeTimetableData } from "../../widget/timetable";
+import {
+  activeProfileIdOf,
+  addMinutesToTime,
+  DEFAULT_SECTION_TIMES,
+  loadProfiles,
+  parseTimeList,
+  profilesPatch,
+  sanitizeTimetableData
+} from "../../widget/timetable";
 import { MISC_TYPE } from "../../widget/widgets/misc/MiscBoardPanel";
 import { removeItem, sanitizeMiscItems } from "../../widget/widgets/misc/misc-layout";
 import { locateWidgetCrossWindow } from "../../widget/locate-widget";
 import { useT } from "../../i18n-lite";
 import { confirmDialog } from "../../components/PromptDialog";
+import { widgetDisplayName } from "../../widget/display-name";
+import { promptRenameGroup, promptRenameInstance } from "../../widget/rename";
 import { type Page, DatePicker, Stepper, Segmented, SettingRow, SettingToggleRow } from "./shared";
 import { M3Slider as Slider } from "../../components/ui/M3Slider";
 import { suggestGroups, stemOf, type SuggestedGroup } from "../../widget/grouping-suggest";
@@ -62,9 +79,36 @@ function InstanceBehaviorRows({ instanceId }: { instanceId: string }) {
   const previewOpacity = useWidgetStore((s) =>
     s.opacityPreview && s.opacityPreview.id === instanceId ? s.opacityPreview.value : null
   );
+  /* 设置页同款透明度滑条此前只有 onCommitEnd 提交、
+     无卸载兜底——拖动中导航离开本页（组件卸载、WakeSlider 的 pointer
+     capture 静默丢失）时预览残留 store、桌面停在预览值但从未落盘。卸载时
+     按预览值落盘（与弹层 同语义：等效完成提交，保留用户意图），只碰
+     本行管辖的 id。 */
+  useEffect(
+    () => () => {
+      const st = useWidgetStore.getState();
+      const pv = st.opacityPreview;
+      if (pv && pv.id === instanceId) {
+        st.setOpacityPreview(null);
+        st.updateWidget(instanceId, { opacity: pv.value });
+      }
+    },
+    [instanceId]
+  );
   if (!inst) return null;
   return (
     <>
+      {/* 通用：显示名（独立卡此前无重命名入口——只有编组成员能改）。
+          按钮文案即当前自定义名，留空回落「重命名」；弹窗留空恢复默认名。 */}
+      <div className="tm-setting-row">
+        <div className="tm-setting-text">
+          <span className="tm-setting-title">{tr("名称")}</span>
+          <span className="tm-setting-desc">{tr("自定义名称用于卡片标题与编组标签；留空恢复默认")}</span>
+        </div>
+        <button className="tm-btn-secondary" onClick={() => void promptRenameInstance(instanceId, tr)} data-interactive>
+          {inst.label?.trim() || tr("重命名")}
+        </button>
+      </div>
       {/* 通用：独立透明度 */}
       <div className="tm-setting-row">
         <div className="tm-setting-text">
@@ -118,10 +162,15 @@ export function WidgetConfigPage({ instanceId, onNavigate }: { instanceId: strin
   );
 
   const update = (patch: Partial<WidgetConfig>) => {
-    const next = { ...config, ...patch };
+    // 写前现读权威配置做基底：本页的异步操作（文件对话框等）回来后，渲染
+    // 闭包里的 config 可能已落后于桌面端的并发改动，拿旧闭包当基底会把它
+    // 们静默覆盖丢失——CHANGE_EVENT 重读只救得了下一次渲染，救不了仍在
+    // 进行中的旧闭包。保存前过 schema，保证落盘数据与定义一致。
+    const type = useWidgetStore.getState().instances.find((i) => i.id === instanceId)?.type ?? "";
+    const base = sanitizeWidgetConfig(type, loadWidgetConfig(instanceId));
+    const next = sanitizeWidgetConfig(type, { ...base, ...patch });
     setConfig(next);
-    // 保存前同样过一遍 schema，保证落盘数据与定义一致。
-    saveWidgetConfig(instanceId, sanitizeWidgetConfig(inst?.type ?? "", next));
+    saveWidgetConfig(instanceId, next);
   };
 
   // 桌面端（如时钟内置弹窗、课表导入）改了配置后，已打开的设置页要重读；
@@ -162,7 +211,8 @@ export function WidgetConfigPage({ instanceId, onNavigate }: { instanceId: strin
   return (
     <section className="tm-section">
       <div className="tm-section-title">
-        {tr(meta.name)} {tr("配置")}
+        {/* 标题走 widgetDisplayName——重命名后配置页不再显示旧类型名。 */}
+        {widgetDisplayName(inst.type, inst.id, instances, tr)} · {tr("配置")}
       </div>
       <div className="tm-config-grid">
         <InstanceBehaviorRows instanceId={instanceId} />
@@ -228,7 +278,7 @@ export function WidgetTypeConfigFields({
       {type === "unitconverter" && <UnitConverterConfig config={config} update={update} />}
       {type === "gallery" && <GalleryConfig config={config} update={update} instanceId={instanceId} />}
       {type === "sysbar" && <SysbarConfig config={config} update={update} />}
-      {type === "shortcuts" && <ShortcutsConfig config={config} update={update} />}
+      {type === "shortcuts" && <ShortcutsConfig config={config} update={update} instanceId={instanceId} />}
       {type === "recycle" && <RecycleConfig />}
       {type === "sketch" && <SketchConfig config={config} update={update} />}
       {type === "analytics" && <AnalyticsConfig config={config} update={update} />}
@@ -245,8 +295,44 @@ export function WidgetTypeConfigFields({
 
 function TimetableConfig({ config, update }: { config: WidgetConfig; update: (p: Partial<WidgetConfig>) => void }) {
   const tr = useT();
-  // 学期字段写在 config.data（导入流程写入）；这里防御性解析，损坏数据按无数据处理。
-  const ttData = useMemo(() => sanitizeTimetableData(config.data) ?? null, [config.data]);
+  /* 课程格行高 / 星期列宽（课表最重的两个数值滑杆）拖动期只进草稿、
+     松手（onCommitEnd）一次 update()——此前逐 input 事件都全量
+     loadWidgetConfig + schema 深洗 + 整键写回 + CHANGE_EVENT 广播，拖一次
+     触发几十轮（DockPage useSliderDraft 同款）。 */
+  const cellHeight = useSliderDraft((v) => update({ cellHeight: v }));
+  const cellWidth = useSliderDraft((v) => update({ cellWidth: v }));
+  /* 学期字段住在 profiles 里，`data` 只是激活方案的
+     镜像。此前直接 update({ data }) —— 小组件经 loadProfiles 优先读
+     profiles，改动被静默忽略，且下一次组件写入（profilesPatch）会把镜像
+     改动整体覆盖回去。学期字段必须走 profilesPatch 双写。 */
+  const profiles = useMemo(
+    () => loadProfiles(config),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- config 整体即失效信号
+    [config.profiles, config.data, config.activeProfile]
+  );
+  const activeProfileId = activeProfileIdOf(config, profiles);
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
+  // 显示用数据：激活方案优先；无方案时的旧版裸 data 防御性解析，损坏按无数据处理。
+  const ttData = useMemo(
+    () => activeProfile?.data ?? sanitizeTimetableData(config.data) ?? null,
+    [activeProfile, config.data]
+  );
+  /** 学期字段写入：profiles 在场走 profilesPatch（profiles + 镜像 data 同步），
+      旧版裸 data 布局维持单写（组件 loadProfiles 会把裸 data 包装成默认方案）。 */
+  const writeSemester = (patch: { semesterStart?: string; totalWeeks?: number }) => {
+    if (!ttData) return;
+    const nextData = { ...ttData, ...patch };
+    if (activeProfile) {
+      update(
+        profilesPatch(
+          profiles.map((p) => (p.id === activeProfile.id ? { ...p, data: nextData } : p)),
+          activeProfile.id
+        ) as unknown as Partial<WidgetConfig>
+      );
+      return;
+    }
+    update({ data: nextData as unknown as Record<string, unknown> });
+  };
   return (
     <>
       {ttData && (
@@ -259,7 +345,7 @@ function TimetableConfig({ config, update }: { config: WidgetConfig; update: (p:
             <DatePicker
               value={ttData.semesterStart ?? ""}
               ariaLabel={tr("学期第一周周一")}
-              onChange={(v) => update({ data: { ...ttData, semesterStart: v } as unknown as Record<string, unknown> })}
+              onChange={(v) => writeSemester({ semesterStart: v })}
             />
           </div>
           <div className="tm-setting-row">
@@ -275,14 +361,7 @@ function TimetableConfig({ config, update }: { config: WidgetConfig; update: (p:
               style={{ width: 88 }}
               aria-label={tr("学期总周数")}
               value={ttData.totalWeeks}
-              onChange={(e) =>
-                update({
-                  data: {
-                    ...ttData,
-                    totalWeeks: Math.max(1, Math.min(60, Number(e.target.value) || 1))
-                  } as unknown as Record<string, unknown>
-                })
-              }
+              onChange={(e) => writeSemester({ totalWeeks: Math.max(1, Math.min(60, Number(e.target.value) || 1)) })}
               data-interactive
             />
           </div>
@@ -321,6 +400,18 @@ function TimetableConfig({ config, update }: { config: WidgetConfig; update: (p:
         onChange={(v) => update({ compact: v })}
       />
       <SettingToggleRow
+        title="仅显示周一至周五"
+        desc="隐藏周六/周日列，窄尺寸小组件可腾出空间"
+        on={config.hideWeekday === true}
+        onChange={(v) => update({ hideWeekday: v })}
+      />
+      <SettingToggleRow
+        title="节假日弱化显示课程"
+        desc="法定节假日当天的课程以弱化样式提示可能停课"
+        on={config.dimRestDay !== false}
+        onChange={(v) => update({ dimRestDay: v })}
+      />
+      <SettingToggleRow
         title="固定每日节次"
         desc="按固定节数显示网格（如 12 节制课表），关闭则跟随课程数据自动"
         on={!!config.totalSections}
@@ -347,12 +438,13 @@ function TimetableConfig({ config, update }: { config: WidgetConfig; update: (p:
         </div>
         <Slider
           label="课程格行高"
-          value={(config.cellHeight as number) || 28}
+          value={cellHeight.draft ?? ((config.cellHeight as number) || 28)}
           min={28}
           max={96}
           step={4}
           suffix="px"
-          onChange={(v) => update({ cellHeight: v })}
+          onChange={cellHeight.slide}
+          onCommitEnd={cellHeight.commitEnd}
         />
       </div>
       <div className="tm-setting-row">
@@ -362,25 +454,41 @@ function TimetableConfig({ config, update }: { config: WidgetConfig; update: (p:
         </div>
         <Slider
           label="星期列宽"
-          value={(config.cellWidth as number) || 0}
+          value={cellWidth.draft ?? ((config.cellWidth as number) || 0)}
           min={0}
           max={120}
           step={4}
           suffix="px"
-          onChange={(v) => update({ cellWidth: v })}
+          onChange={cellWidth.slide}
+          onCommitEnd={cellWidth.commitEnd}
         />
       </div>
-      <SectionTimesEditor config={config} update={update} />
+      <SectionTimesEditor
+        config={config}
+        update={update}
+        dataMaxSection={ttData ? ttData.sessions.reduce((m, s) => Math.max(m, s.endSection), 0) : 0}
+      />
     </>
   );
 }
 
 /** 逐节编辑上课起止时间：写入 config.sectionTimes / sectionTimesEnd（逗号分隔串）。 */
-function SectionTimesEditor({ config, update }: { config: WidgetConfig; update: (p: Partial<WidgetConfig>) => void }) {
+function SectionTimesEditor({
+  config,
+  update,
+  dataMaxSection = 0
+}: {
+  config: WidgetConfig;
+  update: (p: Partial<WidgetConfig>) => void;
+  /** 课表数据里的最大节号：行数跟随数据（totalSections=0 自动档也要能编辑到末节）。 */
+  dataMaxSection?: number;
+}) {
   const tr = useT();
-  // 上限与 totalSections 步进器 / config-schemas（≤30）一致；此前夹到 20，
-  // 设成 21–30 节时后几节的起止时间无处编辑。
-  const count = Math.max(8, Math.min(30, (config.totalSections as number) || 12));
+  // 上限与 totalSections 步进器 / config-schemas（≤30）一致；下限同为步进器的
+  // 4——此前夹到 8，设成 4–7 节时后几节的起止时间无处编辑（渲染行数随
+  // count 变化，无其它副作用）。默认回落 12；自动档（totalSections=0）时
+  // 取课表数据最大节号，保证 13+ 节的课表也能逐节设置时间。
+  const count = Math.max(4, Math.min(30, Math.max((config.totalSections as number) || 12, dataMaxSection)));
   const starts = useMemo(() => {
     const parsed = parseTimeList(config.sectionTimes);
     return Array.from({ length: count }, (_, i) => parsed[i] ?? DEFAULT_SECTION_TIMES[i] ?? "");
@@ -397,6 +505,9 @@ function SectionTimesEditor({ config, update }: { config: WidgetConfig; update: 
      三.1：高亮窗口与 CSS tm-end-flash（--dur-spatial-fast）同源取值。 */
   const [flashIdx, setFlashIdx] = useState(-1);
   const flashTimer = useRef(0);
+  /* 高亮淡变定时器补卸载清理——配置页 lazy 化后换页即卸载更频繁，
+     迟到的 setFlashIdx(-1) 会打到已卸载组件（setState-after-unmount）。 */
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
   const flashEnd = (i: number) => {
     setFlashIdx(i);
     window.clearTimeout(flashTimer.current);
@@ -429,12 +540,12 @@ function SectionTimesEditor({ config, update }: { config: WidgetConfig; update: 
         </div>
         {Array.from({ length: count }, (_, i) => (
           <div key={i} className="tm-times-item" style={{ "--sti": i } as CSSProperties}>
-            <span className="tm-times-sec">{tr("第 {n} 节").replace("{n}", String(i + 1))}</span>
+            <span className="tm-times-sec">{tr("第 {n} 节", { n: i + 1 })}</span>
             <input
               type="time"
               value={starts[i]}
               onChange={(e) => setStart(i, e.target.value)}
-              aria-label={`${tr("第 {n} 节").replace("{n}", String(i + 1))} ${tr("开始")}`}
+              aria-label={tr("第 {n} 节开始", { n: i + 1 })}
               data-interactive
             />
             <input
@@ -442,7 +553,7 @@ function SectionTimesEditor({ config, update }: { config: WidgetConfig; update: 
               className={`tm-times-end${flashIdx === i ? " linked-flash" : ""}`}
               value={ends[i]}
               onChange={(e) => setEnd(i, e.target.value)}
-              aria-label={`${tr("第 {n} 节").replace("{n}", String(i + 1))} ${tr("结束")}`}
+              aria-label={tr("第 {n} 节结束", { n: i + 1 })}
               data-interactive
             />
           </div>
@@ -523,7 +634,8 @@ function UnitConverterConfig({ config, update }: { config: WidgetConfig; update:
   );
 }
 
-/** 图库图片条目（与 GalleryWidget 的 Photo 结构一致，仅元数据）。 */
+/** 系统监控条的显示项目录（id 即 config.items 的存值，label 为设置页文案；
+ *  默认项见 SYSBAR_DEFAULT_ITEMS）。 */
 const SYSBAR_ITEMS: { id: string; label: string }[] = [
   { id: "fps", label: "FPS" },
   { id: "lat", label: "延迟" },
@@ -630,6 +742,34 @@ function SysbarConfig({ config, update }: { config: WidgetConfig; update: (p: Pa
           ]}
         />
       </div>
+      <SettingToggleRow
+        title={tr("透明（无底板）")}
+        desc={tr("去掉小组件背景，只显示监控文字")}
+        on={config.transparent === true}
+        onChange={(v) => update({ transparent: v })}
+      />
+      <div className="tm-setting-row">
+        <div className="tm-setting-text">
+          <span className="tm-setting-title">{tr("告警阈值")}</span>
+          <span className="tm-setting-desc">{tr("CPU/内存高于此值数值变红（%）")}</span>
+        </div>
+        <Stepper
+          value={(config.alertThreshold as number) || 80}
+          suffix="%"
+          onChange={(v) => update({ alertThreshold: Math.max(10, Math.min(100, v)) })}
+        />
+      </div>
+      <div className="tm-setting-row">
+        <div className="tm-setting-text">
+          <span className="tm-setting-title">{tr("电池低电阈值")}</span>
+          <span className="tm-setting-desc">{tr("电池低于此值数值变红（%）")}</span>
+        </div>
+        <Stepper
+          value={(config.battLowThreshold as number) || 20}
+          suffix="%"
+          onChange={(v) => update({ battLowThreshold: Math.max(5, Math.min(50, v)) })}
+        />
+      </div>
       <div className="tm-setting-row">
         <div className="tm-setting-text">
           <span className="tm-setting-title">{tr("刷新间隔")}</span>
@@ -659,7 +799,7 @@ const BUILTIN_LOCATIONS: { id: string; label: string }[] = [
 // 内置位置默认不带：图标以桌面拖入的真实快捷方式为主，系统位置按需勾选。
 const DEFAULT_BUILTIN_LOCATIONS: string[] = [];
 
-/** DeskOrder 借鉴 #1：自动整理规则编辑器（监视目录 / 扩展名 / 关键字 / 三态开关 / 存量扫描）。 */
+/** 自动整理规则编辑器（监视目录 / 扩展名 / 关键字 / 三态开关 / 存量扫描）。 */
 const AUTO_ORGANIZE_EXT_PRESETS = [
   ".pdf",
   ".doc",
@@ -682,7 +822,7 @@ type AutoOrganizeCfg = {
   extEnabled: boolean;
   nameEnabled: boolean;
   notify: boolean;
-  /** BentoDesk 借鉴 #6：年龄/体积附加 AND 条件（0 = 不启用）。 */
+  /** 年龄/体积附加 AND 条件（0 = 不启用）。 */
   olderThanDays: number;
   olderBy: "modified" | "created";
   minSizeMb: number;
@@ -701,7 +841,7 @@ function AutoOrganizeEditor({
   const [tokenText, setTokenText] = useState("");
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
-  /* BentoDesk 借鉴 #5：扫描不再直接入列——先生成建议（纯函数），用户逐组/
+  /* 扫描不再直接入列——先生成建议（纯函数），用户逐组/
           逐文件勾选确认后才应用（应用走与此前相同的 classify + 去重入列）。 */
   const [suggestions, setSuggestions] = useState<SuggestedGroup[] | null>(null);
   const [groupOn, setGroupOn] = useState<Record<string, boolean>>({});
@@ -776,8 +916,11 @@ function AutoOrganizeEditor({
       const fresh = [...picked].filter((p) => !current.some((x) => x.path === p));
       const items = await Promise.all(fresh.map((p) => classify(p, tr("文件"))));
       if (items.length > 0) update({ customShortcuts: [...current, ...items] });
+      /* 整句模板（拼接式 i18n 破坏英文语序）。 */
       setScanMsg(
-        `${tr("已整理")} ${items.length} ${tr("项")}${fresh.length > items.length ? `（${fresh.length - items.length} ${tr("项已存在")}）` : ""}`
+        fresh.length > items.length
+          ? tr("已整理 {n} 项（{m} 项已存在）", { n: items.length, m: fresh.length - items.length })
+          : tr("已整理 {n} 项", { n: items.length })
       );
       setSuggestions(null);
     } finally {
@@ -854,7 +997,7 @@ function AutoOrganizeEditor({
         on={cfg.extEnabled}
         onChange={(v) => patch({ extEnabled: v })}
       />
-      {/* C10 通知动作：命中入列时发系统通知，受通知中心「应用」来源门控。 */}
+      {/* 通知动作：命中入列时发系统通知，受通知中心「应用」来源门控。 */}
       <SettingToggleRow
         title="整理时通知"
         desc="命中规则的新文件入列时发系统通知"
@@ -908,7 +1051,7 @@ function AutoOrganizeEditor({
         on={cfg.nameEnabled}
         onChange={(v) => patch({ nameEnabled: v })}
       />
-      {/* BentoDesk 借鉴 #6：年龄/体积附加 AND 条件（0 = 不启用）。 */}
+      {/* 年龄/体积附加 AND 条件（0 = 不启用）。 */}
       <div className="tm-setting-row">
         <div className="tm-setting-text">
           <span className="tm-setting-title">{tr("文件年龄下限")}</span>
@@ -930,7 +1073,7 @@ function AutoOrganizeEditor({
             min={0}
             max={3650}
             suffix={tr("天")}
-            onChange={(v) => patch({ olderThanDays: v })}
+            onChange={(v) => patch({ olderThanDays: Math.max(0, Math.min(3650, v)) })}
           />
         </div>
       </div>
@@ -940,7 +1083,15 @@ function AutoOrganizeEditor({
           <span className="tm-setting-desc">{tr("只整理不小于该体积的文件（0 = 不限）")}</span>
         </div>
         <div className="tm-location-controls">
-          <Stepper value={cfg.minSizeMb} min={0} max={16384} suffix="MB" onChange={(v) => patch({ minSizeMb: v })} />
+          {/* Stepper 的手输提交不经边界钳制（num() catch 会静默归 0），
+              与其余调用点同口径补 Math.min/max。 */}
+          <Stepper
+            value={cfg.minSizeMb}
+            min={0}
+            max={16384}
+            suffix="MB"
+            onChange={(v) => patch({ minSizeMb: Math.max(0, Math.min(16384, v)) })}
+          />
         </div>
       </div>
       <div className="tm-setting-row">
@@ -959,7 +1110,7 @@ function AutoOrganizeEditor({
           </button>
         </div>
       </div>
-      {/* BentoDesk 借鉴 #5：建议面板——逐组开关 + 逐文件 chips 勾选，确认才应用。 */}
+      {/* 建议面板——逐组开关 + 逐文件 chips 勾选，确认才应用。 */}
       {suggestions && suggestions.length > 0 && (
         <div className="tm-setting-row tm-setting-row-stack">
           <div className="tm-setting-text">
@@ -1028,7 +1179,15 @@ function AutoOrganizeEditor({
   );
 }
 
-function ShortcutsConfig({ config, update }: { config: WidgetConfig; update: (p: Partial<WidgetConfig>) => void }) {
+function ShortcutsConfig({
+  config,
+  update,
+  instanceId
+}: {
+  config: WidgetConfig;
+  instanceId: string;
+  update: (p: Partial<WidgetConfig>) => void;
+}) {
   const tr = useT();
   const [urlText, setUrlText] = useState("");
   const custom = loadCustomShortcuts(config);
@@ -1053,12 +1212,16 @@ function ShortcutsConfig({ config, update }: { config: WidgetConfig; update: (p:
     }
   };
 
+  /* 增删都写前现读权威配置：文件对话框是异步的，期间桌面卡片侧可能并发
+     写入（拖入图标、watch 标缺失），渲染闭包里的 custom 已过期，拿它当
+     基底会把并发改动覆盖丢失。 */
   const addFolder = async () => {
     if (!isTauri()) return;
     try {
       const path = await invoke<string | null>("pick_folder");
       if (!path) return;
-      update({ customShortcuts: [...custom, await classify(path, tr("文件夹"))] });
+      const item = await classify(path, tr("文件夹"));
+      update({ customShortcuts: [...loadCustomShortcuts(loadWidgetConfig(instanceId)), item] });
     } catch {
       // ignore
     }
@@ -1069,7 +1232,8 @@ function ShortcutsConfig({ config, update }: { config: WidgetConfig; update: (p:
     try {
       const path = await pickFilePath({ title: tr("选择文件") });
       if (!path) return;
-      update({ customShortcuts: [...custom, await classify(path, tr("文件"))] });
+      const item = await classify(path, tr("文件"));
+      update({ customShortcuts: [...loadCustomShortcuts(loadWidgetConfig(instanceId)), item] });
     } catch {
       // ignore
     }
@@ -1080,13 +1244,22 @@ function ShortcutsConfig({ config, update }: { config: WidgetConfig; update: (p:
     if (!text) return;
     const path = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`;
     const label = text.replace(/^https?:\/\//i, "").split(/[/?#]/)[0] || text;
-    const list = [...custom, { id: crypto.randomUUID(), label, path, kind: "url" as const }];
-    update({ customShortcuts: list });
+    const item = { id: crypto.randomUUID(), label, path, kind: "url" as const };
+    update({ customShortcuts: [...loadCustomShortcuts(loadWidgetConfig(instanceId)), item] });
     setUrlText("");
   };
 
   const remove = (id: string) => {
-    update({ customShortcuts: custom.filter((s) => s.id !== id) });
+    const cfg = loadWidgetConfig(instanceId);
+    const folders = loadShortcutFolders(cfg);
+    const pruned = pruneFolderChildren(folders, new Set([id]));
+    update({
+      customShortcuts: loadCustomShortcuts(cfg).filter((s) => s.id !== id),
+      // 悬挂引用一并清理：格位与文件夹 childIds 不在落盘数据里积累
+      // （组件渲染期虽有过滤防御，清掉才不会依赖防御长期兜底）。
+      positions: Object.fromEntries(Object.entries(loadShortcutPositions(cfg)).filter(([k]) => k !== id)),
+      ...(pruned !== folders ? { shortcutFolders: pruned } : {})
+    });
   };
 
   return (
@@ -1108,12 +1281,6 @@ function ShortcutsConfig({ config, update }: { config: WidgetConfig; update: (p:
         desc="每枚图标下方的名称；隐藏后仅显示图标，悬停仍可见全名"
         on={config.showLabels !== false}
         onChange={(v) => update({ showLabels: v })}
-      />
-      <SettingToggleRow
-        title="滚动展示"
-        desc="Logo Loop：快捷方式以无限横向滚动带展示，悬停暂停；关闭则用网格排布"
-        on={config.marquee === true}
-        onChange={(v) => update({ marquee: v })}
       />
       <div className="tm-setting-row">
         <div className="tm-setting-text">
@@ -1139,7 +1306,7 @@ function ShortcutsConfig({ config, update }: { config: WidgetConfig; update: (p:
       <div className="tm-setting-row">
         <div className="tm-setting-text">
           <span className="tm-setting-title">{tr("列数")}</span>
-          <span className="tm-setting-desc">{tr("快捷方式图标的网格列数（滚动展示时不生效）")}</span>
+          <span className="tm-setting-desc">{tr("快捷方式图标的网格列数")}</span>
         </div>
         <Stepper
           value={(config.columns as number) || 2}
@@ -1233,7 +1400,7 @@ function ShortcutsConfig({ config, update }: { config: WidgetConfig; update: (p:
         </div>
       )}
 
-      {/* DeskOrder 借鉴 #1：自动整理规则（监视目录 / 规则三态 / 存量扫描）。 */}
+      {/* 自动整理规则（监视目录 / 规则三态 / 存量扫描）。 */}
       <AutoOrganizeEditor config={config} update={update} classify={classify} />
     </>
   );
@@ -1243,6 +1410,8 @@ function AnalyticsConfig({ config, update }: { config: WidgetConfig; update: (p:
   const tr = useT();
   const extra = useSettingsStore((s) => s.extra);
   const setExtra = useSettingsStore((s) => s.setExtra);
+  /* 显示天数拖动期草稿、松手一次提交（同 TimetableConfig）。 */
+  const days = useSliderDraft((v) => update({ days: v }));
   return (
     <>
       <div className="tm-setting-row">
@@ -1252,12 +1421,13 @@ function AnalyticsConfig({ config, update }: { config: WidgetConfig; update: (p:
         </div>
         <Slider
           label="显示天数"
-          value={(config.days as number) || 7}
+          value={days.draft ?? ((config.days as number) || 7)}
           min={3}
           max={30}
           step={1}
           suffix="天"
-          onChange={(v) => update({ days: v })}
+          onChange={days.slide}
+          onCommitEnd={days.commitEnd}
         />
       </div>
       <SettingToggleRow
@@ -1277,7 +1447,7 @@ function AnalyticsConfig({ config, update }: { config: WidgetConfig; update: (p:
           onChange={(v) => setExtra({ analyticsStartDate: v || null })}
         />
       </div>
-      {/* FocusTimer 借鉴：虚拟午夜——熬夜的「今天」延续到凌晨 2/4 点 */}
+      {/* 虚拟午夜——熬夜的「今天」延续到凌晨 2/4 点 */}
       <div className="tm-setting-row">
         <div className="tm-setting-text">
           <span className="tm-setting-title">{tr("统计日界")}</span>
@@ -1316,6 +1486,10 @@ export function DockTileConfigPage({ tileId, onNavigate }: { tileId: string; onN
   const inst = useWidgetStore((s) =>
     tile?.instanceId ? s.instances.find((i) => i.id === tile.instanceId) : undefined
   );
+  /* 绑定实例的标题走实例显示名（重命名后跟随）。 */
+  const instDisplayName = useWidgetStore((s) =>
+    tile?.instanceId ? widgetDisplayName(tile.type, tile.instanceId, s.instances, tr) : null
+  );
   const hasTile = !!tile;
 
   useEffect(() => {
@@ -1330,44 +1504,56 @@ export function DockTileConfigPage({ tileId, onNavigate }: { tileId: string; onN
        （已展开的面板即时生效）。 */
   const configKey = tile ? (tile.instanceId ?? `dock-tile-${tile.id}`) : "";
   const type = inst?.type ?? tile?.type ?? "";
+  /* 无实例磁贴的单一合并读取（挂载 / CHANGE_EVENT 重读 / tile.config
+     变化 effect 三处共用同一口径）：tile.config（展示开关等落种字段）打底、
+     widget-config 合成键（展开面组件写入的课程表 data/profiles 等用户数据）
+     叠加。任何一处只回读单一源，随后的 commit 以 config 为基底整键写回就会
+     把另一源的数据冲掉。绑定/悬空实例（instanceId 在场）只读实例配置键。 */
+  const readMergedTileConfig = (t: DockTile | undefined, key: string): WidgetConfig =>
+    t && !t.instanceId ? { ...(t.config ?? {}), ...loadWidgetConfig(key) } : loadWidgetConfig(key);
   const [config, setConfig] = useState<WidgetConfig>(() => {
     if (!tile) return {};
     if (inst) return sanitizeWidgetConfig(type, loadWidgetConfig(configKey));
     // 无实例磁贴：合成键里除 tile.config 落种的展示开关外，还可能有组件自己
     // 写入的用户数据（如课程表 data/profiles）——必须以键内容为基底合并，
     // 否则保存展示开关时会把那些数据整键冲掉。
-    return sanitizeWidgetConfig(
-      type,
-      tile.instanceId ? loadWidgetConfig(configKey) : { ...(tile.config ?? {}), ...loadWidgetConfig(configKey) }
-    );
+    return sanitizeWidgetConfig(type, readMergedTileConfig(tile, configKey));
   });
   const configRef = useRef(config);
   configRef.current = config;
 
   // 重读监听（同 WidgetConfigPage 的理由：外部改动不能被本页的旧 state 覆盖）。
+  // 无实例磁贴**同样**重读——此前两条通道都以 `!inst` 早退，桌面端展开面
+  // 组件经合成键写入的用户数据（课程表 data/profiles 等）不触发本页重读，
+  // 随后拨任一开关 commit 会用挂载时的陈旧基线整键覆盖、把新数据冲掉。
+  const reloadConfig = () => {
+    const st = useWidgetStore.getState();
+    const tile0 = st.dock.tiles.find((t) => t.id === tileId);
+    const t0 = st.instances.find((i) => i.id === configKey)?.type ?? tile0?.type;
+    if (!t0) return;
+    setConfig(sanitizeWidgetConfig(t0, readMergedTileConfig(tile0, configKey)));
+  };
   useEffect(() => {
-    if (!inst || !configKey) return;
-    const reload = () => {
-      const t = useWidgetStore.getState().instances.find((i) => i.id === configKey)?.type;
-      if (t) setConfig(sanitizeWidgetConfig(t, loadWidgetConfig(configKey)));
-    };
+    if (!configKey) return;
     const onChanged = (e: Event) => {
-      if ((e as CustomEvent<string>).detail === configKey) reload();
+      if ((e as CustomEvent<string>).detail === configKey) reloadConfig();
     };
     window.addEventListener(CHANGE_EVENT, onChanged);
     return () => window.removeEventListener(CHANGE_EVENT, onChanged);
-  }, [inst, configKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configKey, tileId]);
   useTauriEvent<{ instanceId: string }>("sync:widget-config", (payload) => {
-    if (!inst || payload?.instanceId !== configKey) return;
-    const t = useWidgetStore.getState().instances.find((i) => i.id === configKey)?.type;
-    if (t) setConfig(sanitizeWidgetConfig(t, loadWidgetConfig(configKey)));
+    if (payload?.instanceId !== configKey) return;
+    reloadConfig();
   });
   // 无实例：tile.config 变化（就地配置弹层 / 其他窗口 / 撤销恢复）重读。
   const tileConfigRaw = useWidgetStore((s) => (tile ? s.dock.tiles.find((t) => t.id === tile.id)?.config : undefined));
   useEffect(() => {
     if (inst || !tile) return;
-    const src = tile.instanceId ? loadWidgetConfig(configKey) : (tileConfigRaw ?? {});
-    setConfig(sanitizeWidgetConfig(tile.type, src));
+    // 与挂载同口径的合并读取——此前这里只回读 tileConfigRaw，丢掉
+    // widget-config 合成键里的用户数据（课程表 profiles 等），随后 commit
+    // 整键写回即丢数据。
+    setConfig(sanitizeWidgetConfig(tile.type, readMergedTileConfig(tile, configKey)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inst, tile?.id, tile?.type, tileConfigRaw]);
 
@@ -1399,7 +1585,7 @@ export function DockTileConfigPage({ tileId, onNavigate }: { tileId: string; onN
   return (
     <section className="tm-section">
       <div className="tm-section-title">
-        {tr(meta.name)} · {tr("灵动岛磁贴")}
+        {instDisplayName ?? tr(meta.name)} · {tr("灵动岛磁贴")}
       </div>
       <div className="tm-config-grid">
         {inst && <InstanceBehaviorRows instanceId={inst.id} />}
@@ -1480,7 +1666,7 @@ export function MiscBoardConfigPage({ tileId, onNavigate }: { tileId: string; on
                 </button>
                 <button
                   className="tm-btn-danger tm-misc-set-del"
-                  aria-label={`${tr("移除")} ${meta ? tr(meta.name) : item.type}`}
+                  aria-label={tr("移除 {name}", { name: meta ? tr(meta.name) : item.type })}
                   title={tr("从面板移除")}
                   onClick={() => setDockTileConfig(tile.id, { items: removeItem(items, item.id) })}
                   data-interactive
@@ -1571,6 +1757,269 @@ export function MiscItemConfigPage({ pageId, onNavigate }: { pageId: string; onN
           data-interactive
         >
           <Trash2 size={14} /> {tr("从杂项移除")}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  编组设置页（group-config-<groupId>）：对编组这一栏（容器）本身的设置   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 编组（标签条容器）在设置窗口的配置页：组级透明度作用于容器壳背景
+ * （全局 × 组 × 成员逐级相乘）、成员列表（切换显示 / 移出编组）、解散编组。
+ * 与桌面右键「配置」弹层同读一份 widget-store.groups，改动即时按屏落盘并
+ * 经 sync:widgets 广播回桌面。
+ */
+export function GroupConfigPage({ groupId, onNavigate }: { groupId: string; onNavigate: (p: Page) => void }) {
+  const tr = useT();
+  const group = useWidgetStore((s) => s.groups.find((g) => g.id === groupId));
+  const instances = useWidgetStore((s) => s.instances);
+  const previewOpacity = useWidgetStore((s) =>
+    s.opacityPreview && s.opacityPreview.id === groupId ? s.opacityPreview.value : null
+  );
+
+  /* 组级透明度滑条同款卸载兜底——拖动中导航离开
+     本页时 onCommitEnd 不再触发，按预览值落盘防预览残留。 */
+  useEffect(
+    () => () => {
+      const st = useWidgetStore.getState();
+      const pv = st.opacityPreview;
+      if (pv && pv.id === groupId) {
+        st.setOpacityPreview(null);
+        st.updateGroup(groupId, { opacity: pv.value });
+      }
+    },
+    [groupId]
+  );
+
+  /* 组被解散/删除后配置页失去主体：回当前视图小组件列表。 */
+  useEffect(() => {
+    if (!group) onNavigate("widgets");
+  }, [group, onNavigate]);
+
+  if (!group) return null;
+
+  const members = group.memberIds
+    .map((id) => instances.find((i) => i.id === id))
+    .filter((i): i is NonNullable<typeof i> => !!i);
+
+  /* 把当前视图未编组的小组件加入本编组（此前只能靠桌面拖拽）。走
+     mergeIntoGroup 的并入分支（脉冲 + 激活标签切到新成员，与拖入同语义）。 */
+  const ungrouped = instances.filter((i) => !i.groupId);
+  const addMember = (id: string) => {
+    useWidgetStore.getState().mergeIntoGroup([id], { kind: "group", id: groupId });
+  };
+  /* 设置页成员重排（与桌面拖标签同一 store 写入，桌面侧 FLIP 让位）。 */
+  const moveMember = (idx: number, dir: -1 | 1) => {
+    const j = idx + dir;
+    if (j < 0 || j >= members.length) return;
+    const next = [...group.memberIds];
+    [next[idx], next[j]] = [next[j], next[idx]];
+    useWidgetStore.getState().reorderGroupMembers(groupId, next);
+  };
+
+  return (
+    <section className="tm-section">
+      <div className="tm-section-title">
+        {group.name?.trim() || tr("编组")} · {tr("{n} 个成员", { n: members.length })}
+      </div>
+
+      {/* 组名——侧栏 / 本页标题 / 无障碍标签显示用；留空回落「编组」。 */}
+      <div className="tm-setting-row">
+        <div className="tm-setting-info">
+          <div className="tm-setting-label">{tr("组名")}</div>
+          <div className="tm-setting-desc">{tr("用于设置侧栏与无障碍标签；留空显示「编组」")}</div>
+        </div>
+        <button className="tm-btn-secondary" data-interactive onClick={() => void promptRenameGroup(groupId, tr)}>
+          {group.name?.trim() || tr("重命名")}
+        </button>
+      </div>
+
+      {/* 组级：透明度（容器壳背景；成员自身透明度仍在各自配置页，逐级相乘） */}
+      <div className="tm-setting-row">
+        <div className="tm-setting-info">
+          <div className="tm-setting-label">{tr("透明度")}</div>
+          <div className="tm-setting-desc">{tr("作用于编组容器背景，与成员自身透明度逐级相乘")}</div>
+        </div>
+        <Slider
+          label={tr("透明度")}
+          value={Math.round((previewOpacity ?? group.opacity ?? 1) * 100)}
+          min={0}
+          max={100}
+          step={1}
+          suffix="%"
+          onChange={(v) => useWidgetStore.getState().setOpacityPreview({ id: groupId, value: v / 100 })}
+          onCommitEnd={() => {
+            const st = useWidgetStore.getState();
+            const pv = st.opacityPreview;
+            st.setOpacityPreview(null);
+            if (pv && pv.id === groupId) st.updateGroup(groupId, { opacity: pv.value });
+          }}
+        />
+      </div>
+
+      {/* 成员（下一级）：切换显示 / 重命名标签 / 移出编组；成员深度设置走各自配置页。
+          名称走 widgetDisplayName（含重命名 label）——与桌面标签/花瓣/卡片标题同源同步。 */}
+      <div className="tm-setting-row" style={{ display: "block" }}>
+        <div className="tm-setting-label" style={{ marginBottom: 8 }}>
+          {tr("成员")}
+        </div>
+        <div className="tm-widget-list">
+          {members.map((m, idx) => {
+            const meta = getWidgetMeta(m.type);
+            const Icon = meta?.icon ?? LayoutGrid;
+            const active = m.id === group.activeId;
+            return (
+              <div className="tm-widget-row" key={m.id}>
+                <span className="tm-widget-name" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Icon size={15} />
+                  {widgetDisplayName(m.type, m.id, instances, tr)}
+                  {active && (
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 12,
+                        color: "var(--accent)"
+                      }}
+                    >
+                      <Check size={12} /> {tr("显示中")}
+                    </span>
+                  )}
+                </span>
+                {/* 设置页重排（上移/下移）——桌面拖标签的同一 store 写入。 */}
+                <button
+                  className="tm-btn-secondary"
+                  disabled={idx === 0}
+                  aria-label={tr("上移")}
+                  title={tr("上移")}
+                  onClick={() => moveMember(idx, -1)}
+                  data-interactive
+                >
+                  ↑
+                </button>
+                <button
+                  className="tm-btn-secondary"
+                  disabled={idx === members.length - 1}
+                  aria-label={tr("下移")}
+                  title={tr("下移")}
+                  onClick={() => moveMember(idx, 1)}
+                  data-interactive
+                >
+                  ↓
+                </button>
+                {/* 直达成员自身配置页（此前只有侧栏绕行一跳）。 */}
+                <button
+                  className="tm-btn-secondary"
+                  onClick={() => onNavigate(`widget-config-${m.id}`)}
+                  data-interactive
+                >
+                  {tr("设置")}
+                </button>
+                {/* 重命名统一入口（与桌面标签/配置弹层同一实现，含撤销）。 */}
+                <button
+                  className="tm-btn-secondary"
+                  onClick={() => void promptRenameInstance(m.id, tr)}
+                  data-interactive
+                >
+                  {tr("重命名")}
+                </button>
+                {!active && (
+                  <button
+                    className="tm-btn-secondary"
+                    onClick={() => useWidgetStore.getState().switchGroupTab(groupId, m.id)}
+                    data-interactive
+                  >
+                    {tr("设为显示")}
+                  </button>
+                )}
+                <button
+                  className="tm-btn-danger"
+                  onClick={() => useWidgetStore.getState().removeGroupMember(groupId, m.id)}
+                  data-interactive
+                >
+                  {tr("移出编组")}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 添加成员——当前视图未编组的小组件一键并入（此前只能桌面拖拽）。 */}
+      <div className="tm-setting-row tm-setting-row-stack">
+        <div className="tm-setting-info">
+          <div className="tm-setting-label">{tr("添加成员")}</div>
+          <div className="tm-setting-desc">{tr("把当前视图未编组的小组件加入本编组")}</div>
+        </div>
+        {ungrouped.length === 0 ? (
+          <div className="tm-setting-desc">{tr("没有未编组的小组件可添加")}</div>
+        ) : (
+          <div className="tm-shortcut-builtin">
+            {ungrouped.map((u) => {
+              const uMeta = getWidgetMeta(u.type);
+              const UIcon = uMeta?.icon ?? LayoutGrid;
+              return (
+                <button
+                  key={u.id}
+                  className="tm-builtin-chip"
+                  onClick={() => addMember(u.id)}
+                  title={widgetDisplayName(u.type, u.id, instances, tr)}
+                  data-interactive
+                >
+                  <UIcon size={13} />
+                  {widgetDisplayName(u.type, u.id, instances, tr)}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="tm-config-danger">
+        <button
+          className="tm-btn-danger"
+          onClick={async () => {
+            if (
+              await confirmDialog({
+                title: tr("解散编组"),
+                message: tr("解散后成员回到编组前的原位（不删除小组件）。确定继续？"),
+                confirmLabel: tr("解散编组"),
+                danger: true
+              })
+            ) {
+              useWidgetStore.getState().disbandGroup(groupId);
+              onNavigate("widgets");
+            }
+          }}
+          data-interactive
+        >
+          <Trash2 size={14} /> {tr("解散编组")}
+        </button>
+        {/* 与桌面右键/配置弹层对等——设置页此前只有「解散」，更重的
+            「删除整组」（N 个组件进回收站）反而无入口。 */}
+        <button
+          className="tm-btn-danger"
+          onClick={async () => {
+            if (
+              await confirmDialog({
+                title: tr("删除整组"),
+                message: tr("将删除组内全部小组件并移入回收站（可撤销）。确定继续？"),
+                confirmLabel: tr("删除整组"),
+                danger: true
+              })
+            ) {
+              useWidgetStore.getState().removeGroup(groupId);
+              onNavigate("widgets");
+            }
+          }}
+          data-interactive
+        >
+          <Trash2 size={14} /> {tr("删除整组")}
         </button>
       </div>
     </section>

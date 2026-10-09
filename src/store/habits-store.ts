@@ -204,7 +204,7 @@ export const useHabitsStore = create<HabitsState>()(
 export function applyRemoteHabits(list: unknown): boolean {
   if (!Array.isArray(list)) return false;
   const habits = list.map(normalizeHabit).filter((h): h is Habit => h !== null);
-  // C-8：远端混入不认的行时只丢内存展示，不把删减结果 persistRaw 固化
+  // 远端混入不认的行时只丢内存展示，不把删减结果 persistRaw 固化
   // （固化 + 广播回去 = 坏行替我们删了兄弟窗口的好数据）；与 app 通道
   // 「坏行丢弃仅限内存」口径一致。丢弃留痕计数，便于诊断载荷来源。
   const dropped = list.length - habits.length;

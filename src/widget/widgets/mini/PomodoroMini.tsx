@@ -6,7 +6,7 @@
  * （组件与派生视图 hook 同文件，故文件级豁免 react-refresh 规则）。
  */
 import { Timer } from "lucide-react";
-import { plannedSecondsFor } from "../../../domain/pomodoro";
+import { countupGoalSeconds, plannedSecondsFor } from "../../../domain/pomodoro";
 import { useAppStore } from "../../../store/app-store";
 import { formatMMSS, ringProgress } from "../../dock/dock-logic";
 
@@ -48,18 +48,23 @@ export function PomodoroRing({
 }
 
 export function usePomodoroView() {
-  /* C8 同款标量选择（P-perf 三轮）：此前整对象订阅 s.pomodoro——tick 每秒整体
+  /* 同款标量选择（P-perf 三轮）：此前整对象订阅 s.pomodoro——tick 每秒整体
      替换对象，任何无关字段（中断记录/会话列表等）变化也会连带重渲。逐标量
      订阅后仅显示相关字段变化才重渲；计时走秒本身 1Hz 属显示必要，不受影响。 */
   const remainingSeconds = useAppStore((s) => s.pomodoro.remainingSeconds);
   const isRunning = useAppStore((s) => s.pomodoro.isRunning);
   const mode = useAppStore((s) => s.pomodoro.mode);
   const timerMode = useAppStore((s) => s.pomodoro.timerMode);
+  /* （残留）：等待回座态（awaitingActivity）不是空闲——满额待命时
+     显示环（Dock 展开面板同款「等你回来」语义），不再回落空闲表图标。 */
+  const awaiting = useAppStore((s) => s.pomodoro.awaitingActivity);
   const config = useAppStore((s) => s.pomodoroConfig);
   const planned = plannedSecondsFor(mode, config);
-  const goal = timerMode === "countup" ? (config.countupGoalMinutes ?? 0) * 60 : planned;
+  /* （分母统一）：正计时目标 = 配置（0 = 跟随专注时长）——此前直接
+     取 countupGoalMinutes*60，配置为默认 0 时环恒不填充，与主面板口径相反。 */
+  const goal = timerMode === "countup" ? countupGoalSeconds(config) : planned;
   const progress = ringProgress(remainingSeconds, goal, timerMode);
-  const idle = !isRunning && remainingSeconds === planned && timerMode === "countdown";
+  const idle = !isRunning && !awaiting && remainingSeconds === planned && timerMode === "countdown";
   return { remainingSeconds, isRunning, mode, progress, idle, planned };
 }
 

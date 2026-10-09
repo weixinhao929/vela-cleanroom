@@ -1,4 +1,4 @@
-//! 运行日志分级落盘（S1）。
+//! 运行日志分级落盘。
 //!
 //! 之前 `env_logger` 只写 stderr —— 开发时能看，但打包成 GUI 应用后
 //! stderr 无处可去，用户报障时拿不到任何运行信息，只能靠复现。
@@ -90,7 +90,7 @@ impl log::Log for Logger {
         // stderr：开发期直接可见。
         eprintln!("{msg}");
 
-        // 文件：生产期唯一可回溯的记录。R7（审计）：Mutex 一旦中毒若静默
+        // 文件：生产期唯一可回溯的记录。：Mutex 一旦中毒若静默
         // 跳过，文件日志会永久关闭且无任何提示——改为恢复守卫继续写。
         let mut guard = match self.sink.lock() {
             Ok(g) => g,
@@ -222,6 +222,9 @@ pub struct CrashStats {
     pub total: u32,
     pub latest: Option<CrashRecord>,
     pub latest_panic: Option<CrashRecord>,
+    /// 最近若干条（新→旧，含 panic 与 frontend）：诊断区列表展示用——此前
+    /// 只给 latest / latestPanic 各一条，排查连续崩溃看不到脉络。
+    pub recent: Vec<CrashRecord>,
 }
 
 pub fn now_ms() -> i64 {
@@ -261,8 +264,14 @@ pub fn prune_crashes(mut all: Vec<CrashRecord>, now: i64) -> Vec<CrashRecord> {
     all
 }
 
+/// 崩溃记录的进程级写锁：panic hook（任意线程直达）与前端崩溃上报
+/// （spawn_blocking）可能并发进入 record_crash 的读-改-写；无锁时两路读到
+/// 同一基线各丢一条，且共写固定名 tmp 再竞速 rename 会拼出损坏的 JSON。
+static CRASH_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 追加一条记录并按保留策略修剪后原子写回。
 pub fn record_crash(path: &Path, rec: CrashRecord, now: i64) -> Result<(), String> {
+    let _guard = CRASH_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut all = load_crashes(path);
     all.push(rec);
     let all = prune_crashes(all, now);
@@ -270,12 +279,32 @@ pub fn record_crash(path: &Path, rec: CrashRecord, now: i64) -> Result<(), Strin
         fs::create_dir_all(dir).map_err(|e| format!("创建崩溃记录目录失败: {e}"))?;
     }
     let json = serde_json::to_string(&all).map_err(|e| format!("序列化崩溃记录失败: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|e| format!("写入崩溃记录失败: {e}"))?;
-    fs::rename(&tmp, path).map_err(|e| format!("替换崩溃记录失败: {e}"))
+    // tmp 名带 pid + 单调计数：同进程多路写也不会互踩 tmp（rename 对象被
+    // 对方写一半的文件）。锁内理论上串行，双保险防未来新增调用点。
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.{}.{}.tmp", std::process::id(), seq));
+    // 对齐 storage_util::write_text_atomic 的 create→write→sync→
+    // rename 链（与 backup.rs 的 同款）——fs::write + rename 之间字节
+    // 可能仍躺在 OS 缓冲，掉电/崩溃会留下「已改名但内容截断」的崩溃日志。
+    // tmp 命名不并轨 write_text_atomic 的 `.stem.tmp-pid`：这里保留 pid+seq
+    // （上方并发双保险），write_text_atomic 的 cleanup_tmp_siblings 也就
+    // 不会误删我们的 tmp。
+    {
+        use std::io::Write;
+        let mut f = fs::File::create(&tmp).map_err(|e| format!("写入崩溃记录失败: {e}"))?;
+        f.write_all(json.as_bytes())
+            .map_err(|e| format!("写入崩溃记录失败: {e}"))?;
+        f.sync_all().map_err(|e| format!("写入崩溃记录失败: {e}"))?;
+    }
+    let renamed = fs::rename(&tmp, path);
+    if renamed.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    renamed.map_err(|e| format!("替换崩溃记录失败: {e}"))
 }
 
-/// 诊断区统计：近 7 天次数 / 累计 / 最近一条 / 最近一次 panic。
+/// 诊断区统计：近 7 天次数 / 累计 / 最近一条 / 最近一次 panic / 最近数条。
 pub fn crash_stats(records: &[CrashRecord], now: i64) -> CrashStats {
     let cutoff = now - 7 * DAY_MS;
     let count_7d = records.iter().filter(|r| r.ts >= cutoff).count() as u32;
@@ -285,12 +314,24 @@ pub fn crash_stats(records: &[CrashRecord], now: i64) -> CrashStats {
         .filter(|r| r.kind == "panic")
         .max_by_key(|r| r.ts)
         .cloned();
+    let mut recent: Vec<CrashRecord> = records.to_vec();
+    recent.sort_by_key(|b| std::cmp::Reverse(b.ts));
+    recent.truncate(5);
     CrashStats {
         count_7d,
         total: records.len() as u32,
         latest,
         latest_panic,
+        recent,
     }
+}
+
+/// 清空崩溃记录（诊断区「清空」入口）：写回空数组。与 record_crash 同锁，
+/// 防止与 panic hook / 前端上报的读-改-写交错把清掉的记录又写回来。
+/// 单次小写入，中断最坏留下截断文件——load_crashes 解析失败视为空，等效。
+pub fn clear_crashes(path: &Path) -> Result<(), String> {
+    let _guard = CRASH_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    fs::write(path, b"[]").map_err(|e| format!("清空崩溃记录失败: {e}"))
 }
 
 /// panic 摘要：payload + `@ file:line:col`，截断到上限。
@@ -343,7 +384,7 @@ pub fn install_panic_hook(crash_file: Option<PathBuf>) {
                     eprintln!("crash record write failed: {e}");
                 }
             }
-            // F-9 恢复线 2：best-effort 通知 DLL 恢复任务栏——但只在主线程
+            // 恢复线 2：best-effort 通知 DLL 恢复任务栏——但只在主线程
             // panic 时做。panic hook 在 unwind 之前触发，catch_unwind 拦不住它：
             // 后台采样/FFI 线程里那些被兜住、进程照常运行的 panic 也会走到这里，
             // 若无条件 restore_all() 就会把用户开启的任务栏定制静默拆掉（终态，
@@ -356,7 +397,7 @@ pub fn install_panic_hook(crash_file: Option<PathBuf>) {
                 let spawned = std::thread::Builder::new()
                     .name("vela-panic-restore".to_string())
                     .spawn(move || {
-                        // A-8：恢复动作经依赖注入（set_panic_restore 注册），
+                        // 恢复动作经依赖注入（set_panic_restore 注册），
                         // logging 保持零业务依赖；未注册则无事可做。
                         if let Some(cb) = PANIC_RESTORE
                             .lock()
@@ -376,7 +417,7 @@ pub fn install_panic_hook(crash_file: Option<PathBuf>) {
     }));
 }
 
-/// 主线程 panic 时的任务栏还原回调（A-8 依赖注入：由 lib.rs setup 注册
+/// 主线程 panic 时的任务栏还原回调（依赖注入：由 lib.rs setup 注册
 /// taskbar::restore_all，logging 自身不再反向依赖业务模块）。只执行一次
 /// （take）——进程马上就要终止。
 static PANIC_RESTORE: std::sync::Mutex<Option<fn()>> = std::sync::Mutex::new(None);
@@ -510,6 +551,14 @@ mod tests {
         assert_eq!(s.total, 4);
         assert_eq!(s.latest.unwrap().summary, "newest fe");
         assert_eq!(s.latest_panic.unwrap().summary, "recent panic");
+        // recent 新→旧、混合 panic / frontend。
+        assert_eq!(
+            s.recent
+                .iter()
+                .map(|r| r.summary.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newest fe", "recent panic", "recent fe", "old panic"]
+        );
         // 无 panic 时 latest_panic 为 None。
         let s2 = crash_stats(&[rec(now, "frontend", "fe")], now);
         assert!(s2.latest_panic.is_none());
@@ -518,6 +567,31 @@ mod tests {
         let s3 = crash_stats(&[], now);
         assert_eq!((s3.count_7d, s3.total), (0, 0));
         assert!(s3.latest.is_none());
+        assert!(s3.recent.is_empty());
+        // recent 截断到 5 条（最旧的丢）。
+        let many: Vec<CrashRecord> = (0..8)
+            .map(|i| rec(now - i, "frontend", format!("r{i}").as_str()))
+            .collect();
+        assert_eq!(crash_stats(&many, now).recent.len(), 5);
+        assert_eq!(crash_stats(&many, now).recent[0].summary, "r0");
+        assert_eq!(crash_stats(&many, now).recent[4].summary, "r4");
+    }
+
+    #[test]
+    fn clear_crashes_empties_file_and_returns_empty_stats() {
+        let dir = tmp_dir("crash-clear");
+        let path = dir.join(CRASH_FILE_NAME);
+        let now = 100 * DAY_MS;
+        record_crash(&path, rec(now, "panic", "a"), now).unwrap();
+        record_crash(&path, rec(now - 1, "frontend", "b"), now).unwrap();
+        clear_crashes(&path).unwrap();
+        assert!(load_crashes(&path).is_empty());
+        // 清空后文件仍在（内容为空数组），后续 record 正常追加。
+        record_crash(&path, rec(now, "panic", "c"), now).unwrap();
+        let all = load_crashes(&path);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].summary, "c");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

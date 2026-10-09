@@ -60,16 +60,16 @@ export function useConfirmAction(confirmMs = 2000) {
  *
  * @param commit - 真正执行数据删除的回调。
  * @param exitMs - 退场动画时长；缺省时按时长单一真源运行时派生
- *                  （`--dur-fx` + 40ms 余量，P1：此前写死 240ms 不随
+ *                  （`--dur-fx` + 40ms 余量：此前写死 240ms 不随
  *                  设置→动效 速度档缩放，slow 档会把收拢动画掐断）。
  * @returns `removingIds`：退场中的 id 集合；`begin(id)`：发起一次延迟删除。
  * @throws 无。
  *
  * @example
- * ```tsx
+ * `tsx
  * const { removingIds, begin } = useDelayedRemoval((id) => removeNote(id));
  * <div className={removingIds.has(n.id) ? "is-closing" : ""}>…</div>
- * ```
+ * `
  */
 export function useDelayedRemoval(commit: (id: string) => void, exitMs?: number) {
   const safeTimeout = useSafeTimeout();

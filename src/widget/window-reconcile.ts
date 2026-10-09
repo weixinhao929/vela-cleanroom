@@ -1,5 +1,5 @@
 /**
- * P1 空屏窗口对账（前端侧触发器）。
+ * 空屏窗口对账（前端侧触发器）。
  *
  * Rust 侧按各屏持久化内容的 SQLite 镜像决定 widget-N 窗口的建/销
  * （`reconcile_widget_windows` 命令，见 monitor.rs）。本模块在每次布局/

@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("MusicMini", () => {
-  it("播放中：显示标题、按钮为「暂停」，点击发 control_system_media pause 且不冒泡", () => {
+  it("播放中：显示标题、按钮为「暂停」，点击发 control_system_media toggle 且不冒泡", () => {
     state.media = track({ playing: true });
     const onTile = vi.fn();
     const { container } = render(
@@ -56,18 +56,40 @@ describe("MusicMini", () => {
     const btn = screen.getByRole("button", { name: "暂停" });
     expect(btn).toHaveAttribute("data-interactive");
     fireEvent.click(btn);
-    expect(invokeMock).toHaveBeenCalledWith("control_system_media", { action: "pause" });
+    // toggle 不依赖可能过期的 playing 快照（与卡片/沉浸页同口径）。
+    expect(invokeMock).toHaveBeenCalledWith("control_system_media", { action: "toggle" });
     expect(onTile).not.toHaveBeenCalled();
     // palette.primary 注入为点缀色变量。
     const root = container.querySelector(".dock-mini-music") as HTMLElement;
     expect(root.style.getPropertyValue("--mini-accent")).toBe("#4f7ecf");
   });
 
-  it("暂停中：按钮为「播放」，点击发 play", () => {
+  it("暂停中：按钮为「播放」，点击同样发 toggle", () => {
     state.media = track({ playing: false, palette: null });
     render(<MusicMini active />);
     fireEvent.click(screen.getByRole("button", { name: "播放" }));
-    expect(invokeMock).toHaveBeenCalledWith("control_system_media", { action: "play" });
+    expect(invokeMock).toHaveBeenCalledWith("control_system_media", { action: "toggle" });
+  });
+
+  it("键盘激活：Enter/Space 触发 toggle 且不冒泡到宿主磁贴（R4 回归网）", () => {
+    state.media = track();
+    const onTile = vi.fn();
+    render(
+      <button onClick={onTile}>
+        <MusicMini active />
+      </button>
+    );
+    const btn = screen.getByRole("button", { name: "暂停" });
+    fireEvent.keyDown(btn, { key: "Enter" });
+    expect(invokeMock).toHaveBeenCalledWith("control_system_media", { action: "toggle" });
+    expect(onTile).not.toHaveBeenCalled();
+    invokeMock.mockClear();
+    fireEvent.keyDown(btn, { key: " " });
+    expect(invokeMock).toHaveBeenCalledWith("control_system_media", { action: "toggle" });
+    // 其它键不触发。
+    invokeMock.mockClear();
+    fireEvent.keyDown(btn, { key: "ArrowRight" });
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("跑马：标题溢出且 active 才挂 .is-marquee；active=false 时静止", () => {

@@ -2,7 +2,7 @@
 /**
  * 设置页 · 更新页：检查更新（GitHub Releases）、版本对比与下载安装引导；
  * 附启动耗时诊断区（boot-profile）。
- * BentoDesk 借鉴 #10：共享逻辑（严格 manifest 校验 / GitHub 兜底 / CAS 门）
+ * 共享逻辑（严格 manifest 校验 / GitHub 兜底 / CAS 门）
  * 在 lib/update-flow.ts（后台调度器共用一份）；本页补跳过此版本与检查频率。
  */
 import { useEffect, useRef, useState } from "react";
@@ -42,7 +42,7 @@ type RemoteManifest = {
   version: string;
   notes?: string;
   url?: string;
-  /** D-1：签名清单携带的安装包哈希（经 Ed25519 验签后随下载命令传给 Rust）。 */
+  /** 签名清单携带的安装包哈希（经 Ed25519 验签后随下载命令传给 Rust）。 */
   sha256?: string;
   sig?: string;
 };
@@ -61,7 +61,7 @@ async function openExternal(url: string): Promise<void> {
  * 更新检查（真实链路）：用户在下方配置「更新源 JSON 地址」，应用通过
  * fetch 拉取 { version, notes, url } 并与当前版本做语义化比较。发现新版本
  * 时展示版本说明。更新源提供 `url` 时，可点击「下载并安装」→ Rust 侧
- * 流式下载 NSIS 安装包并静默安装、重启（E1 应用内自动更新）。
+ * 流式下载 NSIS 安装包并静默安装、重启（应用内自动更新）。
  */
 export function UpdatePage() {
   const tr = useT();
@@ -85,8 +85,15 @@ export function UpdatePage() {
     if (v !== endpoint) s.setExtra({ updateEndpoint: v });
   };
   const [current, setCurrent] = useState("");
-  const [manifest, setManifest] = useState<RemoteManifest | null>(null);
-  // [UPD-CH]（借鉴 CSH #6/#7）：生效通道（用户优先，否则跟随构建）+ 回滚列表 +
+  /* 当前版本获取三态——未获取/获取中（current 空串）、成功（版本号）、
+     失败（unknown + versionFailed）。此前失败被折进 "unknown" 且按钮永久禁用、
+     title 永远显示「正在获取当前版本…」，用户没有任何重试入口。 */
+  const [versionFailed, setVersionFailed] = useState(false);
+  /* 竞态：失败态重试先 await 版本获取再触发 check——但重试按钮闭包里的
+     check 是旧渲染（current 仍为 unknown）的，比较基线改从 ref 现取
+     （settle 时同步写入，不经本地包装函数以免破坏 exhaustive-deps 稳定分析）。 */
+  const currentRef = useRef("");
+  const [manifest, setManifest] = useState<RemoteManifest | null>(null); // [UPD-CH]：生效通道（用户优先，否则跟随构建）+ 回滚列表 +
   // 本机版本历史。
   const channel: UpdateChannel = effectiveUpdateChannel(s.extra.updateChannel, s.extra.updateChannelSetByUser, current);
   const [releases, setReleases] = useState<GhRelease[] | null>(null);
@@ -98,7 +105,7 @@ export function UpdatePage() {
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // E1：下载/安装状态。
+  // 下载/安装状态。
   const [downloading, setDownloading] = useState(false);
   const [dlProgress, setDlProgress] = useState<{ done: number; total: number } | null>(null);
   const [dlDone, setDlDone] = useState(false);
@@ -111,12 +118,28 @@ export function UpdatePage() {
     };
   }, []);
 
-  // 当前版本来自 Rust 端（Cargo 包版本），同时展示前端构建时间。
+  // 当前版本来自 Rust 端（Cargo 包版本），同时展示前端构建时间。挂载与失败
+  // 后的重试共用一个入口；返回 Promise 供重试链「版本到手再比较」。
+  const loadCurrentVersion = (): Promise<void> => {
+    if (!isTauri()) return Promise.resolve();
+    return invoke<UpdateInfo>("get_update_info")
+      .then((r) => {
+        if (disposedRef.current) return;
+        currentRef.current = r.current_version;
+        setCurrent(r.current_version);
+        setVersionFailed(false);
+      })
+      .catch(() => {
+        // #：失败不伪造版本号，避免误判「有新版本」；置 failed 标志让
+        // 检查按钮转为可重试态。
+        if (disposedRef.current) return;
+        currentRef.current = "unknown";
+        setCurrent("unknown");
+        setVersionFailed(true);
+      });
+  };
   useEffect(() => {
-    if (!isTauri()) return;
-    invoke<UpdateInfo>("check_updates")
-      .then((r) => setCurrent(r.current_version))
-      .catch(() => setCurrent("unknown")); // #A-32：失败不伪造版本号，避免误判「有新版本」
+    loadCurrentVersion();
   }, []);
 
   // [UPD-CH] 本机版本历史：进入更新页即刷新（首次运行记录 firstSeen，
@@ -145,12 +168,12 @@ export function UpdatePage() {
       setError(tr("请先填写更新源地址"));
       return;
     }
-    // BentoDesk 借鉴 #10：CAS 门——后台调度器检查/下载进行中放弃本轮。
+    // CAS 门——后台调度器检查/下载进行中放弃本轮。
     if (!acquireUpdateOp("checking")) return;
     setChecking(true);
     setError(null);
     try {
-      // DeskOrder 借鉴 #9 + BentoDesk #10：严格校验的 manifest 拉取 +
+      // + 同类桌面整理工具 #10：严格校验的 manifest 拉取 +
       // GitHub 302 兜底（lib/update-flow，与后台调度器同一份实现）；
       // [UPD-CH] Insider 通道下 GitHub 源走 Releases API 取预发布。
       const remote = await resolveUpdateManifest(url, s.extra.updateArtifact, channel);
@@ -158,14 +181,17 @@ export function UpdatePage() {
       // no-op 但仍触发一次告警日志，且 checkedAt 会写入过期结果）。
       if (disposedRef.current) return;
       setManifest(remote);
-      setHasUpdate(current && current !== "unknown" ? compareVersions(remote.version, current) > 0 : false);
+      // 比较基线从 ref 现取：重试链「版本到手再 check」时，按钮闭包里的
+      // check 仍是旧渲染（current 尚未回流 state）。
+      const cur = currentRef.current;
+      setHasUpdate(cur && cur !== "unknown" ? compareVersions(remote.version, cur) > 0 : false);
       setCheckedAt(Date.now());
       s.setExtra({ updateLastCheckAt: Date.now() });
     } catch (e) {
       if (disposedRef.current) return;
       setManifest(null);
       setHasUpdate(false);
-      setError(`${tr("更新源请求失败：")}${e instanceof Error ? e.message : String(e)}`);
+      setError(tr("更新源请求失败：{err}", { err: e instanceof Error ? e.message : String(e) }));
       s.setExtra({ updateLastCheckAt: Date.now() });
     } finally {
       releaseUpdateOp();
@@ -179,7 +205,7 @@ export function UpdatePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoCheck, endpoint, current]);
 
-  // #A-32：当前版本后到（异步载入晚于检查结果）时，用暂存的 manifest 补一次比较；
+  // #：当前版本后到（异步载入晚于检查结果）时，用暂存的 manifest 补一次比较；
   // 版本未知时强制判定无更新，避免「unknown vs 任意版本」被误报为新版本。
   useEffect(() => {
     if (current === "unknown") {
@@ -189,7 +215,7 @@ export function UpdatePage() {
     if (manifest && current) setHasUpdate(compareVersions(manifest.version, current) > 0);
   }, [current, manifest]);
 
-  /** E1：下载安装包并静默安装、重启应用。BentoDesk 借鉴 #10：下载/安装期间
+  /** 下载安装包并静默安装、重启应用。下载/安装期间
       持有 CAS 门（安装成功后进程退出无需释放；失败在 finally 释放）。 */
   const downloadAndInstall = async () => {
     if (!manifest?.url || !isTauri()) return;
@@ -201,21 +227,24 @@ export function UpdatePage() {
     try {
       const path = await invoke<string>("download_update", {
         url: manifest.url,
-        // D-1：清单带签名时以签名锚定的哈希为准（Rust 侧优先于同源 sidecar）
+        // 清单带签名时以签名锚定的哈希为准（Rust 侧优先于同源 sidecar）。
+        // Rust 侧要求该 (url, sha256) 命中 verify_update_manifest 验签时
+        // 登记的后端证据（下载即消费）——本页流程「检查更新 → 点击下载」天然
+        // 满足；距检查超 30 分钟时下载会被拒，提示用户重新检查即可。
         expectedSha256: manifest.sha256 ?? null
       });
       setDlDone(true);
       await invoke("install_update", { path });
       // 安装器运行后应用会退出；若未退出则给出提示。
     } catch (e) {
-      setError(`${tr("更新失败：")}${e instanceof Error ? e.message : String(e)}`);
+      setError(tr("更新失败：{err}", { err: e instanceof Error ? e.message : String(e) }));
     } finally {
       releaseUpdateOp();
       setDownloading(false);
     }
   };
 
-  /** [UPD-CH] 回滚（借鉴 CSH #7）：不比版本高低，点哪个装哪个——复用同一套
+  /** [UPD-CH] 回滚：不比版本高低，点哪个装哪个——复用同一套
    *  下载安装流程（sha256 校验与安装参数完全一致）。 */
   const installRelease = async (rel: GhRelease) => {
     if (!rel.url || !isTauri()) return;
@@ -233,7 +262,7 @@ export function UpdatePage() {
       setDlDone(true);
       await invoke("install_update", { path });
     } catch (e) {
-      setError(`${tr("回滚失败：")}${e instanceof Error ? e.message : String(e)}`);
+      setError(tr("回滚失败：{err}", { err: e instanceof Error ? e.message : String(e) }));
     } finally {
       releaseUpdateOp();
       setDownloading(false);
@@ -254,7 +283,7 @@ export function UpdatePage() {
       if (list.length === 0) setRollbackError(tr("仓库没有可用的发布版本"));
       setReleases(list);
     } catch (e) {
-      setRollbackError(`${tr("发布列表请求失败：")}${e instanceof Error ? e.message : String(e)}`);
+      setRollbackError(tr("发布列表请求失败：{err}", { err: e instanceof Error ? e.message : String(e) }));
       setReleases(null);
     } finally {
       setRollbackBusy(false);
@@ -290,7 +319,10 @@ export function UpdatePage() {
           <div className="tm-update-card">
             <div className="tm-update-row">
               <span>{tr("当前版本")}</span>
-              <b>v{current && current !== "unknown" ? current : "—"}</b>
+              {/* 获取失败时如实展示（悬停有原因提示），不再静默显示「—」。 */}
+              <b title={versionFailed ? tr("当前版本获取失败") : undefined}>
+                {versionFailed ? tr("获取失败") : `v${current && current !== "unknown" ? current : "—"}`}
+              </b>
             </div>
             {buildTime && (
               <div className="tm-update-row">
@@ -304,7 +336,7 @@ export function UpdatePage() {
                   <span>{tr("更新源版本")}</span>
                   <b>v{manifest.version}</b>
                 </div>
-                {/* [CHANGELOG]（ZTools 借鉴 #16）更新说明按 markdown 渲染
+                {/* [CHANGELOG]更新说明按 markdown 渲染
                     （GitHub Release body 常为 md；纯文本经 mini-md 原样通过）。 */}
                 {manifest.notes && (
                   <div className="tm-update-note" data-testid="update-changelog">
@@ -335,12 +367,12 @@ export function UpdatePage() {
                     onClick={() => void downloadAndInstall()}
                     disabled={downloading}
                   >
-                    <Download size={14} /> {tr("下载并安装")} v{manifest.version}
+                    <Download size={14} /> {tr("下载并安装 v{version}", { version: manifest.version })}
                   </button>
                   <button className="tm-btn-secondary tm-update-dl" onClick={() => void openExternal(manifest.url!)}>
                     <ExternalLink size={14} /> {tr("打开下载页")}
                   </button>
-                  {/* BentoDesk 借鉴 #10：跳过此版本——写 updateSkipVersion，后台
+                  {/* 跳过此版本——写 updateSkipVersion，后台
                     调度与更新页均不再提示该版本（更高版本出现时自动恢复）。 */}
                   <button
                     className="tm-btn-secondary tm-update-dl"
@@ -353,8 +385,7 @@ export function UpdatePage() {
               )}
             {hasUpdate && manifest && isSkippedVersion(manifest.version, s.extra.updateSkipVersion) && (
               <div className="tm-update-note muted">
-                {tr("已跳过 v")}
-                {manifest.version}
+                {tr("已跳过 v{version}", { version: manifest.version })}
                 <button
                   className="tm-btn-secondary"
                   style={{ marginLeft: 8 }}
@@ -442,7 +473,7 @@ export function UpdatePage() {
             />
           </div>
 
-          {/* [UPD-CH]（借鉴 CSH #6）：双通道 + 通道跟随构建默认。 */}
+          {/* [UPD-CH]：双通道 + 通道跟随构建默认。 */}
           <div className="tm-setting-row">
             <div className="tm-setting-text">
               <span className="tm-setting-title">{tr("更新通道")}</span>
@@ -462,7 +493,7 @@ export function UpdatePage() {
             />
           </div>
 
-          {/* [UPD-CH]（借鉴 CSH #7）：从仓库加载可回滚的版本。 */}
+          {/* [UPD-CH]：从仓库加载可回滚的版本。 */}
           <div className="tm-setting-row">
             <div className="tm-setting-text">
               <span className="tm-setting-title">{tr("从仓库加载可回滚的版本")}</span>
@@ -517,7 +548,7 @@ export function UpdatePage() {
             </div>
           )}
 
-          {/* [UPD-CH]（借鉴 CSH #7）：本机版本历史（运行记录，与仓库列表分开）。 */}
+          {/* [UPD-CH]：本机版本历史（运行记录，与仓库列表分开）。 */}
           <div className="tm-setting-row">
             <div className="tm-setting-text">
               <span className="tm-setting-title">{tr("本机版本历史")}</span>
@@ -545,7 +576,7 @@ export function UpdatePage() {
             <div className="tm-update-note muted">{tr("暂无记录")}</div>
           )}
 
-          {/* BentoDesk 借鉴 #10：定时检查频率（主窗口启动即查 + 周期醒查；
+          {/* 定时检查频率（主窗口启动即查 + 周期醒查；
               仅手动 = 关闭后台定时，页面手动检查不受影响）。 */}
           <div className="tm-setting-row">
             <div className="tm-setting-text">
@@ -572,9 +603,21 @@ export function UpdatePage() {
             </div>
             <button
               className="tm-btn-secondary"
-              onClick={() => void check()}
-              disabled={checking || !endpoint.trim() || current === "unknown"}
-              title={current === "unknown" ? tr("正在获取当前版本…") : undefined}
+              onClick={() => {
+                // 失败态点击 = 先重试取版本、到手后再检查（不再永久禁用；
+                // 避免 check 与版本获取同拍，先以 unknown 比较闪出误导性的
+                // 「已是最新版本」）。
+                if (versionFailed) void loadCurrentVersion().then(() => void check());
+                else void check();
+              }}
+              disabled={checking || !endpoint.trim() || (current === "unknown" && !versionFailed)}
+              title={
+                versionFailed
+                  ? tr("当前版本获取失败，点击重试")
+                  : current === "unknown"
+                    ? tr("正在获取当前版本…")
+                    : undefined
+              }
             >
               <RefreshCw size={13} className={checking ? "spin" : ""} /> {checking ? tr("检查中…") : tr("检查")}
             </button>

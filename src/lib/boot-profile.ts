@@ -1,5 +1,5 @@
 /**
- * 冷启动打点（P4）。
+ * 冷启动打点。
  *
  * 为什么需要它：启动慢的原因可能在 Rust 侧（SQLite 迁移、托盘注册、
  * 窗口创建）、也可能在前端（bundle 解析、hydration、首帧渲染），没有
@@ -8,7 +8,10 @@
  *
  * 设计约束：
  *  - 零依赖、零 IPC：只用 `performance.now()`，不影响启动本身。
- *  - 只保留最近一次启动的数据，写进 sessionStorage 便于跨页面（设置窗口）读取。
+ *  - 只保留最近一次启动的数据。主桌面层窗口（widget-0）把时间轴发布到
+ *    localStorage（跨 WebView 共享）；各窗口自己的打点仍写 sessionStorage
+ *    （按浏览上下文隔离，**不跨窗口**——旧注释「设置窗口从 sessionStorage
+ *    恢复」的假设不成立，设置窗读到的只会是它自己的加载耗时）。
  *  - 采集失败绝不能影响启动，所有写入都包在 try 里。
  */
 
@@ -28,6 +31,8 @@ export interface BootMark {
 }
 
 const STORAGE_KEY = "focus-desk.boot-profile.v1";
+/** 主窗口发布的共享时间轴（应用冷启动，跨窗口可读）：`{ bootAt, marks }`。 */
+const SHARED_KEY = "focus-desk.boot-profile.shared.v1";
 
 const marks: BootMark[] = [];
 
@@ -37,6 +42,29 @@ function now(): number {
     return Math.round(performance.now() * 10) / 10;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * 本窗口是否应用冷启动的「主体」（主桌面层 `widget-0`；浏览器预览无 label
+ * 同样视为主体）。其余窗口（设置 / 速记 / 全屏展示 / 超级面板…）各自打点
+ * 但**不发布**共享时间轴——main.tsx 在每个 WebView 里都会跑，全部发布会让
+ * 后开的窗口覆盖掉真正的应用启动数据。
+ *
+ * 零依赖约束下不 import lib/tauri：直接读 WebView 在用户脚本前注入的
+ * internals（@tauri-apps/api 的 getCurrentWindow 同源）。
+ */
+function isPrimaryBootWindow(): boolean {
+  try {
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string }; label?: string } };
+      }
+    ).__TAURI_INTERNALS__;
+    const label = internals?.metadata?.currentWindow?.label ?? internals?.metadata?.label;
+    return label === undefined || label === "widget-0";
+  } catch {
+    return true;
   }
 }
 
@@ -62,12 +90,19 @@ export function markBoot(phase: BootPhase): void {
   } catch {
     // sessionStorage 不可用（隐私模式）时静默降级：内存里的数据仍可读。
   }
+  if (isPrimaryBootWindow()) {
+    try {
+      localStorage.setItem(SHARED_KEY, JSON.stringify({ bootAt: Date.now(), marks }));
+    } catch {
+      // 共享发布失败静默降级：主窗口自身仍可从内存读取。
+    }
+  }
 }
 
 /**
  * 读取本次启动的时间轴。
- * 优先返回内存数据；跨窗口场景（设置窗口）从 sessionStorage 恢复；
- * 无任何数据时返回空数组。O(n)。
+ * 优先返回主窗口（widget-0）发布的共享时间轴（应用冷启动）；共享缺失时
+ * 退回本窗口内存 / sessionStorage 数据；无任何数据时返回空数组。O(n)。
  *
  * @returns 打点数组副本（按记录顺序），元素含阶段名与相对导航开始的毫秒数。
  * @throws 无。
@@ -78,6 +113,19 @@ export function markBoot(phase: BootPhase): void {
  * ```
  */
 export function readBootProfile(): BootMark[] {
+  // 优先读主窗口发布的共享时间轴（应用冷启动）——本模块的展示方在设置窗，
+  // 它自身的打点只反映设置窗的加载耗时，不是应用启动性能（特性本意）。
+  try {
+    const raw = localStorage.getItem(SHARED_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { marks?: unknown };
+      if (Array.isArray(parsed.marks) && parsed.marks.length > 0) {
+        return parsed.marks as BootMark[];
+      }
+    }
+  } catch {
+    // fallthrough：共享读不到（损坏 / 主窗口发布失败）退回本窗口数据。
+  }
   if (marks.length > 0) return [...marks];
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);

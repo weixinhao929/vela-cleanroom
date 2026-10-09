@@ -1,7 +1,7 @@
 import type { Task } from "../../domain/schemas";
 
 /**
- * 任务全览（C1 看板沉浸页）的列派生纯函数。
+ * 任务全览（看板沉浸页）的列派生纯函数。
  *
  * 五列 = 「逾期 / 今天 / 之后 / 无期限 / 已完成」，完全由既有字段派生
  * （completed + dueAt），不新增任何存储字段：
@@ -11,7 +11,7 @@ import type { Task } from "../../domain/schemas";
  *    → 今天；其余 → 之后。日界用本地时区（与 TodayTasksPanel 的分组同口径），
  *    跨夏令时安全（明日 00:00 经 Date 构造器归一化，不假设 24h 天）。
  *
- * 列内排序：sortOrder 升序（W-045 手动权重，小的在前），并列按传入顺序
+ * 列内排序：sortOrder 升序（手动权重，小的在前），并列按传入顺序
  * （显式下标 tie-break，不依赖引擎 sort 稳定性）。
  */
 

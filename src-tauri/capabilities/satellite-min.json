@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "satellite-min",
+  "description": "N-28（2026-10-07 审查第二轮）：三个纯展示卫星窗的最小权限集——taskbar-net（两个数字的常驻网速条）/ fullscreen（全屏专注钟）/ super-panel（超级面板）。它们此前挂在 default 下白得 dialog + notification 两个插件面（quick-note.json 拆分时同批的漏网）：本组窗口的模块图内 plugin-dialog 与 plugin-notification 均不可达（三入口只挂 useCrossWindowSettingsSync / 壁纸主题 / crash-log，无 notify handlers 与 file-dialog 消费），被注入时却能拉起文件对话框/发系统通知，与命令层的信任定级不一致。core:window 面保留整集（fullscreen 首帧握手 show/setFocus、super-panel 收起 hide、统一 close 兜底）。自定义命令 IPC 不受 capability 门控（见 web-preview.json 说明），由命令级窗口闸门兜底。",
+  "windows": ["taskbar-net", "fullscreen", "super-panel"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-is-minimized"
+  ]
+}

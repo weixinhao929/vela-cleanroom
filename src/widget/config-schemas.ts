@@ -29,7 +29,7 @@ function en<T extends readonly string[]>(d: T[number], opts: T) {
   return z.enum(opts).default(d).catch(d);
 }
 
-/** 快捷方式（shortcuts）的条目：id/label/path/kind。missing 为 BentoDesk
+/** 快捷方式（shortcuts）的条目：id/label/path/kind。missing 为 同类桌面整理工具
  * file_missing 标记（目标暂不存在；optional 避免给每条都写入 false）。 */
 const shortcutItem = z.object({
   id: z.string(),
@@ -80,13 +80,13 @@ export const clockConfigSchema = z.object({
   weekdayStyle: en("long", ["short", "long"]),
   hour12: bool(false),
   style: en("standard", ["compact", "standard", "loose"]),
-  /* W-001 世界时钟：zones 非空时按城市多列并列显示。 */
+  /* 世界时钟：zones 非空时按城市多列并列显示。 */
   zones: z.array(z.string()).default([]).catch([]),
-  /* W-002 模拟表盘皮肤。 */
+  /* 模拟表盘皮肤。 */
   face: en("digital", ["digital", "analog"]),
-  /* W-004 日期格式。 */
+  /* 日期格式。 */
   dateStyle: en("auto", ["auto", "zh", "slash"]),
-  /* W-005 字号缩放与文字颜色。fontScale 滑杆 step 0.05，必须允许小数。 */
+  /* 字号缩放与文字颜色。fontScale 滑杆 step 0.05，必须允许小数。 */
   fontScale: fnum(1, 0.6, 1.6),
   color: z.string().default("").catch("")
 });
@@ -97,7 +97,7 @@ export const todoConfigSchema = z.object({
   showProgressTrack: bool(true),
   showEmptyState: bool(true),
   showFilter: bool(true),
-  // "manual"：TodayTasksPanel 的手动拖拽排序（W-045）。此前枚举漏掉该值，
+  // "manual"：TodayTasksPanel 的手动拖拽排序。此前枚举漏掉该值，
   // sanitize 的 .catch("newest") 会把用户选的手动排序静默洗回默认。
   sortOrder: en("newest", ["newest", "oldest", "manual"]),
   // 逾期/今天/即将到期分组（SettingsView 写、TodayTasksPanel 读）。
@@ -141,9 +141,9 @@ export const notesConfigSchema = z.object({
 export const sketchConfigSchema = z.object({
   defaultBrushSize: num(3, 1, 20),
   defaultColor: en("white", ["white", "gray", "blue", "green"]),
-  /** W-099 画布背景：透明（棋盘格）/ 网格 / 白底 / 深色。 */
+  /** 画布背景：透明（棋盘格）/ 网格 / 白底 / 深色。 */
   bgMode: en("grid", ["transparent", "grid", "white", "dark"]),
-  /** W-100 JPEG 导出质量（0.5–1）。滑杆 step 0.02，必须允许小数。 */
+  /** JPEG 导出质量（0.5–1）。滑杆 step 0.02，必须允许小数。 */
   exportQuality: fnum(0.92, 0.5, 1)
 });
 
@@ -155,17 +155,19 @@ export const systemConfigSchema = z.object({
   showNetwork: bool(true),
   compactMode: bool(false),
   refreshInterval: num(3, 1, 30),
-  /** W-142 每行末尾的迷你趋势曲线。 */
+  /** 每行末尾的迷你趋势曲线。 */
   showTrend: bool(false),
-  /** W-143 显示全部磁盘（默认只显示第一块）。 */
+  /** 显示全部磁盘（默认只显示第一块）。 */
   showAllDisks: bool(false),
-  /** W-144 CPU/内存 >80% 时进度条与数值变红。 */
+  /** 阈值告警：高于 alertThreshold（默认 80）时进度条与数值变红。 */
   thresholdAlert: bool(true),
-  /** W-145 网卡显示：first 第一块(自动选最活跃) / all 全部 / aggregate 聚合 / select 指定网卡。 */
+  /** 告警阈值（%）：开启 thresholdAlert 后生效（默认 80）。 */
+  alertThreshold: num(80, 10, 100),
+  /** 网卡显示：first 第一块(自动选最活跃) / all 全部 / aggregate 聚合 / select 指定网卡。 */
   networkMode: en("first", ["first", "all", "aggregate", "select"]),
-  /** W-145 select 模式下指定的网卡名（FriendlyName，与后端同名）。 */
+  /** select 模式下指定的网卡名（FriendlyName，与后端同名）。 */
   networkSelect: z.string().default("").catch(""),
-  /** W-146 CPU 每核小格子（任务管理器形态）。 */
+  /** CPU 每核小格子（任务管理器形态）。 */
   showCoresGrid: bool(false)
 });
 
@@ -178,13 +180,13 @@ export const hardwareConfigSchema = z.object({
   showBattery: bool(true),
   showTrend: bool(true),
   refreshInterval: num(3, 1, 30),
-  /** W-148 静态硬件信息头（CPU/GPU 型号 + 总内存）。 */
+  /** 静态硬件信息头（CPU/GPU 型号 + 总内存）。 */
   showStaticInfo: bool(true),
-  /** W-149 开机时长 + 进程数。 */
+  /** 开机时长 + 进程数。 */
   showUptimeProcess: bool(true),
-  /** W-150 趋势窗口样本数（刷新间隔 × N ≈ 时间范围）。 */
+  /** 趋势窗口样本数（刷新间隔 × N ≈ 时间范围）。 */
   historyLen: num(40, 10, 120),
-  /** W-150 曲线上叠加峰值虚线。 */
+  /** 曲线上叠加峰值虚线。 */
   showPeak: bool(false)
 });
 
@@ -198,11 +200,11 @@ export const calendarConfigSchema = z.object({
   compact: bool(false),
   showWeekNumber: bool(false),
   firstDayOfWeek: en("monday", ["monday", "sunday"]),
-  /* W-017 视图粒度：月 / 周 / 双月。 */
+  /* 视图粒度：月 / 周 / 双月。 */
   viewMode: en("month", ["month", "week", "double"]),
-  /* W-015 月格内事件摘要。 */
+  /* 月格内事件摘要。 */
   showCellEvents: bool(true),
-  /* W-016 ICS 订阅（Google/Outlook 只读日历）。 */
+  /* ICS 订阅（Google/Outlook 只读日历）。 */
   icsEnabled: bool(false),
   icsUrl: z.string().default("").catch("")
 });
@@ -215,29 +217,34 @@ export const weatherConfigSchema = z.object({
   showHourly: bool(true),
   showSunTimes: bool(true),
   refreshInterval: num(30, 5, 120),
-  /* W-008 空气质量 + 紫外线。 */
+  /* 空气质量 + 紫外线。 */
   showAqi: bool(true),
-  /* W-010 记住选中城市。 */
+  /* 记住选中城市。 */
   cityIndex: num(0, 0, 99),
-  /* W-012 新预警系统通知。 */
+  /* 新预警系统通知。 */
   alertNotify: bool(true)
 });
 
 export const sysbarConfigSchema = z.object({
-  showGPU: bool(true),
-  showCores: bool(true),
   refreshInterval: num(2, 1, 10),
-  /** W-154 显示项自定义：条目自由组合（顺序即渲染顺序）。
+  /** 显示项自定义：条目自由组合（顺序即渲染顺序）。
    * 可选值：fps / lat / gpu / cpu / mem / cores / net / battery。
-   * 旧 showGPU / showCores 开关保留兼容：items 存在时以 items 为准。 */
+   * （旧 showGPU / showCores 开关已移除登记：组件只读 items；存量键由
+   * sanitizeWidgetConfig 的 input 展开原样保留，不再参与解析/补默认。） */
   items: z
     .array(z.string())
     .default(["fps", "lat", "gpu", "cpu", "mem", "cores"])
     .catch(["fps", "lat", "gpu", "cpu", "mem", "cores"]),
-  /** W-157 字号：xs / sm / md。 */
+  /** 字号：xs / sm / md。 */
   fontSize: en("sm", ["xs", "sm", "md"]),
-  /** W-157 分隔符样式：竖线 / 圆点 / 无。 */
-  separator: en("bar", ["bar", "dot", "none"])
+  /** 分隔符样式：竖线 / 圆点 / 无。 */
+  separator: en("bar", ["bar", "dot", "none"]),
+  /** 无底板：去掉卡片背景/边框/投影/毛玻璃，只留文字条（时钟/音乐 transparent 同款）。 */
+  transparent: bool(false),
+  /** 告警阈值（%）：CPU/内存高于此值数值变红（默认 80）。 */
+  alertThreshold: num(80, 10, 100),
+  /** 电池低电阈值（%）：低于此值数值变红（默认 20）。 */
+  battLowThreshold: num(20, 5, 50)
 });
 
 export const shortcutsConfigSchema = z.object({
@@ -250,9 +257,7 @@ export const shortcutsConfigSchema = z.object({
   customShortcuts: shortcutList,
   /** 类手机桌面的快捷方式文件夹：可展开磁贴，聚合若干自定义条目。 */
   shortcutFolders: shortcutFolderList,
-  /** Logo Loop 滚动带：快捷方式以无限横向滚动展示（风格化样式）。 */
-  marquee: bool(false),
-  /** W-081 内置位置可选：勾选显示哪些系统位置（回收站/此电脑/文档…）。
+  /** 内置位置可选：勾选显示哪些系统位置（回收站/此电脑/文档…）。
    *  默认为空 —— 图标来自桌面拖入的真实快捷方式，不再预置通用图标。 */
   builtinShortcuts: z.array(z.string()).default([]).catch([]),
   /** 自由排布：id → 内容区格位（列/行）。缺省按 columns 自动排。 */
@@ -260,15 +265,15 @@ export const shortcutsConfigSchema = z.object({
     .record(z.string(), z.object({ x: num(0, 0, 63), y: num(0, 0, 255) }))
     .default({})
     .catch({}),
-  /** W-083 展示顺序（内置 id + 自定义 id 混排；滚动带与自动排布用）。 */
+  /** 展示顺序（内置 id + 自定义 id 混排；自动排布用）。 */
   order: z.array(z.string()).default([]).catch([]),
-  /** 文件夹预览小窗（DeskOrder 借鉴 #13）：文件夹条目单击弹就地图标网格，
+  /** 文件夹预览小窗：文件夹条目单击弹就地图标网格，
    *  关闭后退回原行为（直接开资源管理器）。 */
   folderPreview: bool(true),
-  /** 文件夹弹层打开方式（BentoDesk 三显示模式）：单击 / 悬停 / 钉住。 */
+  /** 文件夹弹层打开方式：单击 / 悬停 / 钉住。 */
   sfolderOpenMode: en("click", ["click", "hover", "pin"]),
-  /** DeskOrder 借鉴 #1：目录监视自动整理（规则与生效分离的三态设计）。
-   *  BentoDesk 借鉴 #6 补两个条件叶子：文件年龄（N 天前创建/修改）与
+  /** 目录监视自动整理（规则与生效分离的三态设计）。
+   *   补两个条件叶子：文件年龄（N 天前创建/修改）与
    *  最小体积（MB）；与扩展名/关键字仍是扁平 AND，0 = 不启用该条件。 */
   autoOrganize: z
     .object({
@@ -277,7 +282,7 @@ export const shortcutsConfigSchema = z.object({
       nameTokens: z.array(z.string()).default([]).catch([]),
       extEnabled: bool(true),
       nameEnabled: bool(false),
-      /** C10 通知动作：命中入列时额外发系统通知。 */
+      /** 通知动作：命中入列时额外发系统通知。 */
       notify: bool(false),
       /** 文件年龄下限（天，0 = 不限）。 */
       olderThanDays: num(0, 0, 3650),
@@ -314,23 +319,25 @@ export const filesConfigSchema = z.object({
   showHidden: bool(false),
   showFileSize: bool(true),
   showModifiedDate: bool(true),
-  /** W-074 排序：依据 + 方向（目录始终排在前）。B9 补「类型」（扩展名聚簇）。 */
+  /** 排序：依据 + 方向（目录始终排在前）。补「类型」（扩展名聚簇）。 */
   sortBy: en("name", ["name", "size", "modified", "type"]),
   sortOrder: en("asc", ["asc", "desc"]),
-  /** B9 名称显示：完整 / 隐藏扩展名 / 隐藏文件名。 */
+  /** 名称显示：完整 / 隐藏扩展名 / 隐藏文件名。 */
   nameDisplay: en("full", ["full", "noext", "noname"]),
-  /** B5 视图：列表 / 内容预览。 */
+  /** 视图：列表 / 内容预览。 */
   viewMode: en("list", ["list", "preview"]),
-  /** B8 显示别名（path → 展示名，不碰磁盘）：右键「设置显示名」写入。 */
+  /** 显示别名（path → 展示名，不碰磁盘）：右键「设置显示名」写入。 */
   aliases: z.record(z.string(), z.string()).default({}).catch({}),
-  /** W-079 每实例根目录（空 = 跟随全局默认文件夹）。 */
+  /** 每实例根目录（空 = 跟随全局默认文件夹）。 */
   root: z.string().default("").catch(""),
-  /** W-079 路径记忆：记住本实例最后浏览的目录，重启不回根。 */
+  /** 路径记忆：记住本实例最后浏览的目录，重启不回根。 */
   rememberPath: bool(true),
   lastPath: z.string().default("").catch(""),
-  /** W-078 根目录快捷 chips（下载/文档/图片…一键直达）。 */
+  /** 锁定根目录：向上/面包屑/快捷 chips 不得跳出本实例根（钳制回根）。 */
+  lockToRoot: bool(false),
+  /** 根目录快捷 chips（下载/文档/图片…一键直达）。 */
   showChips: bool(true),
-  /** BentoDesk 借鉴 #4 实时同步：当前目录登记 Rust watch，变更即时静默重拉
+  /**  实时同步：当前目录登记 Rust watch，变更即时静默重拉
       （绑定失败自动回退 20s 轮询）。 */
   liveSync: bool(true)
 });
@@ -338,9 +345,9 @@ export const filesConfigSchema = z.object({
 export const calculatorConfigSchema = z.object({
   scientificMode: bool(false),
   showExpression: bool(true),
-  /** W-111 历史记录纸带（重启保留，逐条可复制/回填）。 */
+  /** 历史记录纸带（重启保留，逐条可复制/回填）。 */
   showHistory: bool(true),
-  /** W-112 三角函数入参角度制（deg）/ 弧度制（rad）。 */
+  /** 三角函数入参角度制（deg）/ 弧度制（rad）。 */
   angleMode: en("deg", ["deg", "rad"]),
   /** 顶部页签（编码哈希并入计算器）：计算 / 编码 / 哈希，卡片内点击即持久化。 */
   mode: en("calc", ["calc", "encode", "hash"])
@@ -359,12 +366,12 @@ export const colorPickerConfigSchema = z.object({
   showRgb: bool(true),
   showHsl: bool(true),
   showHistory: bool(true),
-  /** W-106 扩展格式行：默认收起，避免小卡片过长。 */
+  /** 扩展格式行：默认收起，避免小卡片过长。 */
   showHsv: bool(false),
   showCmyk: bool(false),
   showRgba: bool(false),
   showCssVar: bool(false),
-  /** W-107 历史容量（固定条目不淘汰）。 */
+  /** 历史容量（固定条目不淘汰）。 */
   historyCap: num(8, 4, 24)
 });
 
@@ -383,33 +390,40 @@ export const musicConfigSchema = z.object({
   visualHeight: num(64, 10, 100),
   /** 检测源：播放音频 / 麦克风 / 两者。 */
   mode: en("playback", ["playback", "microphone", "both"]),
-  /** W-118 布局：纯频谱 / 正在播放卡 / 两者。 */
+  /** 布局：纯频谱 / 正在播放卡 / 两者。 */
   layout: en("spectrum", ["spectrum", "nowplaying", "both"]),
-  /* ---- 正在播放卡片专属（nowplaying 类型；对齐同类媒体浮窗设置）---- */
-  /** 标题与歌手居中（同类媒体浮窗同款）。 */
+  /* ---- 正在播放卡片专属（nowplaying 类型；同类媒体浮窗 媒体浮窗设置对齐）---- */
+  /** 标题与歌手居中（同类媒体浮窗 CenterTitleArtist）。 */
   centerTitle: bool(false),
   /** 显示进度条（可点/可拖 seek；会话不支持 seek 时本就置灰）。 */
   showSeekbar: bool(true),
   /** 显示随机/循环按钮（按会话上报能力位出现，与音乐沉浸页同款）。 */
   showModeButtons: bool(true),
-  /** 滚轮调节当前播放源的应用音量（W-131）。 */
+  /** 滚轮调节当前播放源的应用音量。 */
   wheelVolume: bool(true),
-  /** W-124 配色：跟随主题 / 单色 / 彩虹渐变。 */
+  /** 配色：跟随主题 / 单色 / 彩虹渐变。 */
   colorMode: en("theme", ["theme", "mono", "rainbow"]),
-  /** W-125 灵敏度（0.5–3）：小音量场景把频谱"抬"起来。滑杆 step 0.1。 */
+  /** 灵敏度（0.5–3）：小音量场景把频谱"抬"起来。滑杆 step 0.1。 */
   gain: fnum(1, 0.5, 3),
-  /** W-125 平滑度（0–1）：值越高动画越柔和（但响应越慢）。滑杆 step 0.05。 */
+  /** 平滑度（0–1）：值越高动画越柔和（但响应越慢）。滑杆 step 0.05。 */
   smoothing: fnum(0.5, 0, 1),
-  /** W-119 频带数（16–96）：窄卡片用少，宽卡片用多。 */
+  /** 频带数（16–96）：窄卡片用少，宽卡片用多。 */
   bandCount: num(64, 16, 96),
-  /** W-119 峰值保持：每根条上方显示缓慢下落的峰值帽线。 */
+  /** 峰值保持：每根条上方显示缓慢下落的峰值帽线。 */
   peakHold: bool(false),
-  /** W-127 频带分布：log（音乐低频细分）/ linear（语音均匀）。 */
+  /** 频带分布：log（音乐低频细分）/ linear（语音均匀）。 */
   dist: en("log", ["log", "linear"]),
   /** 底部状态文字（监听中/正在发声 + 频谱来源提示行）整体显示开关。 */
   showStatusText: bool(true),
   /** 透明（无底板）：去掉卡片底板/边框/投影/毛玻璃，只留内容（对齐时钟同款）。 */
-  transparent: bool(false)
+  transparent: bool(false),
+  /* ---- 歌词（沉浸页消费；此前未登记——组件读写正常但预设包 strict
+     导入会剥离这两个键，导出→导入往返静默丢失；默认值也只存在于组件的
+     硬编码回退里，双源可漂移）---- */
+  /** 一.5 歌词延迟微调（秒，-5 ~ +5 步进 0.5；正值 = 歌词推后显示）。 */
+  lyricOffsetSec: fnum(0, -5, 5),
+  /** 译文双行显示（取到的歌词带译文时）。 */
+  lyricTranslation: bool(true)
 });
 
 export const bluetoothConfigSchema = z.object({
@@ -419,13 +433,13 @@ export const bluetoothConfigSchema = z.object({
   showName: bool(false),
   layout: en("grid", ["grid", "list"]),
   gap: num(16, 4, 40),
-  /** W-136 自动刷新间隔（秒）。0 = 关闭自动刷新。 */
+  /** 自动刷新间隔（秒）。0 = 关闭自动刷新。 */
   autoRefreshSeconds: num(30, 0, 300),
-  /** W-137 低电量阈值（%）。0 = 关闭低电量提醒。 */
+  /** 低电量阈值（%）。0 = 关闭低电量提醒。 */
   lowBatteryThreshold: num(20, 0, 50),
-  /** W-140 设备类型筛选：all 或具体类型名。 */
+  /** 设备类型筛选：all 或具体类型名。 */
   filterType: z.string().default("all").catch("all"),
-  /** W-140 排序：default 后端顺序 / battery 电量 / name 名称 / type 类型。 */
+  /** 排序：default 后端顺序 / battery 电量 / name 名称 / type 类型。 */
   sortBy: en("default", ["default", "battery", "name", "type"])
 });
 
@@ -434,7 +448,7 @@ export const galleryConfigSchema = z.object({
   gap: num(8, 2, 24),
   thumbShape: en("rounded", ["square", "rounded", "circle"]),
   showTags: bool(true),
-  /** Drift Wall 漂移墙：以多列错速漂移的 3D 墙呈现图片（风格化样式）。 */
+  /** Drift Wall 漂移墙：以多列错速漂移的 3D 墙呈现图片（风格）。 */
   driftWall: bool(false)
 });
 
@@ -449,20 +463,36 @@ export const countdownConfigSchema = z.object({
   loopAfterComplete: bool(false),
   notifyOnEnd: bool(true),
   showSeconds: bool(true),
-  showPresets: bool(true)
+  showPresets: bool(true),
+  // 组件实际消费但此前未登记的键：缺失会让 defaultWidgetConfig（schema.parse({})）
+  // 拿不到默认值，快速配置 fallback / 恢复默认 / 预设包校验侧都读不到它们。
+  endSound: bool(true),
+  linkPomodoro: bool(false),
+  trayTime: bool(true),
+  mode: z.enum(["timer", "days"]).catch("timer"),
+  presets: z.array(z.number()).catch([]),
+  targets: z
+    .array(
+      z.object({
+        id: z.string(),
+        label: z.string(),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+      })
+    )
+    .catch([])
 });
 
 export const emailConfigSchema = z.object({
   refreshInterval: num(5, 1, 60),
   showPreview: bool(true),
   showTime: bool(true),
-  /** W-132 列表最大条数（5–50，每账户）。 */
+  /** 列表最大条数（5–50，每账户）。 */
   maxItems: num(20, 5, 50),
-  /** W-132 仅显示未读邮件。 */
+  /** 仅显示未读邮件。 */
   showUnreadOnly: bool(false),
-  /** W-130 新邮件系统通知。 */
+  /** 新邮件系统通知。 */
   notifyNewMail: bool(true),
-  /** W-133 定时免打扰（小时 0–23）：该小时内不自动检查、不通知；-1 关闭。 */
+  /** 定时免打扰（小时 0–23）：该小时内不自动检查、不通知；-1 关闭。 */
   doNotDisturbHour: num(-1, -1, 23)
 });
 
@@ -482,15 +512,19 @@ export const timetableConfigSchema = z.object({
   cellWidth: num(0, 0, 120),
   /** 同步课程到日历小组件（按实际上课时间显示）；关闭即取消同步。 */
   calendarSync: bool(false),
-  /* W-019 多方案。 */
+  /* 多方案。 */
   profiles: z.array(z.unknown()).default([]).catch([]),
   activeProfile: z.string().default("").catch(""),
-  /* W-021 上课前提醒（下节课开始前 10 分钟推送）。 */
+  /* 上课前提醒（下节课开始前 10 分钟推送）。 */
   classReminder: bool(true),
-  /* W-023 总览模式：不按周次过滤，显示全部课程（含单双周）。 */
+  /* 总览模式：不按周次过滤，显示全部课程（含单双周）。 */
   showAllWeeks: bool(false),
-  /* W-024 列表视图。 */
-  layout: en("grid", ["grid", "list"])
+  /* 列表视图。 */
+  layout: en("grid", ["grid", "list"]),
+  /* 仅显示周一至周五（隐藏周末列，窄尺寸省空间）。 */
+  hideWeekday: bool(false),
+  /* 法定节假日当天的课程弱化显示（可能停课）。 */
+  dimRestDay: bool(true)
 });
 
 /** 今日概览：聚合区块的显示开关。 */
@@ -512,7 +546,7 @@ export const todayOverviewConfigSchema = z.object({
   maxEvents: num(5, 1, 12)
 });
 
-/** 秒表（借鉴 ClassSoftwareHub #3）：百分秒显示与计次保留条数。 */
+/** 秒表：百分秒显示与计次保留条数。 */
 export const stopwatchConfigSchema = z.object({
   showCentis: bool(true),
   lapLimit: num(10, 3, 50)
@@ -539,7 +573,7 @@ export const WIDGET_CONFIG_SCHEMAS: Record<string, z.ZodTypeAny> = {
   colorpicker: colorPickerConfigSchema,
   bookmarks: bookmarksConfigSchema,
   music: musicConfigSchema,
-  /** W-129「正在播放」独立类型：与音频监控共用配置 schema（布局被组件锁定为卡片）。 */
+  /** 「正在播放」独立类型：与音频监控共用配置 schema（布局被组件锁定为卡片）。 */
   nowplaying: musicConfigSchema,
   bluetooth: bluetoothConfigSchema,
   gallery: galleryConfigSchema,
@@ -552,7 +586,7 @@ export const WIDGET_CONFIG_SCHEMAS: Record<string, z.ZodTypeAny> = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  B1 就地配置弹层：quick 字段标记                                      */
+/*  就地配置弹层：quick 字段标记 */
 /* ------------------------------------------------------------------ */
 
 /** 返回某类型小组件的默认配置（无 schema 的类型返回空对象）。 */
@@ -576,7 +610,7 @@ export function sanitizeWidgetConfig(type: string, config: unknown): WidgetConfi
 }
 
 /**
- * 严格清洗（BentoDesk 借鉴 #12 预设包导入用）：只保留 schema 已知的键，
+ * 严格清洗：只保留 schema 已知的键，
  * 未登记类型返回空配置。与 sanitizeWidgetConfig 的差异：外部包是纯外部
  * 输入，未知键没有「新版本写入的合法数据」前向兼容豁免——一律剔除
  * （纵深防御，配合 Rust 侧 preset_package 的包级校验）。
@@ -598,6 +632,9 @@ export function validateWidgetConfig(type: string, config: unknown): { success: 
   if (!WIDGET_CONFIG_SCHEMAS[type]) {
     return { success: true, data: (config && typeof config === "object" ? config : {}) as WidgetConfig };
   }
-  const parsed = WIDGET_CONFIG_SCHEMAS[type].safeParse(config ?? {});
+  // 非对象输入（字符串/数字/数组）直接落空对象：顶层裸 z.object 无 .catch()，
+  // safeParse 失败时 data 为 undefined，强转会把 undefined 当合法配置外泄。
+  const input = config && typeof config === "object" ? config : {};
+  const parsed = WIDGET_CONFIG_SCHEMAS[type].safeParse(input);
   return { success: true, data: parsed.data as WidgetConfig };
 }

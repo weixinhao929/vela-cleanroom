@@ -4,7 +4,7 @@ import { DOCK_EXPAND_PREFIX, DOCK_PANEL_EXPAND_ID, dockTileExpandId, V1_DOCK_TIL
 import { dockTileTitle } from "./DockTile";
 
 /**
- * F-1 验收：registry 的每个类型都能渲染为 DockTile——要么登记了 MiniComponent
+ * 验收：registry 的每个类型都能渲染为 DockTile——要么登记了 MiniComponent
  * （富磁贴），要么 GenericMiniTile 所需的 icon / name / component 齐备（通用磁贴
  * + 完整组件兜底展开）。DockTile 的分派只依赖这些元数据，这里遍历断言。
  */

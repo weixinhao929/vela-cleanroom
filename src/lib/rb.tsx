@@ -1,24 +1,23 @@
 ﻿/**
- * 风格化交互组件（无第三方依赖的轻量实现）。
+ * 风交互组件（无第三方依赖的轻量复刻）。
  *
- * 组件与行为：
- *  - SpecularFrame
+ * 参考与对应关系：
+ *  - SpecularFrame ← .dev/components/specular-button
  *    选中态边框的高光沿圆周扫动，光斑角度跟随指针方向；空闲时缓慢自转。
  *    不受动效模式门控（选中框任何时候都在），仅在系统减少动态时静止。
- *  - PixelSwapBurst
- *    主题预设切换时的一波像素格涟漪（由中心向外的 stagger 缩放 + 淡出），
- *    在增强动效模式下由调用方启用。
- *  - ParticleText
+ *  - ParticleText ← .dev/text-animations/particle-text
  *    Canvas 2D 粒子从散点聚合成文字（许可证页 "Vela"），带指针斥力与
  *    空闲漂移。任何动效模式都渲染；减少动态时绘制静态聚合帧。
  *
  * 共享实现说明：SpecularFrame 的所有实例共用一个 rAF 循环与一个
  * document 级 pointermove 监听（注册表驱动），几十个实例也只有一份开销。
  */
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { useSettingsStore, type AnimationSpeed } from "../store/settings-store";
+import { useEffect, useRef, type CSSProperties } from "react";
 import { prefersReducedMotion } from "./anim";
-import { useSafeTimeout } from "./use-safe-timeout";
+/* SpecularFrame 的 .rb-spec 样式原先在 rb.css（只随
+   设置窗懒 chunk 加载），但本组件经共享 Segmented 也进桌面小组件窗——css
+   改在定义处随模块附带（同 command-palette.css 范式），两窗皆可达。 */
+import "../styles/rb-spec.css";
 
 /* ------------------------------------------------------------------ */
 /* SpecularFrame：选中态边框高光                                        */
@@ -34,7 +33,7 @@ type SpecEntry = {
 const specRegistry = new Set<SpecEntry>();
 let specRaf = 0;
 let specPointerBound = false;
-/** 指针静止超过该时长即暂停自转循环（P3 三轮）：设置窗可见但无人操作时，
+/** 指针静止超过该时长即暂停自转循环（三轮）：设置窗可见但无人操作时，
     空闲自转的每帧 setProperty 纯属空转。角度冻结在当前值，指针一动由
     onSpecPointerMove 恢复（新实例挂载同样恢复）。 */
 const SPEC_IDLE_PAUSE_MS = 3000;
@@ -54,7 +53,7 @@ function angleToPointer(r: DOMRect, px: number, py: number): number {
 }
 
 function specLoop(now: number, last: number) {
-  /* C11 实时性：reduce-motion 命中即停表并把已挂实例静止回正（215deg 与
+  /* 实时性：reduce-motion 命中即停表并把已挂实例静止回正（215deg 与
      挂载时 reduce 分支同值）。prefersReducedMotion() 是廉价读，热路径安全；
      解除后由下一次 pointermove 或新实例挂载重启循环。 */
   if (prefersReducedMotion()) {
@@ -67,7 +66,7 @@ function specLoop(now: number, last: number) {
     return;
   }
   specRaf = requestAnimationFrame((t) => specLoop(t, now));
-  /* 空闲暂停（P3 三轮）：指针静止超时后停表（取消刚排的下一帧），高光停在
+  /* 空闲暂停（三轮）：指针静止超时后停表（取消刚排的下一帧），高光停在
      当前角度；恢复路径与 reduce-motion 解除相同（pointermove / 新实例挂载）。 */
   if (now - specLastMoveAt > SPEC_IDLE_PAUSE_MS) {
     cancelAnimationFrame(specRaf);
@@ -169,204 +168,6 @@ export function SpecularFrame({ thickness = 1.5 }: { thickness?: number }) {
   return (
     <span ref={ref} className="rb-spec" aria-hidden="true" style={{ "--spec-w": `${thickness}px` } as CSSProperties} />
   );
-}
-
-/* ------------------------------------------------------------------ */
-/* PixelSwapBurst：预设切换像素翻牌涟漪（Canvas 2D，纯色格）              */
-/* ------------------------------------------------------------------ */
-
-/** 画布网格密度：约 20×11 格。旧实现用 144 个独立 DOM 元素各自做 3D
- *  rotateY 翻牌（=144 个活跃合成层），GPU 压力大导致卡顿。改用单张
- *  canvas，一帧内批量 fillRect 所有格子，纯色格 + 中心向外涟漪，
- * 真正做到丝滑。 */
-const PX_COLS = 20;
-const PX_ROWS = 11;
-
-/** 基准动画总时长（ms，animationDuration=100 且速度=标准）。
- *  两段式：前进涟漪（撑开成纯色）+ 回退涟漪（逐格收回），自然收拢，
- *  不再用「整体淡出」收尾，避免抽帧感。 */
-const PX_BASE_TOTAL = 1180;
-
-/** 速度 → 时长倍数：animationSpeed 三档（慢/标准/快）。 */
-const PX_SPEED_FACTOR = {
-  slow: 1.7,
-  normal: 1,
-  fast: 0.55
-} as const;
-
-/** 解析 #RRGGBB / #RGB 十六进制 → [r,g,b]。 */
-function parseHexColor(v: string): [number, number, number] {
-  const t = v.trim();
-  const m = /^#([0-9a-f]{6})$/i.exec(t);
-  if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
-  const m3 = /^#([0-9a-f]{3})$/i.exec(t);
-  if (m3)
-    return [parseInt(m3[1][0] + m3[1][0], 16), parseInt(m3[1][1] + m3[1][1], 16), parseInt(m3[1][2] + m3[1][2], 16)];
-  return [129, 212, 250];
-}
-
-/**
- * 预设切换像素翻牌涟漪组件（Canvas 2D，单张 fixed 画布批量 fillRect，
- * 合成器友好；替代旧 144 个 DOM 翻牌层方案）。
- * trigger 变化时从中心向外播放：格子立起 → 目标主题纯色（bg/bgGlow 交替
- * + accent 点缀）→ 整体淡出。
- *
- * @param trigger - 变化即触发一次涟漪的信号串（如 `${preset}|${themeMode}`）。
- * @param tokens - 目标预设 token 集（PRESETS[preset]），提供色板。
- * @returns 覆盖层 canvas（pointer-events: none，动画完自动卸载）。
- */
-export function PixelSwapBurst({
-  trigger,
-  tokens
-}: {
-  trigger: string;
-  /** 目标预设的 token 集（PRESETS[preset]），提供纯色色板（bg/bgGlow/accent）。 */
-  tokens: { bg: string; bgGlow: string; ink: string; accent: string; paper: string; name?: string };
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const safeTimeout = useSafeTimeout();
-  const [on, setOn] = useState(false);
-  const [rev, setRev] = useState(0);
-  const prev = useRef(trigger);
-  const paletteRef = useRef([tokens.bg, tokens.bgGlow, tokens.accent, tokens.bgGlow]);
-
-  useEffect(() => {
-    // 目标预设变了的瞬间就要翻到「下一个样式」，所以这里不等 state 广播，
-    // 直接同步取最新 tokens 作为新色板。
-    paletteRef.current = [tokens.bg, tokens.bgGlow, tokens.accent, tokens.bgGlow];
-  }, [tokens]);
-
-  useEffect(() => {
-    if (prev.current === trigger) return;
-    prev.current = trigger;
-    setOn(true);
-    setRev((r) => r + 1);
-    // 动画时长随速度设置缩放；timeout 略留余量（多 8%）确保不提前卸载。
-    const ex = useSettingsStore.getState().extra;
-    const total = pxTotalMs(ex);
-    safeTimeout(() => setOn(false), total * 1.08);
-  }, [trigger, safeTimeout]);
-
-  useEffect(() => {
-    if (!on) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const resize = () => {
-      canvas.width = Math.round(window.innerWidth * dpr);
-      canvas.height = Math.round(window.innerHeight * dpr);
-    };
-    resize();
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const cw = window.innerWidth;
-    const ch = window.innerHeight;
-    const cellW = cw / PX_COLS;
-    const cellH = ch / PX_ROWS;
-    const cx = cw / 2;
-    const cy = ch / 2;
-
-    // 速度：animationDuration(50–200%) × animationSpeed 档位，缩放整条时间轴。
-    const f = pxTimeFactor(useSettingsStore.getState().extra);
-    const FWD = 240 * f; // 单格「翻过去」
-    const REC = 240 * f; // 单格「翻回来」
-    const HOLD = 180 * f; // 停留纯色块的间隙
-    const SPREAD = 500 * f; // 涟漪由内向外的最大错开
-
-    // 每个格子的静态相位数据：相对中心的波前错开 + 回收错开 + 纯色。
-    type Cell = { x: number; y: number; spread: number; rgb: [number, number, number] };
-    const cells: Cell[] = [];
-    for (let r = 0; r < PX_ROWS; r++) {
-      for (let c = 0; c < PX_COLS; c++) {
-        const gx = (c + 0.5) * cellW;
-        const gy = (r + 0.5) * cellH;
-        const dist = Math.hypot(gx - cx, gy - cy) / Math.hypot(cw, ch);
-        const k = (r * 13 + c * 7) % paletteRef.current.length;
-        // 中心先翻、向外扩散；平方让波纹更集中、更「丝滑」的波前推进。
-        cells.push({
-          x: gx,
-          y: gy,
-          spread: dist * dist * SPREAD,
-          rgb: parseHexColor(paletteRef.current[k])
-        });
-      }
-    }
-
-    const start = performance.now();
-    let raf = 0;
-    /* raf: ok 爆闪一次性动画，done 即停 */
-    const loop = (now: number) => {
-      const t = now - start;
-      ctx.clearRect(0, 0, cw, ch);
-      let done = true;
-      for (const cell of cells) {
-        // 时间轴：翻过去 → 保持纯色 → 翻回来（逐格收回，不整体淡出）。
-        const fwdEnd = cell.spread + FWD;
-        const recStart = fwdEnd + HOLD;
-        const recEnd = recStart + REC;
-        if (t >= recEnd) continue; // 已翻回来，不再绘制（不阻塞完成判定）
-        done = false; // 只要还有格子处于绘制期就继续循环
-
-        let w: number;
-        let a: number;
-        let flash: number;
-        if (t <= fwdEnd) {
-          // 翻过去：scaleX 1→0→1（立起又躺平成新色块），翻转瞬间高光爆闪。
-          const p = (t - cell.spread) / FWD;
-          const sxp = Math.abs(Math.cos(p * Math.PI));
-          w = Math.max(0.5, cellW * sxp);
-          a = Math.min(1, p * 7);
-          flash = 1 + (1 - sxp) * 0.55;
-        } else if (t <= recStart) {
-          // 保持：整块实心纯色短暂停顿。
-          w = cellW;
-          a = 1;
-          flash = 1;
-        } else {
-          // 翻回来：scaleX 1→0 收回成一条线淡出，形成与前进呼应的涟漪。
-          const p = (t - recStart) / REC;
-          const sxp = 1 - p;
-          w = Math.max(0.5, cellW * sxp);
-          a = Math.max(0, 1 - p);
-          flash = 1 + p * 0.2;
-        }
-        const [rr, gg, bb] = cell.rgb;
-        ctx.globalAlpha = a;
-        ctx.fillStyle = `rgb(${Math.min(255, Math.round(rr * flash))},${Math.min(
-          255,
-          Math.round(gg * flash)
-        )},${Math.min(255, Math.round(bb * flash))})`;
-        ctx.fillRect(cell.x - w / 2, cell.y - cellH / 2, w, cellH);
-      }
-      ctx.globalAlpha = 1;
-      if (!done) raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-
-    window.addEventListener("resize", resize);
-    return () => {
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", resize);
-    };
-  }, [on, rev]);
-
-  if (!on) return null;
-  return <canvas ref={canvasRef} className="rb-px-swap" aria-hidden="true" />;
-}
-
-/** 结合里里外外的速度设置，导出本帧像素动画的时长换算系数。 */
-function pxTimeFactor(ex: { animationDuration: number; animationSpeed: AnimationSpeed }): number {
-  const dur = (ex.animationDuration ?? 100) / 100;
-  const speed = PX_SPEED_FACTOR[ex.animationSpeed ?? "normal"] ?? 1;
-  return Math.max(0.4, dur * speed);
-}
-
-/** 估算整段动画总时长（用于卸载 canvas）。 */
-function pxTotalMs(ex: { animationDuration: number; animationSpeed: AnimationSpeed }): number {
-  const f = pxTimeFactor(ex);
-  return PX_BASE_TOTAL * (f / 1.0);
 }
 
 /* ------------------------------------------------------------------ */

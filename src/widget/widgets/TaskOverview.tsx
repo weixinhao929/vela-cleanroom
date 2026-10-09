@@ -1,5 +1,5 @@
 /**
- * 任务全览（C1 第三个沉浸页：看板式）。
+ * 任务全览（第三个沉浸页：看板式）。
  *
  * 待办清单卡片展开后的五列看板「逾期 / 今天 / 之后 / 无期限 / 已完成」，
  * 列由 completed + dueAt 派生（task-overview-shared.bucketTasks），不新增
@@ -44,6 +44,7 @@ import { useAppLocale, useT } from "../../i18n-lite";
 import { flipReorder } from "../../lib/anim";
 import { useFxEffectEnabled } from "../../lib/fx";
 import { useNow } from "../../lib/use-now";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useAppStore } from "../../store/app-store";
 import type { Task } from "../../domain/schemas";
 import type { ExpandedComponentProps } from "../expand-store";
@@ -249,6 +250,11 @@ export function TaskOverview({ active }: ExpandedComponentProps) {
   const onCardPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const p = pendingRef.current;
     if (!p || p.pointerId !== e.pointerId) return;
+    /* clientX 与 gBCR 均为视觉坐标 → 布局单位：÷uiZoom——DragState 的
+       grabX/Y、w/h、x/y 在此统一换算（ko-ghost 的 fixed left/top/width 与
+       .ko-placeholder 的 height 都是布局消费点）；hitTest 仍是视觉对
+       gBCR，自洽不换算。 */
+    const z = uiZoom();
     if (!p.moved) {
       const dx = e.clientX - p.sx;
       const dy = e.clientY - p.sy;
@@ -263,12 +269,12 @@ export function TaskOverview({ active }: ExpandedComponentProps) {
         task: p.task,
         fromBucket: p.bucket,
         fromIndex: p.index,
-        grabX: p.sx - p.rect.left,
-        grabY: p.sy - p.rect.top,
-        w: p.rect.width,
-        h: p.rect.height,
-        x: e.clientX,
-        y: e.clientY,
+        grabX: (p.sx - p.rect.left) / z,
+        grabY: (p.sy - p.rect.top) / z,
+        w: p.rect.width / z,
+        h: p.rect.height / z,
+        x: e.clientX / z,
+        y: e.clientY / z,
         overBucket: p.bucket,
         overIndex: p.index,
         droppable: true
@@ -279,8 +285,8 @@ export function TaskOverview({ active }: ExpandedComponentProps) {
     const hit = hitTest(e.clientX, e.clientY);
     setDragLive({
       ...cur,
-      x: e.clientX,
-      y: e.clientY,
+      x: e.clientX / z,
+      y: e.clientY / z,
       overBucket: hit?.bucket ?? null,
       overIndex: hit?.index ?? 0,
       droppable: !!hit && canDrop(hit.bucket, cur.fromBucket)

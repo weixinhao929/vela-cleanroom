@@ -3,7 +3,7 @@
  *  - 拖动 A 到已占用的 B 格 = **交换**（互斥），双方位置都显式写入 positions；
  *  - 拖到空格 = 正常落位；
  *  - showLabels 默认显示名称标签，false 时隐藏（悬停 title 保留）；
- *  - 网格 / 滚动带两种形态的条目右键都能就地打开菜单并「移除」（确认弹窗）；
+ *  - 条目右键能就地打开菜单并「移除」（确认弹窗）；
  *  - 快捷方式文件夹（类手机桌面）：右键「移入文件夹 → 新建文件夹」就地成组
  *    （新文件夹落在源条目格位）、拖条目到文件夹磁贴 = 收进、单击磁贴弹条目
  *    网格、「移出文件夹」优先回原格、右键磁贴「移除文件夹」成员全体回画布；
@@ -16,8 +16,11 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 
 import { ShortcutsWidget } from "./ShortcutsWidget";
 import { PromptDialogHost } from "../../components/PromptDialog";
+import { ContextMenuHost, closeContextMenu } from "../../components/ContextMenu";
 import { loadWidgetConfig } from "../widget-config";
 import { __resetMirrorSyncStateForTests } from "../../lib/local-backup";
+import { __resetAppIconCacheForTest } from "../../lib/app-icon-cache";
+import { __resetShortcutsUndoForTest } from "../shortcuts-undo";
 import { loadShortcutFolders, type CustomShortcut } from "../shortcuts-shared";
 
 /* Tauri 门面 mock：右键菜单与迁移都要求 isTauri()。默认对所有命令返回
@@ -45,10 +48,21 @@ beforeEach(() => {
   invokeMock.mockImplementation(() => new Promise(() => {}));
 });
 afterEach(() => {
-  invokeMock.mockReset();
+  // mockClear 而非 mockReset：reset 会连「永不结算」实现一并摘掉，上一用例
+  // 滞后的 effect 若在此窗口再调 invoke 会拿到 undefined → .then 抛错（高负载
+  // 并行下全量套件偶发红的根源）；clear 只清调用记录，实现保留到下一 beforeEach。
+  invokeMock.mockClear();
   // persistMirrored 的 500ms 防抖镜像定时器跨用例存活，会把上一用例的配置
   // 回写进下一用例的 seed——模块为此提供专门的重置入口。
   __resetMirrorSyncStateForTests();
+  // 图标共享缓存是模块单例：跨用例清空，防止上一用例的提取结果串扰下一用例。
+  __resetAppIconCacheForTest();
+  // 右键菜单状态同为模块单例：开着菜单卸载会把「外点吞按下」带给下一用例
+  // （拖拽起不来）。Host 卸载时已自清，这里再兜一层。
+  closeContextMenu();
+  // 撤销栈同为模块单例：上一用例 pushOp 的残留会让本用例的 Ctrl+Z 撤到
+  // 别人的操作闭包（写回上一用例的 instanceId 配置）。
+  __resetShortcutsUndoForTest();
 });
 
 const ID = "w-sc";
@@ -107,7 +121,12 @@ describe("ShortcutsWidget 拖动互斥", () => {
       customShortcuts: items,
       positions: { a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, c: { x: 0, y: 1 } }
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     // A(0,0) 拖到 B 的 (1,0)：boardW=0 → cellW=64，stepX=74，dx=100 吸附到第 1 列。
     act(() => dragBy("甲工具", 100));
     const p = positionsOf();
@@ -121,7 +140,12 @@ describe("ShortcutsWidget 拖动互斥", () => {
       customShortcuts: items,
       positions: { a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, c: { x: 0, y: 1 } }
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     // C(0,1) 右移一格到 (1,1)（空格；stepX=74，dx=100 吸附到第 1 列，行不变）。
     act(() => dragBy("丙工具", 100));
     const p = positionsOf();
@@ -136,9 +160,61 @@ describe("ShortcutsWidget 拖动互斥", () => {
     expect(screen.getByText("甲工具")).toBeTruthy();
     unmount();
     seed({ customShortcuts: items, showLabels: false });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     expect(screen.queryByText("甲工具")).toBeNull();
     expect(el("甲工具").getAttribute("title")).toContain("C:/a.exe");
+  });
+});
+
+describe("ShortcutsWidget 内置位置布局避让", () => {
+  /** 渲染条目的格位（boardW=0 → cellW=64，stepX=74，行高 84+10）。 */
+  const cellOf = (label: string) => ({
+    left: el(label).style.left,
+    top: el(label).style.top
+  });
+
+  it("勾选内置位置后不与已有图标叠格：存位条目先占格，缺位条目补第一个空格", () => {
+    // 用户场景回归：先拖入图标（存位 0,0），再在设置页勾选回收站——
+    // 单遍分配会把缺位的回收站分到 (0,0)，与存位条目叠在同一格。
+    seed({
+      customShortcuts: [items[0]],
+      positions: { a: { x: 0, y: 0 } },
+      builtinShortcuts: ["recycle"]
+    });
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
+    expect(cellOf("甲工具")).toEqual({ left: "0px", top: "0px" });
+    // columns 默认 2：回收站避开 (0,0) 补到 (1,0)。
+    expect(cellOf("回收站")).toEqual({ left: "74px", top: "0px" });
+  });
+
+  it("多条目缺位仍按顺序落格互不叠加；重复存位撞车时后者降级到空格", () => {
+    seed({
+      customShortcuts: items,
+      // a、b 存位撞车（撤销恢复等路径可产生）：b 降级补空格，不再双占 (0,0)。
+      positions: { a: { x: 0, y: 0 }, b: { x: 0, y: 0 } },
+      builtinShortcuts: ["recycle", "computer"]
+    });
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
+    // 缺位分配按 entries 顺序（内置在前）：回收站 (1,0)、此电脑 (0,1)、乙 (1,1)。
+    expect(cellOf("甲工具")).toEqual({ left: "0px", top: "0px" });
+    expect(cellOf("回收站")).toEqual({ left: "74px", top: "0px" });
+    expect(cellOf("此电脑")).toEqual({ left: "0px", top: "94px" });
+    expect(cellOf("乙工具")).toEqual({ left: "74px", top: "94px" });
   });
 });
 
@@ -152,6 +228,7 @@ describe("ShortcutsWidget 条目右键菜单", () => {
       <>
         <ShortcutsWidget instanceId={ID} />
         <PromptDialogHost />
+        <ContextMenuHost />
       </>
     );
     fireEvent.contextMenu(el("甲工具"));
@@ -166,13 +243,32 @@ describe("ShortcutsWidget 条目右键菜单", () => {
     expect(positionsOf().b).toEqual({ x: 1, y: 0 });
   });
 
-  it("滚动带模式：右键条目同样弹出就地菜单", () => {
-    seed({ customShortcuts: items, marquee: true });
-    render(<ShortcutsWidget instanceId={ID} />);
-    const node = document.querySelector<HTMLElement>('.sc-marquee-item[aria-label="甲工具"]')!;
-    fireEvent.contextMenu(node);
-    expect(screen.getByRole("menuitem", { name: "移除" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "打开" })).toBeTruthy();
+  it("240ms 退场窗内连续删除两个条目：两笔都落删（后一次不吞前一次的提交）", async () => {
+    // beginTileExit 回归：第二次确认会 clearTimeout 重置退场计时器，commit
+    // 只挂在 timer 上时第一笔删除被静默丢弃（条目闪一下又回来）。
+    seed({ customShortcuts: items });
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <PromptDialogHost />
+        <ContextMenuHost />
+      </>
+    );
+    const confirmRemove = async (label: string) => {
+      fireEvent.contextMenu(el(label));
+      fireEvent.click(screen.getByRole("menuitem", { name: "移除" }));
+      const dialog = await screen.findByRole("alertdialog", { name: "删除快捷方式" });
+      fireEvent.click(within(dialog).getByText("移除"));
+    };
+    // 两次确认都在 240ms 退场窗内完成（同步事件序列，毫秒级）。
+    await confirmRemove("甲工具");
+    await confirmRemove("乙工具");
+    await waitFor(() => {
+      const list = loadWidgetConfig(ID).customShortcuts as CustomShortcut[];
+      expect(list.map((s) => s.id)).toEqual(["c"]);
+    });
+    expect(positionsOf().a).toBeUndefined();
+    expect(positionsOf().b).toBeUndefined();
   });
 });
 
@@ -185,7 +281,12 @@ describe("ShortcutsWidget 旧条目自愈迁移", () => {
       customShortcuts: [{ id: "a", label: "旧工具", path: "C:/Users/me/Desktop/旧工具.lnk", kind: "file" }],
       positions: { a: { x: 1, y: 0 } }
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     await waitFor(() => {
       const list = loadWidgetConfig(ID).customShortcuts as CustomShortcut[];
       expect(list[0].path).toBe("C:/apps/旧工具.exe");
@@ -198,7 +299,12 @@ describe("ShortcutsWidget 旧条目自愈迁移", () => {
 
   it("已解析条目不触发重解析（幂等零写）", async () => {
     seed({ customShortcuts: items });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     await act(() => new Promise((r) => setTimeout(r, 0)));
     expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "classify_path")).toHaveLength(0);
     expect((loadWidgetConfig(ID).customShortcuts as CustomShortcut[]).map((s) => s.path)).toEqual([
@@ -209,7 +315,7 @@ describe("ShortcutsWidget 旧条目自愈迁移", () => {
   });
 });
 
-describe("ShortcutsWidget 文件夹预览小窗（DeskOrder 借鉴 #13）", () => {
+describe("ShortcutsWidget 文件夹预览小窗", () => {
   const folders: CustomShortcut[] = [
     { id: "f", label: "工作目录", path: "C:/work", kind: "folder" },
     { id: "g", label: "乙工具", path: "C:/b.exe", kind: "file" }
@@ -225,7 +331,12 @@ describe("ShortcutsWidget 文件夹预览小窗（DeskOrder 借鉴 #13）", () =
 
   it("文件夹条目单击弹预览小窗而非资源管理器；再点同一条关闭（toggle）", async () => {
     seed({ customShortcuts: folders, positions: { f: { x: 0, y: 0 }, g: { x: 1, y: 0 } } });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.click(el("工作目录"));
     expect(document.querySelector(".folder-popup")).toBeTruthy();
     await waitFor(() =>
@@ -240,7 +351,12 @@ describe("ShortcutsWidget 文件夹预览小窗（DeskOrder 借鉴 #13）", () =
 
   it("文件条目维持原行为：单击直接 open_path，不弹小窗", () => {
     seed({ customShortcuts: folders, positions: { f: { x: 0, y: 0 }, g: { x: 1, y: 0 } } });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.click(el("乙工具"));
     expect(
       invokeMock.mock.calls.some(([c, a]) => c === "open_path" && (a as { path: string }).path === "C:/b.exe")
@@ -250,7 +366,12 @@ describe("ShortcutsWidget 文件夹预览小窗（DeskOrder 借鉴 #13）", () =
 
   it("folderPreview 关闭时退回原行为：文件夹单击直接 open_path", () => {
     seed({ customShortcuts: folders, positions: { f: { x: 0, y: 0 }, g: { x: 1, y: 0 } }, folderPreview: false });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.click(el("工作目录"));
     expect(
       invokeMock.mock.calls.some(([c, a]) => c === "open_path" && (a as { path: string }).path === "C:/work")
@@ -272,7 +393,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       customShortcuts: items,
       positions: { a: { x: 1, y: 0 }, b: { x: 0, y: 0 }, c: { x: 0, y: 1 } }
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.contextMenu(el("甲工具"));
     fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "移入文件夹" }));
     fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "新建文件夹" }));
@@ -292,7 +418,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       positions: { a: { x: 1, y: 0 }, b: { x: 0, y: 0 }, c: { x: 0, y: 1 }, f1: { x: 1, y: 1 } },
       shortcutFolders: [{ id: "f1", label: "新建文件夹", childIds: [] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.contextMenu(el("甲工具"));
     fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "移入文件夹" }));
     // 菜单里「新建文件夹」动作项与同名既有文件夹磁贴条目并存：动作项渲染在前。
@@ -309,7 +440,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       positions: { a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, c: { x: 0, y: 1 }, f1: { x: 1, y: 1 } },
       shortcutFolders: [{ id: "f1", label: "工作", childIds: [] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     // C(0,1) 右移一格落到 (1,1) = 文件夹磁贴格。
     act(() => dragBy("丙工具", 100));
     const folders = foldersOf();
@@ -326,7 +462,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       positions: { a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, c: { x: 0, y: 1 }, f1: { x: 1, y: 1 } },
       shortcutFolders: [{ id: "f1", label: "工作", childIds: ["b"] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     expect(el("乙工具")).toBeNull(); // 成员不直接铺网格
     fireEvent.click(el("工作"));
     expect(document.querySelector(".sfolder-popup")).toBeTruthy();
@@ -348,6 +489,7 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       <>
         <ShortcutsWidget instanceId={ID} />
         <PromptDialogHost />
+        <ContextMenuHost />
       </>
     );
     fireEvent.contextMenu(el("工作"));
@@ -370,7 +512,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       positions: { c: { x: 0, y: 0 }, f1: { x: 1, y: 0 } },
       shortcutFolders: [{ id: "f1", label: "工作", childIds: ["a", "b"] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.click(el("工作"));
     const input = document.querySelector<HTMLInputElement>(".sfolder-popup-search-input")!;
     expect(input).toBeTruthy();
@@ -393,7 +540,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       positions: { c: { x: 0, y: 0 }, f1: { x: 1, y: 0 } },
       shortcutFolders: [{ id: "f1", label: "工作", childIds: ["a"] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.click(el("工作"));
     fireEvent.contextMenu(document.querySelector('.sfolder-popup-item[aria-label="甲工具"]')!);
     const menu = screen.getByRole("menu");
@@ -409,7 +561,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       positions: { c: { x: 0, y: 0 }, f1: { x: 1, y: 0 } },
       shortcutFolders: [{ id: "f1", label: "工作", childIds: ["a", "b"] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     const badge = el("工作").querySelector(".widget-shortcut-count");
     expect(badge?.textContent).toBe("2");
   });
@@ -421,7 +578,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       // zh 拼音序：丙(bǐng) < 甲(jiǎ) < 乙(yǐ)，与 childIds 插入序相反。
       shortcutFolders: [{ id: "f1", label: "工作", childIds: ["a", "b", "c"], sort: "name" }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.click(el("工作"));
     const names = Array.from(document.querySelectorAll(".sfolder-page .sfolder-popup-name")).map((n) => n.textContent);
     expect(names).toEqual(["丙工具", "甲工具", "乙工具"]);
@@ -435,7 +597,12 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
       positions: { c: { x: 0, y: 0 }, f1: { x: 1, y: 0 } },
       shortcutFolders: [{ id: "f1", label: "工作", childIds: ["a", "b"] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     fireEvent.click(el("工作"));
     expect(document.querySelector(".sfolder-pages")).toBeTruthy();
     expect(document.querySelector(".sfolder-dots")).toBeNull(); // 单页无页点
@@ -447,14 +614,19 @@ describe("ShortcutsWidget 快捷方式文件夹（类手机桌面）", () => {
   });
 });
 
-describe("ShortcutsWidget 失效条目标记缺失（BentoDesk file_missing，不删除）", () => {
+describe("ShortcutsWidget 失效条目标记缺失", () => {
   it("目标不存在的条目保留并标 missing；打开被拦截", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "check_paths_exist") return [false];
       return new Promise(() => {});
     });
     seed({ customShortcuts: [{ id: "a", label: "甲工具", path: "C:/gone/a.exe", kind: "file" }] });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     await waitFor(() => {
       const list = loadWidgetConfig(ID).customShortcuts as CustomShortcut[];
       expect(list[0].missing).toBe(true);
@@ -478,7 +650,12 @@ describe("ShortcutsWidget 失效条目标记缺失（BentoDesk file_missing，�
     // 目标恢复后重挂（等价于下一轮复检）：标记解除、条目保留。
     exists = true;
     unmount();
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     await waitFor(() => {
       const list = loadWidgetConfig(ID).customShortcuts as CustomShortcut[];
       expect(list[0].missing).toBeUndefined();
@@ -494,7 +671,12 @@ describe("ShortcutsWidget 撤销（命令级操作历史）", () => {
       positions: { a: { x: 0, y: 0 }, b: { x: 1, y: 0 }, c: { x: 0, y: 1 }, f1: { x: 1, y: 1 } },
       shortcutFolders: [{ id: "f1", label: "工作", childIds: [] }]
     });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     // 拖 C 到文件夹磁贴 = 移入。
     act(() => dragBy("丙工具", 100));
     expect(foldersOf()[0].childIds).toEqual(["c"]);
@@ -508,7 +690,12 @@ describe("ShortcutsWidget 撤销（命令级操作历史）", () => {
 
   it("文本输入焦点内 Ctrl+Z 不拦截（交给原生撤销）", () => {
     seed({ customShortcuts: items });
-    render(<ShortcutsWidget instanceId={ID} />);
+    render(
+      <>
+        <ShortcutsWidget instanceId={ID} />
+        <ContextMenuHost />
+      </>
+    );
     const input = document.createElement("input");
     document.body.appendChild(input);
     input.focus();

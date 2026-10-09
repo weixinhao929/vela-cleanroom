@@ -1,5 +1,5 @@
 /* =====================================================================
-   沉浸展开态（C1）—— 遮罩层 + 音乐沉浸页 + 天气站
+   沉浸展开态—— 遮罩层 + 音乐沉浸页 + 天气站
    本文件为 EXP 会话独立新增，不与既有全局样式耦合；全部取主题 token。
    动画配方（沉浸展开基准参数；时长一律走 token 跟随动效速度档）：
      展开 --dur-spatial（500ms 档）--ease-spring-soft / 收回 --dur-spatial-fast
@@ -331,8 +331,10 @@ html[data-no-glass="1"] .mi-bg {
   opacity: 0.5;
 }
 /* 五.4 播放态封面呼吸：极慢微缩放（此前 TSX 挂的 .playing 类在 CSS 里零命中，
-   是一段从未实现的死类）。挂 ambientMotion 分类闸 + reduce-motion 全局门。 */
-.mi-cover-wrap.playing .mi-cover {
+   是一段从未实现的死类）。挂 ambientMotion 分类闸 + reduce-motion 全局门。
+   改 `:not()` 入闸形态（与 widget.css np-cover-* 同款）——此前是
+   裸规则 + 独立排除 override，行为等价但形态与归闸口径不一致。 */
+html:not([data-fx-off~="ambientMotion"]) .mi-cover-wrap.playing .mi-cover {
   animation: mi-cover-breathe 4s ease-in-out infinite;
 }
 @keyframes mi-cover-breathe {
@@ -343,9 +345,6 @@ html[data-no-glass="1"] .mi-bg {
   50% {
     transform: scale(1.015);
   }
-}
-html[data-fx-off~="ambientMotion"] .mi-cover-wrap.playing .mi-cover {
-  animation: none;
 }
 
 /* 径向频谱环绕封面：方形画布由外层容器撑起（AudioVisualizer 的内联
@@ -363,6 +362,9 @@ html[data-fx-off~="ambientMotion"] .mi-cover-wrap.playing .mi-cover {
   pointer-events: auto;
 }
 .mi-spectrum .music-visual {
+  /* !important 豁免说明（dock:2744 注释范式）——压制 AudioVisualizer
+     组件对 canvas 的内联 height（组件按 DPR/频带数自算，沉浸页频谱区要求
+     恒满高）；无此豁免内联样式恒胜。 */
   height: 100% !important;
   border-radius: 0;
   contain: none;
@@ -395,7 +397,7 @@ html[data-fx-off~="ambientMotion"] .mi-cover-wrap.playing .mi-cover {
   font-size: var(--fs-11-5);
   color: var(--muted-2);
 }
-/* W-131 播放源行改为按钮：点击唤起播放器窗口。 */
+/* 播放源行改为按钮：点击唤起播放器窗口。 */
 button.mi-source {
   display: inline-flex;
   align-items: center;
@@ -437,9 +439,11 @@ button.mi-source:disabled {
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--ink) 12%, transparent);
   overflow: hidden;
-  /* W-130 可点/可拖 seek；会话不支持定位时禁用指针交互。 */
+  /* 可点/可拖 seek；会话不支持定位时禁用指针交互。 */
   cursor: pointer;
   touch-action: none;
+  /* color-hop 契约：键盘聚焦换轨道外圈光晕，基类补 box-shadow 过渡。 */
+  transition: box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
 }
 .mi-bar.is-disabled {
   cursor: default;
@@ -454,8 +458,14 @@ button.mi-source:disabled {
   transform: scaleX(0);
   transition: filter var(--dur-fx-fast, 0.15s) var(--ease-out);
 }
-.mi-bar:not(.is-disabled):hover .mi-bar-fill {
+.mi-bar:not(.is-disabled):hover .mi-bar-fill,
+.mi-bar:not(.is-disabled):focus-visible .mi-bar-fill {
   filter: brightness(1.1);
+}
+/* 键盘聚焦（role=slider）：轨道外圈呼吸提示（细条上全局 outline 观感差）。 */
+.mi-bar:not(.is-disabled):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mi-accent, var(--accent)) 45%, transparent);
 }
 
 .mi-controls {
@@ -488,13 +498,13 @@ button.mi-source:disabled {
 .mi-btn:active {
   transform: scale(0.94);
 }
-/* W-130 能力位禁用：会话不支持的按钮置灰。 */
+/* 能力位禁用：会话不支持的按钮置灰。 */
 .mi-btn:disabled {
   opacity: 0.35;
   cursor: default;
   pointer-events: none;
 }
-/* W-130 shuffle/repeat 开关钮：比传输键小一档；开启态 accent 勾边。 */
+/* shuffle/repeat 开关钮：比传输键小一档；开启态 accent 勾边。 */
 .mi-btn.mi-mode {
   width: 36px;
   height: 36px;
@@ -695,6 +705,13 @@ button.mi-source:disabled {
 }
 .mi-lyric-line.clickable {
   cursor: pointer;
+  /* color-hop 契约：键盘聚焦换内描边光晕，基类补 box-shadow 过渡。 */
+  transition: box-shadow var(--dur-fx-fast, 0.15s) var(--ease-fx, ease);
+}
+.mi-lyric-line.clickable:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mi-accent, var(--accent)) 40%, transparent);
 }
 .mi-lyric-line.clickable:hover {
   color: var(--ink);
@@ -1087,7 +1104,7 @@ html[data-reduce-motion="1"] .ws-chip {
 }
 
 /* ------------------------------------------------------------------ */
-/*  任务全览看板（ko-*，C1 第三个沉浸页 / KANBAN 会话）                  */
+/*  任务全览看板（ko-*，第三个沉浸页 / KANBAN 会话） */
 /*  五列 = 逾期 / 今天 / 之后 / 无期限 / 已完成；卡片 pointer 拖动 +      */
 /*  FLIP 落位。全部取主题 token；hover 只改底色 / 边框，位移类 hover      */
 /*  仅在 .is-fx（增强档 cardHover）下启用，并在 reduce-motion 兜底块压零。 */
@@ -1393,7 +1410,7 @@ html[data-reduce-motion="1"] .ko-card {
   }
 }
 
-/* G9 复用型沉浸页（课程表 / 专注统计 / 邮件）：面板本体直接放进遮罩内容盒。
+/* 复用型沉浸页（课程表 / 专注统计 / 邮件）：面板本体直接放进遮罩内容盒。
    容器统一管滚动——面板在画布上由 .widget-card-body 提供滚动，这里换成
    容器自身，面板内部布局不用改。 */
 .imm-reuse {

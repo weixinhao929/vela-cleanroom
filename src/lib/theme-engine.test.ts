@@ -129,7 +129,6 @@ describe("applySettings · 属性与变量映射", () => {
     applySettings(baseAppearance, { ...baseExtra, enableAnimations: false, animationMode: "enhanced" }, false);
     expect(root().style.getPropertyValue("--anim-dur")).toBe("0s");
     expect(root().getAttribute("data-reduce-motion")).toBe("1");
-    expect(root().style.getPropertyValue("--reduce-motion")).toBe("1");
     expect(root().getAttribute("data-widget-entrance")).toBe("none");
     expect(root().getAttribute("data-view-transition")).toBe("none");
     expect(root().getAttribute("data-fx")).toBe("0");
@@ -209,9 +208,28 @@ describe("applySettings · 属性与变量映射", () => {
     vi.advanceTimersByTime(1000);
     expect(root().classList.contains("fx-switching")).toBe(false);
   });
+
+  it("--ui-font 写完整回退栈：已知字体带替身链，未知/含引号字体兜底系统栈", () => {
+    applySettings({ ...baseAppearance, font: "PingFang SC" }, baseExtra, false);
+    // 苹方（Windows 常缺失）→ 雅黑替身在前，缺字不再回落浏览器衬线。
+    expect(root().style.getPropertyValue("--ui-font")).toBe(
+      "'PingFang SC','Microsoft YaHei','Noto Sans SC',system-ui,sans-serif"
+    );
+    applySettings({ ...baseAppearance, font: "JetBrains Mono" }, baseExtra, false);
+    expect(root().style.getPropertyValue("--ui-font")).toBe(
+      "'JetBrains Mono','Geist Mono',Consolas,'Microsoft YaHei',monospace"
+    );
+    // 未知字体值（历史快照）：引号剥除 + 系统栈兜底，字体名单值注入面收口。
+    applySettings({ ...baseAppearance, font: "My'Font\" X" }, baseExtra, false);
+    expect(root().style.getPropertyValue("--ui-font")).toBe(
+      "'MyFont X','Segoe UI','Microsoft YaHei',system-ui,sans-serif"
+    );
+    applySettings({ ...baseAppearance, font: "" }, baseExtra, false);
+    expect(root().style.getPropertyValue("--ui-font")).toBe("'Segoe UI','Microsoft YaHei',system-ui,sans-serif");
+  });
 });
 
-/* ══════════════════ A1 色彩层级求解 ══════════════════ */
+/* ══════════════════ 色彩层级求解 ══════════════════ */
 
 /** rgba() 字符串 → [r,g,b,a]（供层阶断言解析）。 */
 function parseRgba(s: string): [number, number, number, number] {

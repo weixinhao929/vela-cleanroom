@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { invoke, isTauri } from "../lib/tauri";
+import { uiZoom } from "../lib/ui-zoom";
 import { useWidgetStore } from "./widget-store";
 
 /**
@@ -15,10 +16,14 @@ const SELECTOR =
  *  widget-context-menu（快捷方式条目就地菜单）同语义：菜单容器与菜单项之间
  *  的间隙、以及菜单打开到下一轮穿透轮询之间的窗口期都不能退回穿透，
  *  否则实机上「右键 → 点菜单项」的首击会被吞掉。
- *  wcfg-popover（B1 就地配置弹层）同语义：打开期间外点用于关闭弹层。
- *  sfolder-popup（快捷方式文件夹弹层）同语义。 */
+ *  wcfg-popover（就地配置弹层）同语义：打开期间外点用于关闭弹层。
+ *  sfolder-popup（快捷方式文件夹弹层）同语义。
+ *  tm-dp-pop（DatePicker，起 portal 到 body）/
+ *  wsel-pop（WidgetSelect，起 portal 到 body）——portal 弹层打开时其外
+ *  的桌面空白必须仍落在窗口内（触发外点关闭），不能穿透直达桌面选中
+ *  原桌面图标；此前漏登记导致弹层悬空、只能靠 Esc 关。 */
 const OVERLAY_SELECTOR =
-  ".ctx-menu, .widget-menu, .widget-context-menu, .widget-gallery-overlay, .fd-prompt-overlay, .gal-viewer, .cmd-palette, .wcfg-popover, .folder-popup, .sfolder-popup, .tm-cheatsheet";
+  ".ctx-menu, .widget-menu, .widget-context-menu, .widget-gallery-overlay, .fd-prompt-overlay, .gal-viewer, .cmd-palette, .wcfg-popover, .folder-popup, .sfolder-popup, .tm-cheatsheet, .tm-dp-pop, .wsel-pop";
 
 type Rect = { x: number; y: number; w: number; h: number; id?: string; z?: number };
 
@@ -93,12 +98,15 @@ export function useClickThrough(active: boolean) {
       const regions: Rect[] = [];
 
       // 覆盖层打开期间：上报一个覆盖整个视口的矩形，保证窗口保持可交互。
+      /* Rust 契约是视觉坐标（见上方坐标系说明）；innerWidth/innerHeight 是
+         未缩放布局尺寸——×uiZoom 换算到视觉空间再冒充全视口矩形。 */
+      const z = uiZoom();
       if (document.querySelector(OVERLAY_SELECTOR)) {
         regions.push({
           x: 0,
           y: 0,
-          w: window.innerWidth,
-          h: window.innerHeight
+          w: window.innerWidth * z,
+          h: window.innerHeight * z
         });
       }
 
@@ -130,11 +138,13 @@ export function useClickThrough(active: boolean) {
               // 跟随翻转，否则顶部行卡片上方恒有 34px 桌面点击死区、而真正
               // 的操作条区域反而不受保护。
               const inst = useWidgetStore.getState().instances.find((i) => i.id === el.dataset.widgetId);
+              /* 34 是快捷操作条的布局像素（CSS 常量），rect 是视觉坐标——
+                 ×uiZoom 把常量换算到视觉空间再参与扩展。 */
               if ((inst?.y ?? Number.POSITIVE_INFINITY) < 40) {
-                rect.h += 34;
+                rect.h += 34 * z;
               } else {
-                rect.y -= 34;
-                rect.h += 34;
+                rect.y -= 34 * z;
+                rect.h += 34 * z;
               }
             }
           }
@@ -192,7 +202,7 @@ export function useClickThrough(active: boolean) {
       schedule();
     };
     onResumeCallbacks.add(onResume);
-    // DOM 变化分级处理（P1 合帧优化）：
+    // DOM 变化分级处理（合帧优化）：
     //  - 结构性变化（节点增删，如快捷操作条/菜单/弹层 Portal 到 body）与
     //    class/disabled 翻转（可能切换可见性 → 命中矩形集合变化）**同步**
     //    重算并上报——鼠标刚移到新出现的可交互元素上时窗口必须立刻退出
@@ -239,7 +249,7 @@ export function useClickThrough(active: boolean) {
     // maybeCollect 无变化时早退，因此 900ms 兜底的常态开销只是一次
     // `.widget-card:hover` 查询。
     const iv = setInterval(maybeCollect, 900);
-    /* J-1 兜底加固：纯 class 驱动的 CSS 过渡（收合/弹出以外的岛几何变化）
+    /* 兜底加固：纯 class 驱动的 CSS 过渡（收合/弹出以外的岛几何变化）
        不产生任何 mutation，dirty 不置位 → 900ms 兜底也早退，命中矩形可
        无限期停留在过渡起点——磁贴视觉已到位但点击穿透直达桌面（实测
        「通知中心磁贴点击零响应」的候选成因）。每 5s 强制一次全量重采

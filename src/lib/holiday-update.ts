@@ -1,5 +1,5 @@
 /**
- * W-018 节假日数据在线更新。
+ * 节假日数据在线更新。
  *
  * 内置表只覆盖到发版前已公布的年份（lunar.ts 节日名 / timetable-extras.ts
  * 休班表）；跨年后通过远程 JSON 补齐——默认源为 NateScarlet/holiday-cn
@@ -112,11 +112,16 @@ async function fetchYear(year: number, days: Record<string, RemoteHolidayDay>) {
   const url = `https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/${year}.json`;
   const text = await fetchText(url);
   const data = JSON.parse(text) as HolidayCnYear;
-  if (!data || !Array.isArray(data.days)) return;
+  // 空数据按失败处理（throw）：调用侧只替换「成功」年份，若把 days:[] 当
+  // 成功，该年旧缓存会被按前缀清空且 fetchedAt 记为成功（7 天不再重试）。
+  if (!data || !Array.isArray(data.days)) throw new Error(`holiday-cn ${year}: malformed payload`);
+  let picked = 0;
   for (const d of data.days) {
     if (typeof d.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(d.date)) continue;
     days[d.date] = { name: d.name || "", off: d.isOffDay === true };
+    picked++;
   }
+  if (picked === 0) throw new Error(`holiday-cn ${year}: empty days`);
 }
 
 /**

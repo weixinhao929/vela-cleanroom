@@ -1,49 +1,26 @@
 /**
- * 日历迷你磁贴（ISLAND-MINI）：日期数字 + 星期 + 下一事件标题（有则显示）。
- * 事件只读 CalendarWidget 落盘的 localStorage（focus-desk.calendar.<instanceId>.v1，
- * anchorKey → CalendarEvent[]），重复规则按 CalendarWidget.repeatMatches 同口径
- * 展开；「下一事件」= 今天尚未开始的最早定时事件，否则今天首个全天事件。
- * 时间由 lib/use-now 共享节拍器（30s）驱动，无自建定时器；无绑定实例只显日期。
+ * 日历迷你磁贴（ISLAND-MINI）：日期数字 + 星期 + 下一事件（时间 + 标题）。
+ * 复用 calendar-shared 的 loadCalendarEvents/calendarEventsOnDay（归一化 +
+ * 重复展开 + 单次例外同口径——此前这里裸 JSON.parse 并复制了一份
+ * repeatMatches，主组件改规则时会静默分裂）。「下一事件」= 今天尚未开始的
+ * 最早定时事件，否则今天首个全天事件。时间由 lib/use-now 共享节拍器（30s）
+ * 驱动，无自建定时器；无绑定实例只显日期。
  */
 import { useMemo } from "react";
 import { useAppLocale } from "../../../i18n-lite";
-import { dayKeyOf, dayKeyToDate, useNow } from "../../../lib/use-now";
-import type { CalendarEvent } from "../calendar-shared";
+import { useNow } from "../../../lib/use-now";
+import { calendarEventsOnDay, loadCalendarEvents } from "../calendar-shared";
 import type { MiniComponentProps } from "../../registry";
 
-function repeatMatches(anchor: Date, repeat: CalendarEvent["repeat"], date: Date): boolean {
-  if (date < anchor) return false;
-  if (repeat === "weekly") return anchor.getDay() === date.getDay();
-  if (repeat === "monthly") return anchor.getDate() === date.getDate();
-  return anchor.getMonth() === date.getMonth() && anchor.getDate() === date.getDate();
-}
-
 function nextEventTitle(instanceId: string, now: Date): string | null {
-  let map: unknown;
-  try {
-    map = JSON.parse(localStorage.getItem(`focus-desk.calendar.${instanceId}.v1`) ?? "{}");
-  } catch {
-    return null;
-  }
-  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
-  const todayKey = dayKeyOf(now);
-  const today = dayKeyToDate(todayKey)!;
-  const nowHM = now.toTimeString().slice(0, 5);
-  const hits: { text: string; time: string }[] = [];
-  for (const [key, list] of Object.entries(map as Record<string, unknown>)) {
-    const anchor = dayKeyToDate(key);
-    if (!Array.isArray(list) || !anchor) continue;
-    for (const raw of list as Partial<CalendarEvent>[]) {
-      const text = typeof raw?.text === "string" ? raw.text.trim() : "";
-      const time = typeof raw?.time === "string" && /^\d{1,2}:\d{2}$/.test(raw.time) ? raw.time.padStart(5, "0") : "";
-      const repeat =
-        raw?.repeat === "weekly" || raw?.repeat === "monthly" || raw?.repeat === "yearly" ? raw.repeat : "none";
-      const onToday = key === todayKey || (repeat !== "none" && repeatMatches(anchor, repeat, today));
-      if (text && onToday && (!time || time >= nowHM)) hits.push({ text, time });
-    }
-  }
-  hits.sort((a, b) => (a.time || "99").localeCompare(b.time || "99"));
-  return hits[0]?.text ?? null;
+  const list = calendarEventsOnDay(loadCalendarEvents(instanceId), now);
+  if (list.length === 0) return null;
+  const nowHM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  // 定时事件取尚未开始的最早一个；否则回退首个全天事件。
+  const timed = list.filter((ev) => ev.time && ev.time >= nowHM).sort((a, b) => a.time.localeCompare(b.time));
+  const hit = timed[0] ?? list.find((ev) => !ev.time);
+  if (!hit) return null;
+  return hit.time ? `${hit.time} ${hit.text}` : hit.text;
 }
 
 export function CalendarMini({ instanceId }: MiniComponentProps) {

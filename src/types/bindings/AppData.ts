@@ -7,7 +7,7 @@ import type { Task } from "./Task";
 
 export type AppData = { 
 /**
- * 备份结构版本（S2）。导出时写入当前版本；导入旧文件时默认 1。
+ * 备份结构版本。导出时写入当前版本；导入旧文件时默认 1。
  * camelCase 别名让前端 `schemaVersion` 直接对应。
  */
 schemaVersion: number, tasks: Array<Task>, deadlines: Array<Deadline>, 

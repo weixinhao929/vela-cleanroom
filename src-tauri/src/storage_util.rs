@@ -1,8 +1,7 @@
-//! 文本原子写工具（BentoDesk 借鉴 #11）：Rust 侧散落的 JSON 状态写统一
+//! 文本原子写工具：Rust 侧散落的 JSON 状态写统一
 //! 走这里——同目录 `.tmp` → `sync_all` → 原子改名；Windows 上目标已存在时
 //! `std::fs::rename` 会报错，改用 `MoveFileExW(REPLACE_EXISTING |
-//! WRITE_THROUGH)`（等价 BentoDesk 的 ReplaceFileW → MoveFileExW 降级链，
-//! 只是后者顺手产出 .bak，我们的调用点均为可再生文件，不需要 .bk 双保险）。
+//! WRITE_THROUGH)`。
 //!
 //! 收益：进程中途被杀时最坏留下一个 `.tmp`（下次写入前清理），主文件永不
 //! 截断。backup.rs 的备份写自带同款逻辑与残件清理，保持独立不并轨。

@@ -1,5 +1,5 @@
 /**
- * 全岛面板（F-5）组件测试：卡片顺序 = dock.tiles、只有当前卡 active、
+ * 全岛面板组件测试：卡片顺序 = dock.tiles、只有当前卡 active、
  * 轮播切卡（←/→ / 圆点 / 滚轮 / 拖动 settle）、网格模式布局 + 点标题进单磁贴展开、
  * 空态文案、与其他展开面互斥、Esc 收回、重开不重建（挂载数不变）、
  * 无实例磁贴的临时配置源落种；settleIndex / dampOverscroll 纯函数。
@@ -121,6 +121,47 @@ beforeEach(() => {
   useWidgetExpand.setState({ expandedId: null, mountedIds: [] });
 });
 
+describe("DockPanel · 卡片显示名（S4 口径统一）", () => {
+  const withLabel = (label?: string) => [
+    { id: "w-9", type: "beta", x: 0, y: 0, w: 100, h: 100, z: 1, ...(label ? { label } : {}) }
+  ];
+
+  it("网格卡标题 / 轮播头部当前卡名 / 圆点 aria-label 跟随实例显示名，重命名即时同步", () => {
+    seedDock(TILES, "grid");
+    act(() => useWidgetStore.setState({ instances: withLabel("我的乙") }));
+    const grid = render(<DockPanel />);
+    openPanel();
+    expect(
+      cards()
+        .find((c) => c.dataset.tileId === "t-b")!
+        .querySelector(".dp-card-title-text")?.textContent
+    ).toBe("我的乙");
+    // 无实例磁贴维持类型名。
+    expect(
+      cards()
+        .find((c) => c.dataset.tileId === "t-a")!
+        .querySelector(".dp-card-title-text")?.textContent
+    ).toBe("甲卡");
+    // 重命名实时跟随（DockPanel 订阅 instances，title 是原始值进 memo 比对）。
+    act(() => useWidgetStore.setState({ instances: withLabel("改名乙") }));
+    expect(
+      cards()
+        .find((c) => c.dataset.tileId === "t-b")!
+        .querySelector(".dp-card-title-text")?.textContent
+    ).toBe("改名乙");
+    grid.unmount();
+
+    seedDock(TILES, "carousel");
+    const carousel = render(<DockPanel />);
+    openPanel();
+    fireEvent.keyDown(window, { key: "ArrowRight" });
+    expect(screen.getByText("改名乙", { selector: ".dp-cardname" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "切换到 改名乙" })).toBeTruthy();
+    carousel.unmount();
+    act(() => useWidgetStore.setState({ instances: [] }));
+  });
+});
+
 describe("DockPanel 渲染", () => {
   it("3 枚磁贴 → 3 卡，顺序 = tiles；ExpandedComponent 优先，否则完整组件；仅首卡 active", () => {
     seedDock(TILES);
@@ -132,7 +173,9 @@ describe("DockPanel 渲染", () => {
     expect(cards().map((c) => c.dataset.tileId)).toEqual(["t-a", "t-b", "t-c"]);
     expect(cards()[0].querySelector("[data-testid='dp-expanded']")).toBeTruthy();
     expect(cards()[1].querySelector("[data-testid='dp-expanded']")).toBeTruthy();
-    expect(cards()[2].querySelector("[data-testid='dp-full']")).toBeTruthy();
+    // Full 兜底只在当前卡挂载（非当前卡不渲染——常驻挂载会让约 20 个无
+    // ExpandedComponent 的类型在 display:none 下永久轮询）；切到丙卡才出现。
+    expect(cards()[2].querySelector("[data-testid='dp-full']")).toBeNull();
     expect(activeIds()).toEqual(["t-a"]);
     // instanceId：绑定实例的用实例 id，无实例的合成 dock-tile-<id>
     expect(cards()[0].querySelector("[data-instance]")?.getAttribute("data-instance")).toBe("dock-tile-t-a");
@@ -144,6 +187,10 @@ describe("DockPanel 渲染", () => {
     expect(screen.getByRole("button", { name: "切换到 甲卡" }).getAttribute("aria-current")).toBe("true");
     // 轮播卡带：状态位只写 transform
     expect(strip().style.transform).toBe("translateX(0%)");
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "切换到 丙卡" }));
+    });
+    expect(cards()[2].querySelector("[data-testid='dp-full']")).toBeTruthy();
   });
 
   it("空态：岛内无磁贴时显示提示，无视口 / 无模式切换钮", () => {
@@ -330,9 +377,11 @@ describe("网格模式", () => {
     expect(document.querySelectorAll(".dp-card-title").length).toBe(3);
     expect(document.querySelector(".dp-dots")).toBeNull();
     expect(strip().style.transform).toBe("");
-    // 网格下卡片全部可见（不再 aria-hidden），active 仍只给当前卡
+    // 网格下卡片全部可见（不再 aria-hidden）：可见卡**全部** active——
+    // 此前只有轮播遗留的"当前卡"一张拿 active，其余 Expanded 卡（天气站等
+    // `if (!active) return`）在网格里不拉数据、显示骨架。
     expect(cards().every((c) => !c.hasAttribute("aria-hidden"))).toBe(true);
-    expect(activeIds()).toEqual(["t-a"]);
+    expect(activeIds()).toEqual(["t-a", "t-b", "t-c"]);
     expect(useWidgetStore.getState().dock.panel.mode).toBe("carousel");
     // 切回
     act(() => {
@@ -400,7 +449,9 @@ describe("互斥 / Esc / 重开不重建", () => {
     expect(probe.unmounts["dock-tile-t-a"] ?? 0).toBe(0);
 
     openPanel();
-    expect(probe.mounts).toEqual({ "dock-tile-t-a": 1, "w-9": 1, "dock-tile-t-c": 1 });
+    // Full 兜底（t-c）非当前卡不挂载，挂载/重建断言只覆盖 Expanded 卡
+    // （它们才是「常驻叠放不重建」契约的适用面；Full 收起即卸载属预期取舍）。
+    expect(probe.mounts).toEqual({ "dock-tile-t-a": 1, "w-9": 1 });
     expect(probe.unmounts).toEqual({});
     expect(activeIds()).toEqual(["t-a"]);
   });

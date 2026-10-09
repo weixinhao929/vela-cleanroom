@@ -3,7 +3,7 @@
  *
  * - **存命令不存快照**：每条历史是 { undo, redo } 逆操作闭包，内存 O(操作数)；
  *   本组件操作全是引用级（条目 = 路径引用，文件本体从不动），undo 不需要
- *   参考实现 那样的 payload 文件托管。
+ *    payload 文件托管。
  * - **push 清空重做栈**、栈深上限 100。
  * - undo/redo 执行时**现读权威配置再打逆补丁**（与组件写路径同一模式），
  *   因此与后续无关操作天然可组合，不会拿陈旧快照覆写并发改动。
@@ -86,4 +86,12 @@ export function ensureShortcutsUndoKeys(): void {
     },
     true
   );
+}
+
+/** 测试复位：清空两栈（上一用例 pushOp 的残留会让下一用例的 Ctrl+Z 撤错
+ *  步）。不动 wired——全局键位监听器闭包引用的就是这两个模块栈，重置标记
+ *  会在下一次挂载时叠加监听器，一次 Ctrl+Z 撤两步。 */
+export function __resetShortcutsUndoForTest(): void {
+  undoStack.length = 0;
+  redoStack.length = 0;
 }

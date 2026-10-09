@@ -9,6 +9,7 @@
 import { useWidgetStore } from "../widget/widget-store";
 import { useSettingsStore } from "../store/settings-store";
 import { useAppStore } from "../store/app-store";
+import { pushAppToast } from "../components/ToastHost";
 import { openSettingsWindow, isTauri, invoke } from "./tauri";
 import { openShortcutCheatsheet } from "./cheatsheet-store";
 import { loadWidgetConfig } from "../widget/widget-config";
@@ -28,7 +29,7 @@ export type Command = {
   avatar?: { letter: string; c1: string; c2: string };
   /** 网页兜底项：当前引擎显示名，渲染为可点击切换的芯片。 */
   engineLabel?: string;
-  /** 悬停提示（G11 文件项显示完整路径，label 只放文件名）。 */
+  /** 悬停提示（文件项显示完整路径，label 只放文件名）。 */
   title?: string;
 };
 
@@ -47,9 +48,12 @@ export type BuildCommandsOptions = {
   fallbackQuery?: string;
   /** 每条命令执行前先调用：面板传 closeCommandPalette 收起自身；只读目录时不传。 */
   close?: () => void;
-  /** A-1：设置索引搜索由调用方注入（lib → features 的全仓唯一反向边，经
+  /** 设置索引搜索由调用方注入（lib → features 的全仓唯一反向边，经
    * 依赖注入拆除）；不传则命令目录不含 set- 段。 */
   settingsSearch?: (query: string, limit: number) => SettingsSearchEntry[];
+  /** 设置词条命中的行级跳转信道（同上经注入，lib 不反向 import features）：
+   *  openSettingsAt 落页后写入 pending 供设置窗滚动定位到具体设置行。 */
+  requestSettingsJump?: (page: string, title?: string) => void;
 };
 
 const noop = (): void => {};
@@ -71,10 +75,15 @@ function locateType(type: string, close: () => void): void {
   locateInstance(id);
 }
 
-/** 呼出设置窗口并直达指定页（与 WidgetCard.openConfig 同款双通道）。 */
-function openSettingsAt(page: string, close: () => void): void {
+/** 呼出设置窗口并直达指定页（与 WidgetCard.openConfig 同款双通道）。
+ *  title（设置词条标题）可选：携带时落地后行级定位到对应设置行——
+ *  jump 由调用方注入（lib 不反向 import features），跨窗事件载荷同步携带。 */
+function openSettingsAt(page: string, close: () => void, title?: string, jump?: (p: string, t?: string) => void): void {
   close();
   useSettingsStore.getState().setSettingsPage(page);
+  // 浏览器模式（本窗覆盖层）：pending + 同窗事件即可；Tauri 模式下本窗
+  // 不渲染设置层，pending 由设置窗经事件侧的 request 重新写入。
+  jump?.(page, title);
   try {
     localStorage.setItem("focus-desk.pending-nav", page);
   } catch {
@@ -82,7 +91,11 @@ function openSettingsAt(page: string, close: () => void): void {
   }
   if (isTauri()) {
     void openSettingsWindow();
-    void import("@tauri-apps/api/event").then(({ emit }) => emit("app:navigate-settings", { page }));
+    /* emit 裸链补 catch——导航事件丢失时设置窗仍
+       有 localStorage pending-nav 兜底，但 rejection 不该 unhandled。 */
+    void import("@tauri-apps/api/event")
+      .then(({ emit }) => emit("app:navigate-settings", { page, title }))
+      .catch((err: unknown) => console.error("[commands] navigate-settings emit failed", err));
   } else {
     useSettingsStore.getState().setSettingsOpen(true);
   }
@@ -94,7 +107,7 @@ function openGallery(close: () => void): void {
   window.dispatchEvent(new CustomEvent("focus-desk:open-gallery"));
 }
 
-/** [SYS]（借鉴 CSH #10）关全部窗口的两段式流：枚举 → 样本确认 → 优雅关闭。
+/** [SYS]关全部窗口的两段式流：枚举 → 样本确认 → 优雅关闭。
  *  第一段只读（数量 + 最多 5 条标题），确认后才把句柄交给第二段执行（执行
  *  时 Rust 侧会重新校验每个句柄，防确认期间窗口已自关）。 */
 async function closeAllWindowsFlow(): Promise<void> {
@@ -122,12 +135,18 @@ async function closeAllWindowsFlow(): Promise<void> {
 /**
  * 构建当前可执行的命令快照（面板打开时调用一次；速查表打开时取一次作为
  * 「命令目录」——展示的即面板此刻真正可执行的命令）。
- * settingsQuery：设置搜索索引的实时查询词（P2 审计修复——此前固定为空串，
+ * settingsQuery：设置搜索索引的实时查询词（审计修复——此前固定为空串，
  * 输入框里输入的内容对设置项完全不生效）。
  */
 export function buildCommands(
   tr: (zh: string) => string,
-  { settingsQuery = "", fallbackQuery = "", close = noop, settingsSearch }: BuildCommandsOptions = {}
+  {
+    settingsQuery = "",
+    fallbackQuery = "",
+    close = noop,
+    settingsSearch,
+    requestSettingsJump
+  }: BuildCommandsOptions = {}
 ): Command[] {
   const widget = useWidgetStore.getState();
   const app = useAppStore.getState();
@@ -178,7 +197,11 @@ export function buildCommands(
     keywords: ["pomodoro", "番茄", "focus", "专注"],
     run: () => {
       close();
-      app.togglePomodoro();
+      // （失败反馈）：未选专注事件时 toggle 返回 false——托盘路径有
+      // 「无法开始专注」提示，命令面板此前静默失败，用户以为点错了。
+      if (!app.togglePomodoro()) {
+        pushAppToast(tr("无法开始专注"), tr("请先在番茄钟中选择或创建一个专注事件"), "error");
+      }
     }
   });
 
@@ -203,7 +226,7 @@ export function buildCommands(
     run: () => openSettingsAt("general", close)
   });
 
-  // [SNIP] 截图（借鉴 ClassSoftwareHub #4）：抓光标所在显示器 → 框选标注。
+  // [SNIP] 截图：抓光标所在显示器 → 框选标注。
   if (isTauri()) {
     cmds.push({
       id: "screenshot",
@@ -215,7 +238,7 @@ export function buildCommands(
         void invoke("start_snip").catch(() => {});
       }
     });
-    // [FULLSCREEN] 全屏展示（借鉴 ClassSoftwareHub #5）：投影用大字时钟/倒计时/番茄钟。
+    // [FULLSCREEN] 全屏展示：投影用大字时钟/倒计时/番茄钟。
     for (const [kind, label] of [
       ["clock", "全屏时钟"],
       ["countdown", "全屏倒计时"],
@@ -233,7 +256,7 @@ export function buildCommands(
       });
     }
 
-    // [SYS]（借鉴 ClassSoftwareHub #10）：系统快捷动作——回桌面 / 任务视图 /
+    // [SYS]：系统快捷动作——回桌面 / 任务视图 /
     // 关前台 / 关全部（两段式：先枚举+样本，确认后才执行优雅关闭）。
     cmds.push(
       {
@@ -278,7 +301,122 @@ export function buildCommands(
       }
     );
 
-    // [POWER]（ZTools 借鉴 #4）电源与会话动作：锁屏/睡眠/注销即时执行；
+    // [WIN-OPS]/[WIN-ACTIONS]：前台窗口快捷操作与
+    // 系统动作（虚拟桌面移动 / 系统代理 / 高对比度）。
+    cmds.push(
+      {
+        id: "win-topmost",
+        label: tr("前台窗口置顶切换"),
+        group: tr("系统"),
+        keywords: ["topmost", "pin", "置顶", "前台"],
+        run: () => {
+          close();
+          void invoke<boolean>("win_toggle_topmost").catch(() => {});
+        }
+      },
+      {
+        id: "win-opacity-down",
+        label: tr("前台窗口透明度 −10%"),
+        group: tr("系统"),
+        keywords: ["opacity", "transparent", "透明度", "调淡"],
+        run: () => {
+          close();
+          void invoke<number>("win_adjust_opacity", { step: -10 }).catch(() => {});
+        }
+      },
+      {
+        id: "win-opacity-up",
+        label: tr("前台窗口透明度 +10%"),
+        group: tr("系统"),
+        keywords: ["opacity", "transparent", "透明度", "调浓"],
+        run: () => {
+          close();
+          void invoke<number>("win_adjust_opacity", { step: 10 }).catch(() => {});
+        }
+      },
+      {
+        id: "win-opacity-reset",
+        label: tr("前台窗口透明度还原"),
+        group: tr("系统"),
+        keywords: ["opacity", "reset", "透明度", "还原"],
+        run: () => {
+          close();
+          void invoke("win_reset_opacity").catch(() => {});
+        }
+      },
+      {
+        id: "win-center",
+        label: tr("前台窗口居中"),
+        group: tr("系统"),
+        keywords: ["center", "居中"],
+        run: () => {
+          close();
+          void invoke("win_center_foreground").catch(() => {});
+        }
+      },
+      {
+        id: "win-snap-left",
+        label: tr("前台窗口贴左半屏"),
+        group: tr("系统"),
+        keywords: ["snap", "left", "half", "分屏", "左半"],
+        run: () => {
+          close();
+          void invoke("win_snap_foreground", { side: "left" }).catch(() => {});
+        }
+      },
+      {
+        id: "win-snap-right",
+        label: tr("前台窗口贴右半屏"),
+        group: tr("系统"),
+        keywords: ["snap", "right", "half", "分屏", "右半"],
+        run: () => {
+          close();
+          void invoke("win_snap_foreground", { side: "right" }).catch(() => {});
+        }
+      },
+      {
+        id: "vd-move-left",
+        label: tr("前台窗口移到上一虚拟桌面"),
+        group: tr("系统"),
+        keywords: ["virtual desktop", "vd", "虚拟桌面", "移动"],
+        run: () => {
+          close();
+          void invoke("sys_move_window_virtual_desktop", { direction: "left" }).catch(() => {});
+        }
+      },
+      {
+        id: "vd-move-right",
+        label: tr("前台窗口移到下一虚拟桌面"),
+        group: tr("系统"),
+        keywords: ["virtual desktop", "vd", "虚拟桌面", "移动"],
+        run: () => {
+          close();
+          void invoke("sys_move_window_virtual_desktop", { direction: "right" }).catch(() => {});
+        }
+      },
+      {
+        id: "sys-proxy",
+        label: tr("切换系统代理"),
+        group: tr("系统"),
+        keywords: ["proxy", "代理", "翻墙"],
+        run: () => {
+          close();
+          void invoke<boolean>("sys_toggle_system_proxy").catch(() => {});
+        }
+      },
+      {
+        id: "sys-contrast",
+        label: tr("切换高对比度"),
+        group: tr("系统"),
+        keywords: ["high contrast", "accessibility", "高对比度", "辅助"],
+        run: () => {
+          close();
+          void invoke<boolean>("sys_toggle_high_contrast").catch(() => {});
+        }
+      }
+    );
+
+    // [POWER]电源与会话动作：锁屏/睡眠/注销即时执行；
     // 关机/重启先确认（与 closeAllWindowsFlow 同款两段式）。
     const power = (action: string, danger: boolean) => () => {
       close();
@@ -351,11 +489,14 @@ export function buildCommands(
   for (const e of settingsSearch?.(settingsQuery.trim() || fallbackQuery || "", 20) ?? []) {
     cmds.push({
       id: `set-${e.page}-${e.title}`,
-      label: e.title,
-      group: `设置 · ${e.group}`,
+      // label/group 走 tr——英文界面按翻译后文本搜得到，列表却显示中文
+      //（与设置窗侧栏搜索结果的 tr(r.title)/tr(r.group) 同口径）；组名沿用
+      //「设置 · 」前缀拼接格式（同下方 mset 段的「设置页 · 」）。
+      label: tr(e.title),
+      group: `${tr("设置")} · ${e.group ? tr(e.group) : ""}`,
       keywords: e.keywords,
       hint: e.page,
-      run: () => openSettingsAt(e.page, close)
+      run: () => openSettingsAt(e.page, close, e.title, requestSettingsJump)
     });
   }
 
@@ -367,7 +508,7 @@ export function buildCommands(
      因此调用方按 id 前缀 `content-` 取段。 */
   const cq = (settingsQuery.trim() || fallbackQuery).trim().toLowerCase();
   if (cq) {
-    // [MSET]（ZTools 借鉴 #3）系统设置深链：中文名 / 英文别名 / 拼音首字母
+    // [MSET]系统设置深链：中文名 / 英文别名 / 拼音首字母
     // 三级匹配，调用方按 id 前缀 `mset-` 取段（与 content- 同款预匹配约定）。
     for (const m of searchMsSettings(cq, 12)) {
       cmds.push({
@@ -462,9 +603,7 @@ export function buildCommands(
     }
   }
 
-  /* BentoDesk 借鉴 #9：收录快捷方式组件里的文件条目（BentoDesk 的搜索
-     同时服务 文件+容器+设置+动作；我们的文件条目种子 = shortcuts 组件的
-     自定义快捷方式，稳定且用户手工策展）。激活 = open_path（同组件点击）。 */
+  /* 收录快捷方式组件里的文件条目。激活 = open_path（同组件点击）。 */
   if (isTauri()) {
     for (const inst of widget.instances) {
       if (inst.type !== "shortcuts") continue;

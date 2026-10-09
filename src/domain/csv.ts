@@ -26,16 +26,16 @@ function intField(raw: string | undefined, min: number, max: number): number {
 }
 
 /**
- * 任务导出为 CSV（A-10：全字段导出，标签 JSON 编码进单格，往返不丢
+ * 任务导出为 CSV（全字段导出，标签 JSON 编码进单格，往返不丢
  * 截止/优先级/排序）。含引号/逗号/换行的字段按 RFC 4180 转义。
  *
  * @param tasks - 待办数组。
  * @returns CSV 文本（首行为表头，LF 换行）。
  *
  * @example
- * ```ts
+ * `ts
  * downloadTextFile("tasks.csv", tasksToCsv(tasks));
- * ```
+ * `
  */
 export function tasksToCsv(tasks: Task[]): string {
   const header = ["id", "title", "completed", "createdAt", "dueAt", "priority", "tags", "sortOrder"];
@@ -73,7 +73,7 @@ export function deadlinesToCsv(deadlines: Deadline[]): string {
 }
 
 function parseCsv(raw: string): string[][] {
-  // P7: Excel 导出的 CSV 常带 UTF-8 BOM（\uFEFF），若不清除会被吞进第一列
+  // Excel 导出的 CSV 常带 UTF-8 BOM（\uFEFF），若不清除会被吞进第一列
   // header（"\uFEFFid"）导致 colIndex 全 -1、整批数据解析出错。
   if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
   const rows: string[][] = [];
@@ -132,9 +132,9 @@ function colIndex(header: string[], name: string): number {
   return header.indexOf(name);
 }
 
-/** P7: 校验日期字段是否为合法可解析时间，并归一化为 ISO 8601（UTC + Z 毫秒）。
+/** 校验日期字段是否为合法可解析时间，并归一化为 ISO 8601（UTC + Z 毫秒）。
     斜杠 / 空格分隔等非 ISO 写法也会被 `Date.parse` 接受，必须归一写入，
-    否则宽松日期入库后会在下次启动的 schema 校验中整体失败（A-3/E-1）。 */
+    否则宽松日期入库后会在下次启动的 schema 校验中整体失败。 */
 function validDate(value: string | undefined): string {
   if (!value) return "";
   const t = Date.parse(value);

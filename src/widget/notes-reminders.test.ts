@@ -1,5 +1,5 @@
 /**
- * 便签提醒（DeskOrder 借鉴 #8）测试：
+ * 便签提醒测试：
  *  - dueReminderNotes：到点收集（未来/无效/无提醒排除；.trash 键排除）；
  *  - fireNoteReminder：发出后清除 remindAt、其余字段与同实例其他便签保留、
  *    updatedAt 不动（不顶到最近修改排序）；重复发（已清除）幂等 false；

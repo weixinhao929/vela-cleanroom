@@ -25,7 +25,8 @@ import { resolveWindowKind } from "./app/window-kind";
    动态 import（Vite 会拆成独立 chunk）。设置窗口不再背负小组件层的
    feature-*.css，2+ 个常驻小组件窗口也不再加载 settings.css（1.1k 行）。
    rb.css（设置页动效）随 SettingsView chunk、command-palette.css 随命令
-   面板 chunk 走，不再由所有窗口静态背负。 */
+   面板 chunk 走，不再由所有窗口静态背负。另有组件附带范式：rb-spec.css 随 rb.tsx（两窗共享 Segmented）、
+   gallery-drift.css 随 GalleryWidget chunk（桌面小组件窗）。 */
 import "./styles/fonts.css";
 import "./styles/global.css";
 import "./styles/widget.css";
@@ -41,17 +42,19 @@ import "./styles/feature-polish.css";
 // 这里把加载 promise 交给 Root 的 ready 门控一并等待（4s 兜底仍在）。
 // 六个小组件层效果样式只对 widget 窗口加载——速记 / 截图 / 取词 / 全屏等
 // 瞬时小窗此前也要多等一轮 chunk 往返才放行首帧，拖慢「按键到可见」。
+// feature-views.css 的 15 个类（tm-widget-list /
+// widget-picker-overlay 等）只被设置窗的懒块消费（ViewPages / widget-configs），
+// 此前挂在 widget 分支导致设置窗整块裸样式。随 settings.css 一并在设置窗加载。
 const windowCssReady: Promise<unknown> =
   window.location.hash === "#/settings"
-    ? import("./styles/settings.css")
+    ? Promise.all([import("./styles/settings.css"), import("./styles/feature-views.css")])
     : resolveWindowKind() === "widget"
       ? Promise.all([
           import("./styles/feature-task-complete.css"),
           import("./styles/feature-calendar.css"),
           import("./styles/feature-widget-interaction.css"),
           import("./styles/feature-pomodoro.css"),
-          import("./styles/feature-analytics.css"),
-          import("./styles/feature-views.css")
+          import("./styles/feature-analytics.css")
         ])
       : Promise.resolve();
 windowCssReady.catch((err) => console.error("[Vela] window css chunk failed", err));
@@ -60,12 +63,12 @@ windowCssReady.catch((err) => console.error("[Vela] window css chunk failed", er
 // WebView2 初始化、HTML/JS 下载与解析）都体现在这个数值本身里。
 markBoot("script-eval");
 
-// F8（双入口收敛）：#taskbar-net 旧路径在此重定向到 taskbar-net.html 精简
+// （双入口收敛）：#taskbar-net 旧路径在此重定向到 taskbar-net.html 精简
 // 入口（vite 多页，dev/build 均可达），App 里不再保留第二棵渲染树——两棵树
 // 靠人肉对齐必然漂移（兜底分支实际多挂了托盘事件/媒体偏好推送/双击手势等
 // 桌面层职责，与「只挂主题同步」的口径不符）。replace 不留历史，E2E 与
 // 浏览器开发的旧链接照常可用。
-// C-10（卫星窗精简入口）：snip / super-panel / fullscreen 同款重定向——
+// （卫星窗精简入口）：snip / super-panel / fullscreen 同款重定向——
 // Rust 建窗已直连新 html，这里兜住浏览器开发与旧链接；fullscreen 的
 // #fullscreen&kind=xx 整段 hash 原样带过去（FullscreenView 靠它解析模式）。
 if (window.location.hash === "#taskbar-net") {
@@ -78,7 +81,7 @@ if (window.location.hash === "#taskbar-net") {
   window.location.replace(`fullscreen.html${window.location.hash}`);
 }
 
-// P3：窗口隐藏（遮挡/最小化）时给根节点写 data-app-hidden，global.css 据此
+// 窗口隐藏（遮挡/最小化）时给根节点写 data-app-hidden，global.css 据此
 // 把循环动画置 paused。多窗口共用入口，settings 窗同样受益。
 installAppVisibilityGate();
 
@@ -88,8 +91,16 @@ installAppVisibilityGate();
  * normal opaque app background; the desktop widget window must never show the
  * default beige body background (not even during hydration), or it would cover
  * the desktop like a solid color panel.
+ *
+ * 速记窗（#quick-note）从两级类中一并排除——它是
+ * 不透明固定窗（QuickNoteView 100vh 铺满 + paper-solid 实底），既不需要
+ * 「桌面覆盖层」的透明/overflow:hidden 语义，也不该吃 body 级文字极性镜像
+ * token（theme-engine：设置窗/速记窗保持基准 token）。此前同步挂类后只在
+ * App effect 里摘 body 级（useEffect 首帧后），html 级终身残留 + 首帧短暂
+ * 吃错 token 档闪色。透明覆盖窗（snip / super-panel / fullscreen /
+ * taskbar-net，均各自 *-main.tsx 入口同步挂同类）不受影响。
  */
-if (window.location.hash !== "#/settings") {
+if (window.location.hash !== "#/settings" && window.location.hash !== "#quick-note") {
   document.body.classList.add("tm-widget-layer");
   document.documentElement.classList.add("tm-widget-layer");
 }
@@ -146,7 +157,7 @@ function ThemeSync() {
  */
 function Root() {
   const [ready, setReady] = useState(false);
-  /* #59 crossfade：ready 后画布先挂载，闪屏播 200ms 淡出再卸载。 */
+  /* crossfade：ready 后画布先挂载，闪屏播 200ms 淡出再卸载。 */
   const [splashGone, setSplashGone] = useState(false);
   const safeTimeout = useSafeTimeout();
 
@@ -155,7 +166,7 @@ function Root() {
     if (ready) markBoot("first-paint");
   }, [ready]);
 
-  /* 窗口就绪握手（H1/H2）：设置窗与速记窗由 Rust 侧 visible(false) 创建，
+  /* 窗口就绪握手：设置窗与速记窗由 Rust 侧 visible(false) 创建，
      此前 build() 返回即 show()，WebView 未加载完先以一块空影出现，经历
      「空影 → 闪屏 → 内容」三段跳变。改为首帧真正绘制后由本窗自行显示
      （用户看到的第一眼就是设计过的闪屏/内容）；Rust 侧另有 3s 超时兜底

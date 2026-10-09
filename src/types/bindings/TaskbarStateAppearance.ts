@@ -3,6 +3,6 @@ import type { TaskbarAccent } from "./TaskbarAccent";
 
 /**
  * 单态配置：一套外观 + 可选启用开关。`enabled: None` 仅出现在 desktop
- * （无开关）；六可选态经容错解析后恒为 `Some(_)`，缺省值 false（D2）。
+ * （无开关）；六可选态经容错解析后恒为 `Some(_)`，缺省值 false。
  */
 export type TaskbarStateAppearance = { enabled?: boolean, accent: TaskbarAccent, color: string, showPeek: boolean, showLine: boolean, blurRadius: number, };

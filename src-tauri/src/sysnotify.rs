@@ -1,4 +1,4 @@
-//! 系统 Toast 通知监听（借鉴 NotchPeninsula 的 UserNotificationListener 轮询管线）。
+//! 系统 Toast 通知监听。
 //!
 //! 能力：把 Windows 通知中心里**其它应用**发出的 Toast 捕获为 Vela 的事件
 //! `sysnotify:captured`（载荷 { id, appName, title, body, aumid }），前端经
@@ -6,10 +6,10 @@
 //! 本应用自己通过 os_notify 发出的 toast 用同一 AUMID，会在 Rust 侧被过滤，
 //! 避免「自己发通知 → 自己又监听到 → 再留档一次」的回环。
 //!
-//! 健壮性设计（全部来自 NPS 踩坑记录，纯函数部分在本文件 #[cfg(test)]）：
+//! 健壮性设计：
 //!
 //! 1. **2s 快照轮询 + ID 水位线**：WinRT 的 NotificationChanged 事件在非打包
-//!    桌面程序上并不可靠（NPS 实测），轮询 GetNotificationsAsync 快照、按
+//!    桌面程序上并不可靠，轮询 GetNotificationsAsync 快照、按
 //!    `Id` 单调递增水位线判新是稳妥路径。首帧只建水位线不弹（否则启动时
 //!    通知中心里的存量通知会一次性全弹）。
 //! 2. **计数器回退护栏**：通知平台的 ID 计数器可能被重置（平台重启 / 数据库
@@ -75,7 +75,7 @@ fn now_instant() -> std::time::Instant {
 /*  纯逻辑：水位线 / 回退护栏 / 文本归一化 / Toast XML 提取             */
 /* ------------------------------------------------------------------ */
 
-/// 「见过 ID」集合容量（FIFO 淘汰最早的；NPS 同款 512）。
+/// 「见过 ID」集合容量。
 pub const SEEN_ID_CAPACITY: usize = 512;
 
 /// 轮询水位线状态（Arc<Mutex> 共享给监督线程做恢复重置）。
@@ -120,7 +120,7 @@ impl NotifSyncState {
         }
     }
 
-    /// 推进水位线（NPS Toast.cs 的 FetchLatestNotificationAsync 同款规则）。
+    /// 推进水位线。
     pub fn advance(&mut self, snapshot_ids: &[u32]) -> AdvanceOutcome {
         if snapshot_ids.is_empty() {
             return AdvanceOutcome::Empty;
@@ -262,7 +262,7 @@ pub fn is_own_toast_aumid(aumid: &str) -> bool {
 /* ------------------------------------------------------------------ */
 
 /// 从设置镜像读 notifications.systemListener（默认 true；读失败回默认）。
-/// A-4：镜像读取收敛到 settings_mirror 单一助手。
+/// 镜像读取收敛到 settings_mirror 单一助手。
 fn read_enabled_from_mirror(app: &AppHandle) -> bool {
     crate::settings_mirror::read_json(app)
         .and_then(|v| {
@@ -314,7 +314,7 @@ fn poll_thread(app: AppHandle, gen: u64) {
     use windows::UI::Notifications::Management::UserNotificationListener;
     use windows::UI::Notifications::NotificationKinds;
 
-    // MTA：GetNotificationsAsync 的快照允许在 MTA 线程调用（NPS 同款）。
+    // MTA：GetNotificationsAsync 的快照允许在 MTA 线程调用。
     let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     if hr.is_err() && hr != RPC_E_CHANGED_MODE {
         log::error!("sysnotify: COM init failed: {}", hr.0);
@@ -348,10 +348,14 @@ fn poll_thread(app: AppHandle, gen: u64) {
         if GENERATION.load(Ordering::Acquire) != gen {
             return; // 已被看门狗替换：本线程自弃，避免双轮询。
         }
+        // （missed-wakeup）：代数取于 ENABLED 检查之前——变更若落在
+        // 「检查之后、进入等待之前」，wait_for_change_since 因代数已前进
+        // 立即返回，重开监听不再等 10s 兜底。
+        let mirror_seen = crate::settings_mirror::generation();
         if !ENABLED.load(Ordering::SeqCst) {
-            // B-5：禁用态不再与启用态同频 2s 空醒——等镜像变更即醒
+            // 禁用态不再与启用态同频 2s 空醒——等镜像变更即醒
             // （重新打开监听即时生效），10s 兜底复查。
-            crate::settings_mirror::wait_for_change(Duration::from_secs(10));
+            crate::settings_mirror::wait_for_change_since(mirror_seen, Duration::from_secs(10));
             continue;
         }
         LAST_ATTEMPT_MS.store(now_ms(), Ordering::SeqCst);
@@ -394,10 +398,12 @@ fn poll_thread(app: AppHandle, gen: u64) {
                         notes.push(n);
                     }
                 }
+                // 锁中毒与全仓惯例一致走 into_inner 恢复（此前静默降级 Empty
+                // 会让本拍通知全部漏收）；advance 纯内存无 poisoned 不变式风险。
                 let outcome = state
                     .lock()
-                    .map(|mut s| s.advance(&ids))
-                    .unwrap_or(AdvanceOutcome::Empty);
+                    .unwrap_or_else(|p| p.into_inner())
+                    .advance(&ids);
                 match outcome {
                     AdvanceOutcome::New(fresh) => {
                         for n in notes {
@@ -428,7 +434,7 @@ fn poll_thread(app: AppHandle, gen: u64) {
                 }
             }
             Ok(Err(e)) => {
-                // 权限被撤销等：回到重试授权的路径（NPS：静默空列表与异常都要能自愈）。
+                // 权限被撤销等：回到重试授权的路径。
                 log::warn!("sysnotify: GetNotificationsAsync failed: {e}");
                 access_ok = false;
             }
@@ -533,7 +539,7 @@ fn spawn_poll(app: AppHandle) {
 }
 
 /// 监督线程：只盯「最近一次发起轮询」时间戳。轮询线程卡死在 WinRT 调用里时
-/// 不会有任何日志，自检必须放在被检对象之外（NPS 2026-09-25 的教训）。
+/// 不会有任何日志，自检必须放在被检对象之外。
 fn watchdog_loop(app: AppHandle) {
     let mut last_restart =
         std::time::Instant::now() - Duration::from_millis(WATCHDOG_RESTART_MIN_GAP_MS);

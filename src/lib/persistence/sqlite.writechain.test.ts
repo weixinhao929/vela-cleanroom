@@ -5,7 +5,7 @@ vi.mock("../tauri", () => ({ invoke: vi.fn(async () => null), isTauri: () => tru
 import { enqueueWrite } from "./sqlite";
 
 /**
- * 写链超时语义（E-5 + 对账闭环）：
+ * 写链超时语义（+ 对账闭环）：
  *  - 单笔挂起超 60s 时队列放行，后续写照常执行（不被挂死的 IPC 永久堵住）；
  *  - 调用方拿到的是原写的真实落定结果，不再被超时提前 reject——此前超时即
  *    报失败，store 的 persist-first 动作在 catch 里按失败处理，而 Rust 侧迟到

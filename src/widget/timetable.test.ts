@@ -10,6 +10,7 @@ import {
   parseSectionBand,
   parseTimetableRows,
   parseWeeksLabel,
+  rawWeekNumber,
   sanitizeTimetableData,
   sessionsInWeek,
   toISODate,
@@ -191,10 +192,10 @@ describe("parseTimetableRows", () => {
     // 与 calamine 对真实 xlsx 的输出逐字一致：第1列=节次标签，随后各列=周一到周日。
     const rows = [
       ["我的课程表", "", "", "", "", "", "", "", ""],
-      ["2026-2027学年第1学期", "学生：许宇浩(24230423)", "", "", "", "", "", "", ""],
+      ["2026-2027学年第1学期", "学生：测试同学(00000000)", "", "", "", "", "", "", ""],
       [
         "上课时间暂未确定的课程：",
-        "传感器实验 [ae22653010] 上课周次 11-14周 上课教师 李美娜",
+        "传感器实验 [ae22653010] 上课周次 11-14周 上课教师 测试教师",
         "",
         "",
         "",
@@ -203,7 +204,7 @@ describe("parseTimetableRows", () => {
         "",
         ""
       ],
-      ["人工智能算法编程实践 [ae22653042] 上课周次 16周 上课教师 刘名扬", "", "", "", "", "", "", "", ""],
+      ["人工智能算法编程实践 [ae22653042] 上课周次 16周 上课教师 测试教师", "", "", "", "", "", "", "", ""],
       ["调课信息：", "", "", "", "", "", "", "", ""],
       ["节次/星期", "", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"],
       [
@@ -388,5 +389,79 @@ describe("courseColor", () => {
     expect(courseColor("大学物理")).toBeDefined();
     const b = courseColor("线性代数");
     expect(a).not.toEqual(b);
+  });
+});
+
+describe("周次括号 / 单双缺「周」形态（导入容错）", () => {
+  it("parseWeeksLabel 接受括号包裹的单双标记", () => {
+    expect(parseWeeksLabel("1-16周(单)")).toEqual([1, 3, 5, 7, 9, 11, 13, 15]);
+    expect(parseWeeksLabel("1-16（双）")).toEqual([2, 4, 6, 8, 10, 12, 14, 16]);
+    expect(parseWeeksLabel("1-8周（单）")).toEqual([1, 3, 5, 7]);
+  });
+
+  it("parseCellText 单元格文本里的括号单双周不丢失", () => {
+    const segs = parseCellText("大学英语 1-16周(单) 星期三 第3节-第4节 外语楼-302");
+    expect(segs).toHaveLength(1);
+    expect(segs[0].weeksLabel).toBe("1-16周(单)");
+    expect(parseWeeksLabel(segs[0].weeksLabel)).toEqual([1, 3, 5, 7, 9, 11, 13, 15]);
+  });
+
+  it("parseCellText 接受缺「周」字的单双标记（1-16双,星期2,…）", () => {
+    const segs = parseCellText("高数 1-16双,星期2,第1节-第2节 教1-101");
+    expect(segs).toHaveLength(1);
+    expect(segs[0].weeksLabel.replace(/\s/g, "")).toBe("1-16双");
+    expect(parseWeeksLabel(segs[0].weeksLabel)).toEqual([2, 4, 6, 8, 10, 12, 14, 16]);
+  });
+
+  it("纯数字仍不得当作周次（教室编号保护）", () => {
+    const segs = parseCellText("高数 星期2,第1节-第2节 教1-101");
+    expect(segs).toHaveLength(1);
+    expect(segs[0].weeksLabel).toBe("");
+  });
+});
+
+describe("rawWeekNumber（假期门控）", () => {
+  it("返回未钳制的原始周号", () => {
+    // 开学前（2026-07-01 在 2026-08-10 学期开始前五周）
+    expect(rawWeekNumber(new Date(2026, 6, 1), "2026-08-10")).toBe(-5);
+    // 学期第 1 / 2 周
+    expect(rawWeekNumber(new Date(2026, 7, 12), "2026-08-10")).toBe(1);
+    expect(rawWeekNumber(new Date(2026, 7, 19), "2026-08-10")).toBe(2);
+    // 学期结束后（20 周学期 = 到 2026-12-27 那周）
+    expect(rawWeekNumber(new Date(2027, 0, 1), "2026-08-10")).toBeGreaterThan(20);
+  });
+
+  it("非法 semesterStart 返回 null", () => {
+    expect(rawWeekNumber(new Date(), "oops")).toBeNull();
+  });
+});
+
+describe("网格式分列行标签（第1节 | 第2节 两列）", () => {
+  it("合并解析出完整节次区间", () => {
+    const rows = [
+      ["节次", "", "星期一", "星期二", "星期三", "星期四", "星期五"],
+      ["第1节", "第2节", "高数 1-16周 教1-101", "", "", "", ""],
+      ["第3节", "第4节", "", "大物 1-8周 物理-201", "", "", ""]
+    ];
+    const { sessions } = parseTimetableRows(rows);
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].startSection).toBe(1);
+    expect(sessions[0].endSection).toBe(2);
+    expect(sessions[1].startSection).toBe(3);
+    expect(sessions[1].endSection).toBe(4);
+  });
+
+  it("首列为「上午/下午」时行标签取自次列", () => {
+    const rows = [
+      ["时段", "节次", "星期一", "星期二", "星期三"],
+      ["上午", "第1节-第2节", "高数 1-16周", "", ""],
+      ["下午", "第5节", "", "英语 1-16周", ""]
+    ];
+    const { sessions } = parseTimetableRows(rows);
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].startSection).toBe(1);
+    expect(sessions[0].endSection).toBe(2);
+    expect(sessions[1].startSection).toBe(5);
+    expect(sessions[1].endSection).toBe(5);
   });
 });

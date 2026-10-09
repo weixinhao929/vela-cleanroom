@@ -1,9 +1,8 @@
-//! 样式预设包（BentoDesk 借鉴 #12）：`.zip` 格式的预设分享——导出把全部
+//! 样式预设包：`.zip` 格式的预设分享——导出把全部
 //! 样式预设打包为 `manifest.json + presets.json`；导入经 zip 加固校验后
 //! 只把 `presets.json` 文本交给前端合并（前端再过 zod 清洗 + 同名去重）。
 //!
-//! **加固清单（对照 BentoDesk install_from_zip，按「纯读取、不解压落盘」
-//! 适配——没有解压就没有 slip/symlink 的落地面，防线前移到条目校验）**：
+//! **加固清单**：
 //! - 条目白名单：只接受扁平的 `manifest.json` / `presets.json` 两个名字，
 //!   目录、路径分隔符、其它任何条目一律拒绝（zip-slip 无从发生）；
 //! - 重复条目名拒绝；条目数 ≤ 8、单条 ≤ 4MB、总量 ≤ 8MB（防压缩炸弹）；
@@ -129,7 +128,7 @@ pub async fn export_preset_package(
 ) -> Result<Option<String>, String> {
     crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(path) = rfd::FileDialog::new()
+        let Some(path) = crate::files::parented_file_dialog(&window)
             .set_title("导出样式预设包")
             .add_filter("Vela 样式预设包", &["zip", "velapreset"])
             .set_file_name("vela-style-presets.zip")
@@ -151,26 +150,21 @@ pub async fn export_preset_package(
 pub async fn import_preset_package(window: tauri::Window) -> Result<Option<String>, String> {
     crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let Some(path) = rfd::FileDialog::new()
+        let Some(path) = crate::files::parented_file_dialog(&window)
             .set_title("导入样式预设包")
             .add_filter("Vela 样式预设包", &["zip", "velapreset"])
             .pick_file()
         else {
             return Ok(None);
         };
-        let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败：{e}"))?;
-        // 读侧大小上限（磁盘上的包先限量再进校验）。
-        if bytes.len() as u64 > MAX_TOTAL_BYTES {
-            return Err("文件过大".into());
-        }
-        let presets = read_package(&bytes)?;
+        let presets = read_package_capped(&path)?;
         Ok(Some(presets))
     })
     .await
     .map_err(|e| format!("导入任务失败：{e}"))?
 }
 
-/// [GALLERY]（借鉴 ClassSoftwareHub #9）从指定路径导入预设包：与文件对话框
+/// [GALLERY]从指定路径导入预设包：与文件对话框
 /// 版同一条校验链，供在线画廊下载完成后的落盘文件复用（下载文件的 sha256
 /// 已在下载时校验，这里照常走 read_package 的 ZIP 结构加固校验）。
 #[tauri::command]
@@ -180,15 +174,26 @@ pub async fn import_preset_package_from_path(
 ) -> Result<Option<String>, String> {
     crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败：{e}"))?;
-        if bytes.len() as u64 > MAX_TOTAL_BYTES {
-            return Err("文件过大".into());
-        }
-        let presets = read_package(&bytes)?;
+        let presets = read_package_capped(std::path::Path::new(&path))?;
         Ok(Some(presets))
     })
     .await
     .map_err(|e| format!("导入任务失败：{e}"))?
+}
+
+///读前 metadata 预检（对齐 在 lib.rs 的修复模式）——此前先
+/// std::fs::read 整读进内存再比对上限，误选超大文件会有瞬时内存尖峰。
+/// TOCTOU 由读后复核兜底（文件在预检与读取之间被换大）。
+fn read_package_capped(path: &std::path::Path) -> Result<String, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("读取文件失败：{e}"))?;
+    if meta.len() > MAX_TOTAL_BYTES {
+        return Err("文件过大".into());
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("读取文件失败：{e}"))?;
+    if bytes.len() as u64 > MAX_TOTAL_BYTES {
+        return Err("文件过大".into());
+    }
+    read_package(&bytes)
 }
 
 #[cfg(test)]

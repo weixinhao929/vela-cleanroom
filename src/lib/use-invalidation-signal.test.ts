@@ -3,7 +3,7 @@ import { renderHook } from "@testing-library/react";
 import { useInvalidationSignal } from "./use-invalidation-signal";
 
 /**
- * C-9：失效信号 hook 的行为守卫——signals 引用变化即重跑、其余闭包值取
+ * 失效信号 hook 的行为守卫——signals 引用变化即重跑、其余闭包值取
  * 最新快照、cleanup 语义与 useEffect 一致。
  */
 describe("useInvalidationSignal", () => {

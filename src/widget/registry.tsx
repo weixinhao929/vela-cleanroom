@@ -6,7 +6,7 @@
  * 渲染添加面板，WidgetCanvas 据此解析实例类型；新增小组件只需在
  * WIDGET_REGISTRY 与 WIDGET_LOADERS 各登记一条。
  */
-import { lazy, memo, useMemo, type ComponentType } from "react";
+import { memo, useMemo, type ComponentProps, type ComponentType } from "react";
 import {
   Activity,
   AlarmClock,
@@ -41,17 +41,18 @@ import {
   type LucideIcon
 } from "lucide-react";
 import { t, useT } from "../i18n-lite";
+import { makeResettableLazy } from "../lib/make-resettable-lazy";
 import { useAppStore } from "../store/app-store";
-import { loadNotes, subscribeNotes } from "./notes-store";
+import { loadNotes, saveNotes, subscribeNotes, type Note } from "./notes-store";
 import { CHANGE_EVENT, loadWidgetConfig } from "./widget-config";
 import { useWidgetStore } from "./widget-store";
 import type { ExpandedComponentProps, ExpandedComponentType } from "./expand-store";
 
-/** C1 沉浸组件 props 契约（re-export，供 Dock/卡片等消费方从 registry 单点引用）。 */
+/** 沉浸组件 props 契约（re-export，供 Dock/卡片等消费方从 registry 单点引用）。 */
 export type { ExpandedComponentProps, ExpandedComponentType } from "./expand-store";
 
 /* ------------------------------------------------------------------ *
- * 小组件懒加载（P4）
+ * 小组件懒加载
  *
  * 之前这里静态 import 了全部 23 个小组件 + 4 个功能面板，于是主 bundle
  * 里塞进了 canvas 绘图、Markdown 渲染、Excel 课表解析、蓝牙/硬件监控、
@@ -64,9 +65,18 @@ export type { ExpandedComponentProps, ExpandedComponentType } from "./expand-sto
  * 注意保持 `WidgetMeta.component` 的类型不变（`ComponentType`），这样
  * 下方 27 条注册项与所有消费方代码都不需要改动：`lazy()` 返回的
  * `LazyExoticComponent` 在渲染语义上完全等价，仅类型签名不同。
+ *
+ * 三处工厂底层改用 make-resettable-lazy——chunk 拉取失败被 React
+ * 缓存成永久 rejection（重试再打不开）的问题在工厂内统一解决；错误边界
+ * 「重试」经 resetWidgetLazy 重新 import。
  * ------------------------------------------------------------------ */
 
 type WidgetComponent = ComponentType<{ instanceId: string }>;
+
+/* 包装组件 → 其可重置 lazy 的 reset 句柄。WeakMap 键是注册表常驻的
+   组件对象（模块级、与注册表同生命周期），不挂在组件类型上，保持
+   ComponentType 契约不变（消费方无须感知）。 */
+const lazyResets = new WeakMap<object, () => void>();
 
 /**
  * 包装一个具名导出的动态 import 为可直接渲染的组件。
@@ -76,19 +86,22 @@ function lazyWidget<K extends string>(
   loader: () => Promise<Record<K, WidgetComponent>>,
   exportName: K
 ): WidgetComponent {
-  const Lazy = lazy<ComponentType<{ instanceId: string }>>(async () => ({
-    default: (await loader())[exportName] as ComponentType<{ instanceId: string }>
-  }));
+  const { Component, reset } = makeResettableLazy<ComponentProps<WidgetComponent>>(
+    async () => ({ default: (await loader())[exportName] as WidgetComponent }),
+    exportName
+  );
   // PERF-1：内容组件统一 memo。编辑会话中被拖拽/缩放的卡片外壳每帧重渲，
   // 但其内容子树 props（instanceId）不变，memo 在此处短路，避免 24+ 挂件
   // 的整棵内容树随拖拽逐帧重渲染（Timetable/Calendar 同屏时单帧 5-20ms）。
-  return memo(function MemoizedWidget(props: { instanceId: string }) {
-    return <Lazy instanceId={props.instanceId} />;
+  const wrapped = memo(function MemoizedWidget(props: { instanceId: string }) {
+    return <Component instanceId={props.instanceId} />;
   }) as unknown as WidgetComponent;
+  lazyResets.set(wrapped, reset);
+  return wrapped;
 }
 
 /**
- * C1 沉浸组件懒加载：与 lazyWidget 同构，但 props 为 ExpandedComponentProps
+ * 沉浸组件懒加载：与 lazyWidget 同构，但 props 为 ExpandedComponentProps
  * （instanceId + active）。独立 chunk——只在首次展开时才拉取。
  *
  * 登记规范（供 Dock 会话对接）：
@@ -105,12 +118,15 @@ function lazyExpanded<K extends string>(
   loader: () => Promise<Record<K, ExpandedComponentType>>,
   exportName: K
 ): ExpandedComponentType {
-  const Lazy = lazy<ExpandedComponentType>(async () => ({
-    default: (await loader())[exportName] as ExpandedComponentType
-  }));
-  return memo(function MemoizedExpanded(props: ExpandedComponentProps) {
-    return <Lazy {...props} />;
+  const { Component, reset } = makeResettableLazy<ComponentProps<ExpandedComponentType>>(
+    async () => ({ default: (await loader())[exportName] as ExpandedComponentType }),
+    exportName
+  );
+  const wrapped = memo(function MemoizedExpanded(props: ExpandedComponentProps) {
+    return <Component {...props} />;
   }) as unknown as ExpandedComponentType;
+  lazyResets.set(wrapped, reset);
+  return wrapped;
 }
 
 /**
@@ -136,12 +152,15 @@ function lazyMini<K extends string>(
   loader: () => Promise<Record<K, MiniComponentType>>,
   exportName: K
 ): MiniComponentType {
-  const Lazy = lazy<MiniComponentType>(async () => ({
-    default: (await loader())[exportName] as MiniComponentType
-  }));
-  return memo(function MemoizedMini(props: MiniComponentProps) {
-    return <Lazy {...props} />;
+  const { Component, reset } = makeResettableLazy<ComponentProps<MiniComponentType>>(
+    async () => ({ default: (await loader())[exportName] as MiniComponentType }),
+    exportName
+  );
+  const wrapped = memo(function MemoizedMini(props: MiniComponentProps) {
+    return <Component {...props} />;
   }) as unknown as MiniComponentType;
+  lazyResets.set(wrapped, reset);
+  return wrapped;
 }
 
 const AnalyticsPanel = lazyWidget(() => import("../features/analytics/AnalyticsPanel"), "AnalyticsPanel");
@@ -181,7 +200,7 @@ const UnitConverterWidget = lazyWidget(() => import("./widgets/UnitConverterWidg
 const WeatherWidget = lazyWidget(() => import("./widgets/WeatherWidget"), "WeatherWidget");
 const ClipboardHistoryWidget = lazyWidget(() => import("./widgets/ClipboardHistoryWidget"), "ClipboardHistoryWidget");
 
-/* C1 沉浸展开态组件（首批：音乐沉浸页 / 天气站；G9 补任务全览/课程表/
+/* 沉浸展开态组件（首批：音乐沉浸页 / 天气站；补任务全览/课程表/
    专注统计/邮件——任务全览在 todo 条目上，其余三个复用面板本体）。 */
 const MusicImmersive = lazyExpanded(() => import("./widgets/MusicImmersive"), "MusicImmersive");
 const WeatherStation = lazyExpanded(() => import("./widgets/WeatherStation"), "WeatherStation");
@@ -213,21 +232,40 @@ const MiscCanvasHint = lazyWidget(() => import("./widgets/misc/MiscBoardPanel"),
 const MiscMini = lazyMini(() => import("./widgets/mini/MiscMini"), "MiscMini");
 
 /* ------------------------------------------------------------------ *
- * G8 通用磁贴摘要：MiniComponent 之外的常见类型入岛后只有 图标 + 名称，
+ * 通用磁贴摘要：MiniComponent 之外的常见类型入岛后只有 图标 + 名称，
  * 补一行同步可算的摘要（todo 有 TodoMini 不在此列）。计算只读已有
  * store / localStorage 快照（O(条目数)，条目均为两位数级）；配套的
  * miniSummarySubscribe 让 DockTile 在数据变化时重算，避免摘要成为
  * 挂载时刻的死值。空串 = 不显示摘要行（GenericMiniTile 对 falsy 不渲染）。
  * ------------------------------------------------------------------ */
 
-/** 订阅某实例小组件配置的同窗口变更（saveWidgetConfig 必发 CHANGE_EVENT）。 */
+/** 订阅某实例小组件配置的同窗口变更（saveWidgetConfig 必发 CHANGE_EVENT）。
+ *  （mini 摘要跨窗不刷新）：补挂 Tauri 全局事件——设置窗/他屏改配置时
+ *  同窗口 CustomEvent 不跨窗，磁贴摘要滞留旧值直至重挂。 */
 function subscribeWidgetConfig(instanceId: string | undefined, onChange: () => void): () => void {
   if (!instanceId) return () => {};
   const onEvent = (e: Event) => {
     if ((e as CustomEvent<string>).detail === instanceId) onChange();
   };
   window.addEventListener(CHANGE_EVENT, onEvent);
-  return () => window.removeEventListener(CHANGE_EVENT, onEvent);
+  let unRemote: (() => void) | null = null;
+  let disposed = false;
+  void import("@tauri-apps/api/event")
+    .then(({ listen }) =>
+      listen<{ instanceId: string }>("sync:widget-config", (e) => {
+        if (e.payload?.instanceId === instanceId) onChange();
+      })
+    )
+    .then((un) => {
+      if (disposed) un();
+      else unRemote = un;
+    })
+    .catch(() => {});
+  return () => {
+    disposed = true;
+    window.removeEventListener(CHANGE_EVENT, onEvent);
+    unRemote?.();
+  };
 }
 
 /** 今日概览：未完成待办数（与 TodayOverviewWidget 的 pendingTasks 同口径，不限日期）。 */
@@ -295,7 +333,7 @@ export type WidgetMeta = {
   minSize: { w: number; h: number };
   component: ComponentType<{ instanceId: string }>;
   /**
-   * C1 展开态：登记后卡片悬浮工具条出现「展开」入口，点击进入沉浸面板
+   * 展开态：登记后卡片悬浮工具条出现「展开」入口，点击进入沉浸面板
    * （min(720px, 90vw)，z 序置顶 + blur 遮罩，Esc 收回）。懒加载独立 chunk；
    * 常驻叠放不重建——active=false 时组件保持挂载但须自行暂停持续性工作。
    */
@@ -307,14 +345,14 @@ export type WidgetMeta = {
    */
   expandFloating?: boolean;
   /**
-   * 灵动岛迷你形态（F-1）：登记后磁贴显示富形态（时间 / 进度环 / 温度…），
+   * 灵动岛迷你形态：登记后磁贴显示富形态（时间 / 进度环 / 温度…），
    * 未登记则 DockTile 用通用磁贴（icon + name + miniSummary）。所有类型都可入岛。
    */
   MiniComponent?: MiniComponentType;
   /** 通用磁贴的一行摘要（可选），也用于磁贴 aria-label「类型名 · 摘要」。 */
   miniSummary?: (instanceId?: string) => string;
   /**
-   * G8 摘要数据源订阅：DockTile 挂载时调用，返回退订函数；数据变化时回调
+   * 摘要数据源订阅：DockTile 挂载时调用，返回退订函数；数据变化时回调
    * 让磁贴重算 miniSummary（订阅 selector 只做引用比较，O(1)/次变更）。
    * 未登记则摘要只在磁贴因其它原因重渲时刷新（与旧版行为一致）。
    */
@@ -428,7 +466,41 @@ export const WIDGET_REGISTRY: WidgetMeta[] = [
     // 数据驱动（saveNotes/saveTrash 落盘即触发，跨窗口写入经 sync:notes
     // 落到本窗口的 saveNotes 同样覆盖）：替代此前 30s 盲轮询——轮询不判
     // document.hidden、不对比结果，磁贴挂一天空转近三千次。
-    miniSummarySubscribe: (_instanceId, onChange) => subscribeNotes(onChange)
+    miniSummarySubscribe: (instanceId, onChange) => {
+      const unsubLocal = subscribeNotes(onChange);
+      // （速记后摘要跨窗不刷新）：此前中继链依赖目标实例的 NotesWidget
+      // 恰好挂载并把 sync:notes 回写成本窗 saveNotes；实例不在任何已挂载
+      // 视图时事件无人中继，磁贴摘要滞留。磁贴自己做中继：收到本实例的
+      // sync:notes 即回写 saveNotes（内容一致，无回环——saveNotes 不发事件）。
+      if (!instanceId) return unsubLocal;
+      let unsubRemote: (() => void) | null = null;
+      let disposed = false;
+      void import("@tauri-apps/api/event")
+        .then(({ listen }) =>
+          listen<{ instanceId: string; notes: unknown[] }>("sync:notes", (e) => {
+            const p = e.payload;
+            if (!p || p.instanceId !== instanceId || !Array.isArray(p.notes)) return;
+            const clean = p.notes.filter(
+              (n): n is Note =>
+                !!n &&
+                typeof n === "object" &&
+                typeof (n as Note).id === "string" &&
+                typeof (n as Note).text === "string"
+            );
+            saveNotes(instanceId, clean);
+          })
+        )
+        .then((un) => {
+          if (disposed) un();
+          else unsubRemote = un;
+        })
+        .catch(() => {});
+      return () => {
+        disposed = true;
+        unsubLocal();
+        unsubRemote?.();
+      };
+    }
   },
   {
     type: "recycle",
@@ -622,7 +694,7 @@ export const WIDGET_REGISTRY: WidgetMeta[] = [
     MiniComponent: MusicMini
   },
   {
-    // W-129：「正在播放」独立小组件（锁定卡片布局的 MusicWidget 变体）。
+    // 「正在播放」独立小组件（锁定卡片布局的 MusicWidget 变体）。
     type: "nowplaying",
     name: "正在播放",
     desc: "系统媒体控制卡片",
@@ -756,6 +828,19 @@ export function getWidgetMeta(type: string): WidgetMeta | undefined {
   return REGISTRY_BY_TYPE.get(type);
 }
 
+/**
+ * 重置某类型全部懒 chunk（画布本体 / 沉浸展开 / 迷你形态）缓存的
+ * lazy——供各处 WidgetErrorBoundary 的「重试」经 onRetry 接线，把
+ * 「重新 import」纳入重试语义。未注册 / 无懒组件的类型为 no-op。
+ */
+export function resetWidgetLazy(type: string): void {
+  const meta = REGISTRY_BY_TYPE.get(type);
+  if (!meta) return;
+  for (const comp of [meta.component, meta.ExpandedComponent, meta.MiniComponent]) {
+    if (comp) lazyResets.get(comp)?.();
+  }
+}
+
 /** Hook: translated category names. */
 export function useCategoryNames(): Record<WidgetCategory, string> {
   const tr = useT();
@@ -785,7 +870,7 @@ export function useTranslatedWidgetRegistry(): WidgetMeta[] {
 }
 
 /* ======================================================================
- * C10（性能）：懒加载 chunk 的预加载通道。
+ * （性能）：懒加载 chunk 的预加载通道。
  * 此前图库卡片只有点击/双击，首次添加任一小组件都要现场拉 chunk（有骨架
  * 但可感）。Vite 对同一模块的重复动态 import 会复用同一 chunk，这里按
  * registry type 建立与上方 lazyWidget 相同 import 表达式的映射即可安全去重。
@@ -840,7 +925,7 @@ export function preloadWidgets(types?: string[]): void {
   for (const t of list) WIDGET_LOADERS[t]?.().catch(() => {});
 }
 
-/* C1：沉浸组件 chunk 的预热通道（与 lazyExpanded 同一 import 表达式，Vite 去重）。 */
+/* 沉浸组件 chunk 的预热通道（与 lazyExpanded 同一 import 表达式，Vite 去重）。 */
 export const EXPANDED_LOADERS: Record<string, () => Promise<unknown>> = {
   music: () => import("./widgets/MusicImmersive"),
   nowplaying: () => import("./widgets/MusicImmersive"),
@@ -848,7 +933,7 @@ export const EXPANDED_LOADERS: Record<string, () => Promise<unknown>> = {
   analytics: () => import("./widgets/AnalyticsExpanded"),
   timetable: () => import("./widgets/TimetableExpanded"),
   email: () => import("./widgets/EmailExpanded"),
-  // F2：五列看板是交互最重的沉浸页之一，缺登记会让悬停预热落空、首展吃
+  // 五列看板是交互最重的沉浸页之一，缺登记会让悬停预热落空、首展吃
   // 一次 chunk 加载骨架（登记当时遗漏，现补齐）。
   todo: () => import("./widgets/TaskOverview")
 };

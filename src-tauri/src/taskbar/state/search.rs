@@ -1,10 +1,9 @@
-//! 搜索（含 FindInStart）与任务视图状态源（F-3；标杆 CreateSearchManager
-//! :850-911 / CreateTaskViewManager :949-971）。
+//! 搜索（含 FindInStart）与任务视图状态源。
 //!
 //! Win11 通道：`RoGetActivationFactory("WindowsUdk.UI.Shell.
 //! ShellViewCoordinator")` 拿 `IShellViewCoordinatorFactory`，`CreateInstance(
 //! ShellView::Search=1 / FindInStart=25 / TaskView=3)` 拿协调器，订阅
-//! `VisibilityChanged` 事件并查询 `Visibility()`。接口定义照标杆
+//! `VisibilityChanged` 事件并查询 `Visibility()`。接口定义照
 //! WindowsUdk\ShellViewCoordinator.idl 手写 vtable（IShellViewCoordinator
 //! 槽位：IUnknown 3 + IInspectable 3 + 方法 10，`add_VisibilityChanged`
 //! = 槽 13，`Visibility` = 槽 15）。Win10 通道（Cortana 事件）不实现，
@@ -243,9 +242,13 @@ impl HandlerSink {
 
     unsafe extern "system" fn release(this: *mut core::ffi::c_void) -> u32 {
         // SAFETY: 归零时 this 是 Box::into_raw 的原指针，还原为 Box 释放。
+        // 减计用 AcqRel——末次释放线程需要 Acquire 其它持有线程在
+        // 其 fetch_sub(Release) 之前的全部写，随后的 Box::from_raw 析构才
+        // 与并发访问构成 happen-before（对照 taskbar_tap blur_brush.rs
+        // release_reference；原先只用 Release 缺 Acquire 半边）。
         unsafe {
             let sink = &*(this as *mut HandlerSink);
-            let remaining = sink.refs.fetch_sub(1, Ordering::Release);
+            let remaining = sink.refs.fetch_sub(1, Ordering::AcqRel);
             if remaining == 1 {
                 drop(Box::from_raw(this as *mut HandlerSink));
                 return 0;
@@ -261,7 +264,9 @@ impl HandlerSink {
     ) -> HRESULT {
         // SAFETY: this 为 add_VisibilityChanged 时传入的 sink；sender 为
         // 协调器默认接口的借用指针（不 AddRef，仅本次调用内使用）。
-        unsafe {
+        //panic 穿越 COM 回调是 UB——对齐 watcher.rs/appearance.rs
+        // 已设防的基线（run_gaured/catch_unwind），回调体包 catch_unwind。
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             let sink = &*(this as *mut HandlerSink);
             let visible = if sender.is_null() {
                 false
@@ -269,7 +274,7 @@ impl HandlerSink {
                 read_visibility(sender).unwrap_or(false)
             };
             let _ = sink.tx.send((sink.map)(visible));
-        }
+        }));
         HRESULT(0)
     }
 }

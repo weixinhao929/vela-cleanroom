@@ -3,6 +3,7 @@
  * 右侧内容路由；独立 WebView 与内嵌两种宿主形态共用。
  */
 import {
+  Suspense,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -13,11 +14,13 @@ import {
   type CSSProperties
 } from "react";
 import { useDelayedUnmount } from "../../lib/anim";
+import { makeResettableLazy } from "../../lib/make-resettable-lazy";
 import { animDurations } from "../../lib/durations";
 import { useDismissable } from "../../lib/use-dismissable";
 import {
   BadgeCheck,
   ChevronDown,
+  Layers,
   LayoutGrid,
   Minus,
   Monitor,
@@ -43,34 +46,136 @@ import { FxText, useFxEffectEnabled } from "../../lib/fx";
 import { ParticleText } from "../../lib/rb";
 import { useSettingsStore } from "../../store/settings-store";
 import { getWidgetMeta, WIDGET_REGISTRY } from "../../widget/registry";
-import { loadInstances, useWidgetStore, type WidgetInstance } from "../../widget/widget-store";
+import { widgetDisplayName } from "../../widget/display-name";
+import { loadInstances, loadGroups, useWidgetStore, type WidgetInstance } from "../../widget/widget-store";
 import { useT } from "../../i18n-lite";
-// 收款码图片属个人资产：公开仓库导出（scripts/export-github.mjs）会剔除它们。
-// 用 glob 式按需取图，图片缺失时下方捐款卡片区块整体不渲染，构建不报缺文件。
+// 收款码图片不随仓库分发：用 glob 式按需取图，图片缺失时
+// 下方捐款卡片区块整体不渲染，构建不报缺文件。
 const donateImages = import.meta.glob<{ default: string }>("../../assets/donate-*.jpg", {
   eager: true
 });
 const donateWechat = donateImages["../../assets/donate-wechat.jpg"]?.default;
 const donateAlipay = donateImages["../../assets/donate-alipay.jpg"]?.default;
-import { promptDialog } from "../../components/PromptDialog";
-import { searchSettings } from "./settings-search";
+import { pushAppToast } from "../../components/ToastHost";
+import { promptViewName } from "../../widget/rename";
+import { searchSettings, type SettingsSearchEntry } from "./settings-search";
+import {
+  SETTINGS_JUMP_EVENT,
+  flashSettingsRowByTitle,
+  peekPendingSettingsJump,
+  requestSettingsJump,
+  takePendingSettingsJump
+} from "./settings-jump";
 import { type Page, resolveDarkTheme } from "./shared";
-import { StylePage } from "./pages/StylePage";
-import { GeneralPage } from "./pages/GeneralPage";
-import { AnimationPage } from "./pages/AnimationPage";
-import { ConnectionPage } from "./pages/ConnectionPage";
-import { ViewPage, WidgetsPage, WidgetGalleryPage } from "./pages/ViewPages";
-import { UpdatePage } from "./pages/UpdatePage";
-import { DisplayPage, type MonitorInfo } from "./pages/DisplayPage";
-import { DockPage } from "./pages/DockPage";
-import { TaskbarPage } from "./pages/TaskbarPage";
-import { WidgetConfigPage, DockTileConfigPage, MiscItemConfigPage } from "./widget-configs";
+/* （chunk 瘦身）：设置子页改 React.lazy——此前 9 个页面 + 小组件配置
+   页全部静态 import，SettingsView 主 chunk 267KB（含任务栏 / 更新 / 常规
+   等各自的 IPC 与 UI 依赖），设置窗首开即全量解析。现在每页独立 chunk、
+   首次进入该页才加载（本地文件，毫秒级）。搜索索引（settings-search.ts）
+   自带全部词条元数据、不依赖页面模块，侧栏导航照常立即可用；既有测试
+   直接 import 页面文件不受影响。MonitorInfo 是纯类型，保留静态导入。 */
+import type { MonitorInfo } from "./pages/DisplayPage";
+/* 各子页改可重置 lazy（make-resettable-lazy）——页面 chunk 拉取失败后
+   重试不再永久失效（失败沿 App 的设置窗错误边界兜住，其 onRetry 接本模块
+   的 reset；页面级无本地边界，弃缓存后「重试」重渲染即重新 import）。 */
+const StylePage = makeResettableLazy(
+  () => import("./pages/StylePage").then((m) => ({ default: m.StylePage })),
+  "StylePage"
+);
+const GeneralPage = makeResettableLazy(
+  () => import("./pages/GeneralPage").then((m) => ({ default: m.GeneralPage })),
+  "GeneralPage"
+);
+const AnimationPage = makeResettableLazy(
+  () => import("./pages/AnimationPage").then((m) => ({ default: m.AnimationPage })),
+  "AnimationPage"
+);
+const ConnectionPage = makeResettableLazy(
+  () => import("./pages/ConnectionPage").then((m) => ({ default: m.ConnectionPage })),
+  "ConnectionPage"
+);
+const ViewPage = makeResettableLazy(
+  () => import("./pages/ViewPages").then((m) => ({ default: m.ViewPage })),
+  "ViewPage"
+);
+const WidgetsPage = makeResettableLazy(
+  () => import("./pages/ViewPages").then((m) => ({ default: m.WidgetsPage })),
+  "WidgetsPage"
+);
+const WidgetGalleryPage = makeResettableLazy(
+  () => import("./pages/ViewPages").then((m) => ({ default: m.WidgetGalleryPage })),
+  "WidgetGalleryPage"
+);
+const UpdatePage = makeResettableLazy(
+  () => import("./pages/UpdatePage").then((m) => ({ default: m.UpdatePage })),
+  "UpdatePage"
+);
+const DisplayPage = makeResettableLazy(
+  () => import("./pages/DisplayPage").then((m) => ({ default: m.DisplayPage })),
+  "DisplayPage"
+);
+const DockPage = makeResettableLazy(
+  () => import("./pages/DockPage").then((m) => ({ default: m.DockPage })),
+  "DockPage"
+);
+const TaskbarPage = makeResettableLazy(
+  () => import("./pages/TaskbarPage").then((m) => ({ default: m.TaskbarPage })),
+  "TaskbarPage"
+);
+const WidgetConfigPage = makeResettableLazy(
+  () => import("./widget-configs").then((m) => ({ default: m.WidgetConfigPage })),
+  "WidgetConfigPage"
+);
+const DockTileConfigPage = makeResettableLazy(
+  () => import("./widget-configs").then((m) => ({ default: m.DockTileConfigPage })),
+  "DockTileConfigPage"
+);
+const MiscItemConfigPage = makeResettableLazy(
+  () => import("./widget-configs").then((m) => ({ default: m.MiscItemConfigPage })),
+  "MiscItemConfigPage"
+);
+const GroupConfigPage = makeResettableLazy(
+  () => import("./widget-configs").then((m) => ({ default: m.GroupConfigPage })),
+  "GroupConfigPage"
+);
 import { sanitizeMiscItems } from "../../widget/widgets/misc/misc-layout";
 import { MISC_TYPE } from "../../widget/widgets/misc/MiscBoardPanel";
 import { OnboardingOverlay } from "./OnboardingOverlay";
-/* 增强动效样式（ParticleText / Bento 光斑 / 弹性开关等，仅设置页消费）：
+/* 动效样式（ParticleText / Bento 光斑 / 弹性开关等，仅设置页消费）：
    随本 chunk 加载，不再由 main 入口静态打包进所有窗口。 */
 import "../../styles/rb.css";
+
+/* 版本展示改用构建注入常量（vite.config.ts 从 package.json version 注入，
+   __BUILD_TIME__ 同款 define；类型就近声明在唯一消费方，vite-env.d.ts 未动）。
+   define 未注入的环境（理论上的裸转译）回落 0.1.0。 */
+declare const __APP_VERSION__: string;
+const APP_VERSION = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.1.0";
+
+/** 懒页首进的轻量骨架——fallback=null 在冷启动 WebView 首拉 chunk 的
+ *  一拍里右栏整块闪空。复用现有令牌与动画（tm-section 卡片 + tm-spinner +
+ *  tm-content-swap 淡入），不引新样式文件/依赖。 */
+function LazyPageFallback() {
+  const tr = useT();
+  return (
+    <section
+      className="tm-section"
+      style={{
+        minHeight: 200,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 12,
+        color: "var(--muted-2)",
+        animation: "tm-content-swap var(--dur-fx-fast, 0.15s) var(--ease-out) backwards"
+      }}
+    >
+      <span className="tm-spinner" aria-hidden="true" />
+      <span className="tm-placeholder" style={{ padding: 0 }}>
+        {tr("加载中…")}
+      </span>
+    </section>
+  );
+}
 
 /* 五.7 侧栏滑移指示条（组内）：量测本组顶层 .active 项几何，3px accent 圆棒
    平滑跟随（与 Segmented 滑动胶囊同语言）；active 不在本组时淡出。只做组内
@@ -155,39 +260,93 @@ export function SettingsView() {
   // .tm-settings-window[data-theme="light"] 从未生效。
   const themePreset = useSettingsStore((s) => s.preset);
   const themeMode = useSettingsStore((s) => s.themeMode);
-  const darkTheme = resolveDarkTheme(themePreset, themeMode);
+  /* 内层 data-theme 必须与**生效档**一致——浮窗覆盖（FloatingThemeSync
+     写在 html 上的档）非 follow 时本窗实际生效的是浮窗档；此前仍按全局档
+     判定，「全局暗 + 浮窗浅」时 settings.css 的 :has 规则读到错配色板。 */
+  const floatingThemeMode = useSettingsStore((s) => s.floatingThemeMode);
+  const effectiveThemeMode = floatingThemeMode !== "follow" ? floatingThemeMode : themeMode;
+  const darkTheme = resolveDarkTheme(themePreset, effectiveThemeMode);
   const views = useWidgetStore((s) => s.views);
   /* 侧栏「视图 → 小组件计数」：loadInstances 每次都全量读 localStorage +
      JSON.parse，此前在 views.map 渲染体内逐视图调用——searchQ 每键重渲都
      重复解析全部布局。改 useMemo 缓存，并监听 widget-store 的持久化字段
      变化作失效键（实例增删 / 拖拽后计数即时更新，此前计数只在重挂载时刷新）。 */
   const layoutRev = useWidgetStore((s) => s.instances);
-  const { viewWidgetCounts, viewWidgetIds } = useMemo(() => {
+  const groupsRev = useWidgetStore((s) => s.groups);
+  const { viewWidgetCounts, viewWidgetIds, viewGroups } = useMemo(() => {
     const counts: Record<string, number> = {};
     const ids: Record<string, WidgetInstance[]> = {};
+    const groups: Record<string, ReturnType<typeof loadGroups>> = {};
     for (const v of views) {
       const list = loadInstances(v.id);
       ids[v.id] = list;
       counts[v.id] = list.length;
+      groups[v.id] = loadGroups(v.id);
     }
-    return { viewWidgetCounts: counts, viewWidgetIds: ids };
-    // layoutRev 作失效信号：实例表引用一变（含其它视图的保存）即重算。
+    return { viewWidgetCounts: counts, viewWidgetIds: ids, viewGroups: groups };
+    // layoutRev 作失效信号：实例表引用一变（含其它视图的保存）即重算；
+    // groupsRev 同理（编组同步/增删后侧栏编组节点跟随）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [views, layoutRev]);
+  }, [views, layoutRev, groupsRev]);
   const addView = useWidgetStore((s) => s.addView);
   const activeView = useWidgetStore((s) => s.activeView);
   const setActiveView = useWidgetStore((s) => s.setActiveView);
   const setEditMode = useWidgetStore((s) => s.setEditMode);
   // 视图折叠状态：默认展开当前页面对应的视图。
   const [expandedViews, setExpandedViews] = useState<Record<string, boolean>>({});
+  // 编组节点（视图下第二级）的成员子列表折叠状态。
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   /* 设置搜索：关键词 + 输入框引用（Ctrl+K 聚焦、Escape 清空）。
-     C6（性能）：searchQ 每键都会重渲整棵设置树（当前页全部控件 + 侧栏 +
+     （性能）：searchQ 每键都会重渲整棵设置树（当前页全部控件 + 侧栏 +
      指示条重测）。索引检索用 useDeferredValue 延迟——输入框保持同步响应，
      重活（搜索 + 侧栏过滤渲染）在空闲帧跟进。 */
   const [searchQ, setSearchQ] = useState("");
   const deferredSearchQ = useDeferredValue(searchQ);
   const searchRef = useRef<HTMLInputElement | null>(null);
-  const searchResults = useMemo(() => searchSettings(deferredSearchQ), [deferredSearchQ]);
+  /* 动态视图词条：静态索引表达不了 `view-<id>` 这类动态页面 id——搜视图名
+     （如 "work"）此前零结果。逐视图生成词条 + 一条「视图管理」总词条（指向
+     第一个视图的管理页，那里有切换/重命名/复制/清空/删除与排序的全部入口）。 */
+  const viewSearchEntries = useMemo(() => {
+    if (views.length === 0) return [];
+    const entries: SettingsSearchEntry[] = [
+      {
+        page: `view-${views[0].id}`,
+        group: "视图",
+        title: "视图管理",
+        keywords: [
+          "view",
+          "视图",
+          "切换视图",
+          "新建视图",
+          "添加视图",
+          "复制视图",
+          "删除视图",
+          "重命名视图",
+          "排序",
+          "多视图"
+        ]
+      }
+    ];
+    for (const v of views) {
+      entries.push({
+        page: `view-${v.id}`,
+        group: "视图",
+        title: v.name,
+        keywords: [v.name, "view", "视图"]
+      });
+    }
+    return entries;
+  }, [views]);
+  /* 搜索索引同时匹配中文词条与翻译后文本（English 界面）：tr 传入
+     searchSettings 作翻译函数——其引用随语言切换变化（useT 的 useCallback
+     依赖），作为 memo 依赖自然获得语言响应，无需 language 失效键绕法。 */
+  const searchResults = useMemo(
+    () => searchSettings(deferredSearchQ, 12, viewSearchEntries, tr),
+    [deferredSearchQ, viewSearchEntries, tr]
+  ); /* kbd 提示跟随实际快捷键（此前写死 "Ctrl K"，改绑后提示撒谎）；停用或
+     未绑定时隐藏提示。 */
+  const searchShortcut = useSettingsStore((s) => s.appShortcuts["settings-search"]);
+  const searchKbd = searchShortcut?.enabled && searchShortcut.accel ? searchShortcut.accel.split("+").join(" ") : "";
   const [page, setPage] = usePageState();
   const targetPage = useSettingsStore((s) => s.settingsPage);
   // 兜底导航用的当前页引用（避免 effect 闭包捕获过期 page）。
@@ -203,43 +362,73 @@ export function SettingsView() {
     [setPage]
   );
 
+  /* 搜索命中 → 行级定位（settings-jump）：词条携带标题写入 pending，
+     页面落地后按标题文本找到设置行滚动居中并脉冲。三个触发面汇到同一
+     check：同窗事件（同页跳转）、page/open 变化（跨页跳转与懒加载落地）、
+     跨窗 app:navigate-settings（其 handler 先 request 再 navigate）。
+     page 不匹配时 pending 保留，等导航到达再消费。 */
+  const stopRowFlashRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const check = () => {
+      const jump = peekPendingSettingsJump();
+      if (!jump || !open || jump.page !== pageRef.current) return;
+      takePendingSettingsJump();
+      stopRowFlashRef.current?.();
+      stopRowFlashRef.current = flashSettingsRowByTitle(jump.title, tr);
+    };
+    window.addEventListener(SETTINGS_JUMP_EVENT, check);
+    check();
+    return () => {
+      window.removeEventListener(SETTINGS_JUMP_EVENT, check);
+      stopRowFlashRef.current?.();
+      stopRowFlashRef.current = null;
+    };
+  }, [page, open, tr]);
+
   /* 显示器侧栏分组（动态）：list_monitors 枚举真实显示器，热插拔随
      monitors-changed 刷新。选中某屏 = 把「视图/小组件」的管理分区切到该屏。
-     这里是设置窗口内显示器列表的唯一数据源（DisplayPage 经 props 消费）——
-     此前两处各自拉取 + 各自订阅，挂载与每次热插拔都双份 IPC。 */
+     这里是设置窗口内显示器列表的唯一数据源（DisplayPage / TaskbarPage 经
+     props 消费）——TaskbarPage 此前自建一套拉取 + 订阅，挂载与每次热插拔
+     都双份 IPC，已收编到 props 下发（未提供时它才退回自取）。 */
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  /* list_monitors 失败此前静默（侧栏悄悄退回兜底入口，用户无从得知枚举
+     坏了）——记录失败态，给出可见错误 + 重试入口。 */
+  const [monitorsFailed, setMonitorsFailed] = useState(false);
   const managedScreen = useWidgetStore((s) => s.screenId);
-  useEffect(() => {
+  /** 拉取显示器列表；失败置位 monitorsFailed 供重试入口。管理分区的合法性
+      校验（幽灵屏回落）见下方 effect——那里同时覆盖首拉、热插拔与 hydrate
+      晚于首拉恢复持久化分区的竞态。 */
+  const reloadMonitors = useCallback(() => {
     if (!isTauri()) return;
     invoke<MonitorInfo[]>("list_monitors")
       .then((ms) => {
         setMonitors(ms);
-        // 只剩一台显示器时把「视图/小组件」管理分区直接切到它：上次管理的屏
-        // 可能已被拔掉，让用户手动去显示器页点「管理此屏小组件」没有意义。
-        // 热插拔到单屏同样生效（monitors-changed 走同一逻辑）。
-        if (ms.length === 1) {
-          const only = String(ms[0].id);
-          if (useWidgetStore.getState().screenId !== only) {
-            useWidgetStore.getState().switchScreen(only);
-          }
-        }
+        setMonitorsFailed(false);
       })
-      .catch(() => setMonitors([]));
+      .catch(() => {
+        setMonitors([]);
+        setMonitorsFailed(true);
+      });
   }, []);
-  useTauriEvent("monitors-changed", () => {
-    if (!isTauri()) return;
-    invoke<MonitorInfo[]>("list_monitors")
-      .then((ms) => {
-        setMonitors(ms);
-        if (ms.length === 1) {
-          const only = String(ms[0].id);
-          if (useWidgetStore.getState().screenId !== only) {
-            useWidgetStore.getState().switchScreen(only);
-          }
-        }
-      })
-      .catch(() => setMonitors([]));
-  });
+  useEffect(() => {
+    reloadMonitors();
+  }, [reloadMonitors]);
+  useTauriEvent("monitors-changed", reloadMonitors);
+  /* 管理分区必须活在当前显示器列表里。三种来源会让它变成「幽灵屏」：
+     ① 上次管理的屏被拔掉（WidgetHydrate 恢复持久化分区时无条件信任）；
+     ② 热插拔后槽位消失；③ 恢复动作晚于首拉到达（竞态）。此前只有「恰好
+     剩一块屏」才纠正，两屏以上时设置窗会继续管理不存在的分区——侧栏视图
+     列表是幽灵数据，编辑落不到任何可见桌面。以 effect 方式在
+     [monitors, managedScreen] 任一变化时校验（含 hydrate 恢复触发的变更），
+     失效则回落主屏并提示。 */
+  useEffect(() => {
+    if (!isTauri() || monitors.length === 0) return;
+    if (monitors.some((m) => String(m.id) === managedScreen)) return;
+    const target = monitors.find((m) => m.is_primary) ?? monitors[0];
+    useWidgetStore.getState().switchScreen(String(target.id));
+    pushAppToast(tr("上次管理的显示器已断开，已切换回主屏"), "", "info");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitors, managedScreen]);
   /** 打开某显示器的管理页并切换小组件管理分区到该屏。 */
   const openMonitor = useCallback(
     (slot: number) => {
@@ -248,10 +437,25 @@ export function SettingsView() {
     },
     [navigate]
   );
+  /** DisplayPage「管理此屏小组件」：切管理分区并直达该屏第一个视图的管理页。
+      此前与侧栏 openMonitor 同款跳 display-<slot>，而那渲染的还是显示器页
+      本身——按钮按下页面几乎不变，用户感知「点了没反应」。 */
+  const openMonitorManage = useCallback(
+    (slot: number) => {
+      useWidgetStore.getState().switchScreen(String(slot));
+      // switchScreen 同步重载目标屏 views（localStorage 直读），这里取到的
+      // 已是目标屏清单；一个视图都没有时退到小组件页（空态自解释）。
+      const first = useWidgetStore.getState().views[0]?.id;
+      navigate(first ? `view-${first}` : "widgets");
+    },
+    [navigate]
+  );
 
-  /* 搜索结果方向键：ArrowDown/Up 在结果间移动，Enter 打开选中（缺省第一条）。 */
+  /* 搜索结果方向键：ArrowDown/Up 在结果间移动，Enter 打开选中（缺省第一条）。
+     语言切换（tr 换引用 → 结果集重算）或词条表变化会让同一查询词命中不同
+     结果集——一并重置，防 aria-activedescendant 指向已不存在的选项。 */
   const [resultIdx, setResultIdx] = useState(-1);
-  useEffect(() => setResultIdx(-1), [deferredSearchQ]);
+  useEffect(() => setResultIdx(-1), [deferredSearchQ, searchResults]);
   /* 结果下拉外点关闭（统一骨架）：有查询词时，按下侧栏其它区域清空收起——
      此前下拉只能靠导航 / 清空键关闭，会常驻在侧栏上。 */
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
@@ -265,7 +469,7 @@ export function SettingsView() {
     { escape: false }
   );
 
-  /* #90 侧栏共享指示条已被 M3 药丸激活态取代（激活项自带 accent 淡底）。 */
+  /* 侧栏共享指示条已被 M3 药丸激活态取代（激活项自带 accent 淡底）。 */
 
   /* 灵动岛折叠：磁贴子列表默认收起；页面落在灵动岛 / 磁贴配置 / 绑定实例配置时自动展开。
      「杂项」磁贴还有第三级（面板里的组件），按磁贴 id 各自记忆展开态。 */
@@ -277,15 +481,18 @@ export function SettingsView() {
   const isSettingsWin = window.location.hash === "#/settings";
 
   /** 关闭设置：独立窗口下真关闭（销毁）——与「X = 关闭」的通用桌面心智
-      一致，renderer 随之释放（P0 省一份 WebView2 常驻内存）。此前是最小化，
+      一致，renderer 随之释放（省一份 WebView2 常驻内存）。此前是最小化，
       用户会疑惑窗口为何「关不掉」。冷启动重建的空影已由 ready 握手消除
       （main.tsx + windows.rs spawn_show_fallback），销毁不再有体验代价；
       Rust 侧 on_window_event 兜底：本窗为最后一个窗口时只隐藏保活。 */
   const handleClose = useCallback(() => {
     if (isSettingsWin) {
-      import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-        getCurrentWindow().close().catch(console.error);
-      });
+      /*外层 import 链补 catch（内层 close/minimize 已有）。 */
+      import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => {
+          getCurrentWindow().close().catch(console.error);
+        })
+        .catch(console.error);
     } else {
       setOpen(false);
     }
@@ -294,29 +501,49 @@ export function SettingsView() {
   /** 独立窗口的最小化按钮（应用主界面自带的标准窗口控制）。 */
   const handleMinimize = useCallback(() => {
     if (!isSettingsWin) return;
-    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-      getCurrentWindow().minimize().catch(console.error);
-    });
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => {
+        getCurrentWindow().minimize().catch(console.error);
+      })
+      .catch(console.error);
   }, [isSettingsWin]);
 
   // 进入某个小组件的配置页时，自动展开其所属视图的折叠（或灵动岛折叠），避免
   // 用户选完一个组件后折叠收起、无法直接切换下一个组件。杂项组件设置页
   // （dock-tile-item-<tileId>:<itemId>）还会展开对应「杂项」磁贴的第三级。
+  // 编组设置页（group-config-<gid>）同理展开所属视图；成员配置页若挂在编组
+  // 下，还要展开该编组节点的成员子列表。
   useEffect(() => {
-    if (!page.startsWith("widget-config-") && !page.startsWith("dock-tile-item-")) return;
-    const wid = page.startsWith("widget-config-") ? page.slice("widget-config-".length) : null;
-    if (wid && useWidgetStore.getState().dock.tiles.some((t) => t.instanceId === wid)) {
-      setDockOpen(true);
+    if (!page.startsWith("widget-config-") && !page.startsWith("dock-tile-item-") && !page.startsWith("group-config-"))
       return;
-    }
     if (page.startsWith("dock-tile-item-")) {
       const tileId = page.slice("dock-tile-item-".length).split(":")[0];
       if (tileId) setMiscOpen((prev) => ({ ...prev, [tileId]: true }));
       setDockOpen(true);
       return;
     }
+    if (page.startsWith("group-config-")) {
+      const gid = page.slice("group-config-".length);
+      setExpandedGroups((prev) => ({ ...prev, [gid]: true }));
+      const owner = views.find((v) => loadGroups(v.id).some((g) => g.id === gid));
+      if (owner) setExpandedViews((prev) => ({ ...prev, [owner.id]: true }));
+      return;
+    }
+    const wid = page.startsWith("widget-config-") ? page.slice("widget-config-".length) : null;
+    if (wid && useWidgetStore.getState().dock.tiles.some((t) => t.instanceId === wid)) {
+      setDockOpen(true);
+      return;
+    }
     const owner = views.find((v) => loadInstances(v.id).some((i) => i.id === wid));
     if (owner) setExpandedViews((prev) => ({ ...prev, [owner.id]: true }));
+    // 成员在编组下：展开该编组节点。
+    for (const v of views) {
+      const g = loadGroups(v.id).find((x) => wid && x.memberIds.includes(wid));
+      if (g) {
+        setExpandedGroups((prev) => ({ ...prev, [g.id]: true }));
+        break;
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
@@ -346,7 +573,7 @@ export function SettingsView() {
 
   // When the panel opens, honor any requested target page (e.g. a widget's
   // "配置" button) by navigating straight to that sub-page.
-  // C-9：open 作失效信号——targetPage/navigate 取渲染闭包最新快照即可
+  // open 作失效信号——targetPage/navigate 取渲染闭包最新快照即可
   //（navigate 是 zustand 稳定引用；targetPage 需要的恰是「打开那一刻」的值）。
   useInvalidationSignal([open], () => {
     if (open && targetPage && targetPage !== "style") navigate(targetPage as Page);
@@ -362,12 +589,14 @@ export function SettingsView() {
     let disposed = false;
     void import("@tauri-apps/api/event")
       .then(({ listen }) =>
-        listen<{ page: string; screenId?: string }>("app:navigate-settings", (e) => {
+        listen<{ page: string; screenId?: string; title?: string }>("app:navigate-settings", (e) => {
           const p = e.payload;
           if (!p?.page) return;
           if (p.screenId && p.screenId !== useWidgetStore.getState().screenId) {
             useWidgetStore.getState().switchScreen(p.screenId);
           }
+          // 命令面板的设置词条带行标题：写入 pending 供落地后的行级定位。
+          requestSettingsJump(p.page, p.title);
           navigate(p.page as never);
           // 发起方同时写了 localStorage 兜底键（首启事件可能丢失）。事件已送达
           // 即意图已兑现，必须清掉；否则下面的焦点兜底看到"页面相同"不清键，
@@ -382,7 +611,11 @@ export function SettingsView() {
       .then((f) => {
         if (disposed) f();
         else un = f;
-      });
+      })
+      /* 动态 import / listen 链补 catch——注册失败
+         （IPC 抖动）时不再产生 unhandledrejection，上报供诊断（导航兜底仍由
+         localStorage pending-nav 路径覆盖）。 */
+      .catch((err: unknown) => console.error("[settings] navigate-settings listen failed", err));
     return () => {
       disposed = true;
       un?.();
@@ -438,7 +671,10 @@ export function SettingsView() {
         .then((f) => {
           if (disposed) f();
           else unFocus = f;
-        });
+        })
+        /* onFocusChanged 注册链补 catch（同上，防
+           unhandledrejection；失败只损失焦点兜底，导航事件主路径不受影响）。 */
+        .catch((err: unknown) => console.error("[settings] focus listener registration failed", err));
     }
     return () => {
       disposed = true;
@@ -448,15 +684,17 @@ export function SettingsView() {
   }, [isSettingsWin]);
 
   // 主窗口中：设置面板未打开时不渲染。独立设置窗口中始终渲染。
-  // #14 关闭对称退场：open→false 后保留 220ms 播遮罩/窗口退出动画再卸载。
+  // 关闭对称退场：open→false 后保留 220ms 播遮罩/窗口退出动画再卸载。
   const overlayMounted = useDelayedUnmount(isSettingsWin || open, animDurations().fxMs);
   if (!overlayMounted) return null;
   const overlayClosing = !isSettingsWin && !open;
 
   const handleAddView = async () => {
-    const name = await promptDialog({ title: tr("输入新视图名称") });
-    if (!name || !name.trim()) return;
-    const id = addView(name.trim());
+    /* 与视图页同一命名入口（长度上限 + 码点截断）；撞名不拦截——
+       store 的 addView 自动加序号。 */
+    const name = await promptViewName(tr, { title: tr("输入新视图名称") });
+    if (!name) return;
+    const id = addView(name);
     if (id) navigate(`view-${id}`);
   };
 
@@ -528,8 +766,11 @@ export function SettingsView() {
                 spellCheck={false}
               />
               {/* kbd ↔ 清空常驻挂载交叉淡化（不瞬换，也不挤动布局）。 */}
-              <kbd className={`tm-sidebar-search-kbd${searchQ ? " is-hidden" : ""}`} aria-hidden={!!searchQ}>
-                Ctrl K
+              <kbd
+                className={`tm-sidebar-search-kbd${searchQ || !searchKbd ? " is-hidden" : ""}`}
+                aria-hidden={!!searchQ || !searchKbd}
+              >
+                {searchKbd}
               </kbd>
               <button
                 type="button"
@@ -561,6 +802,9 @@ export function SettingsView() {
                       className={`tm-sidebar-search-item${ri === resultIdx ? " kb-focus" : ""}`}
                       onMouseEnter={() => setResultIdx(ri)}
                       onClick={() => {
+                        // 行级定位：词条标题随跳转携带（同页时经同窗事件
+                        // 即时脉冲，跨页时等页面落地后由 effect 消费）。
+                        requestSettingsJump(r.page, r.title);
                         navigate(r.page);
                         setSearchQ("");
                       }}
@@ -640,7 +884,11 @@ export function SettingsView() {
                         <ChevronDown size={14} className={`tm-sidebar-chevron${expanded ? " open" : ""}`} />
                       </button>
                     </div>
-                    <div className={`tm-sidebar-sub-wrap${expanded ? " open" : ""}`} aria-hidden={!expanded}>
+                    <div
+                      className={`tm-sidebar-sub-wrap${expanded ? " open" : ""}`}
+                      aria-hidden={!expanded}
+                      inert={!expanded}
+                    >
                       <div className="tm-sidebar-sub">
                         {dockTiles.length === 0 && <div className="tm-sidebar-sub-empty">{tr("未添加磁贴")}</div>}
                         {dockTiles.map((tile) => {
@@ -695,6 +943,7 @@ export function SettingsView() {
                                 <div
                                   className={`tm-sidebar-sub-wrap${tileExpanded ? " open" : ""}`}
                                   aria-hidden={!tileExpanded}
+                                  inert={!tileExpanded}
                                 >
                                   <div className="tm-sidebar-sub tm-sidebar-sub2">
                                     {items.length === 0 && (
@@ -768,12 +1017,47 @@ export function SettingsView() {
                       {m.name}
                       {m.is_primary ? tr("（主显示器）") : ""}
                     </span>
+                    {/* 装饰点此前 aria-hidden——读屏对「正在管理此屏」完全
+                        无感；role=img + aria-label 承载 title 信息。 */}
                     {managed && (
-                      <span className="tm-sidebar-managed-dot" title={tr("正在管理此屏的小组件")} aria-hidden="true" />
+                      <span
+                        className="tm-sidebar-managed-dot"
+                        title={tr("正在管理此屏的小组件")}
+                        role="img"
+                        aria-label={tr("正在管理此屏的小组件")}
+                      />
                     )}
                   </button>
                 );
               })}
+              {/* 枚举失败的可见反馈 + 重试入口（风格随侧栏空态行与 accent
+                  文字按钮，令牌全走 CSS 变量）。 */}
+              {monitorsFailed && (
+                <div
+                  className="tm-sidebar-sub-empty"
+                  style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 46 }}
+                >
+                  <span>{tr("显示器列表获取失败")}</span>
+                  <button
+                    type="button"
+                    onClick={reloadMonitors}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      color: "var(--accent)",
+                      font: "inherit",
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer"
+                    }}
+                  >
+                    <RefreshCw size={12} />
+                    {tr("重试")}
+                  </button>
+                </div>
+              )}
               {monitors.length === 0 && (
                 <button
                   type="button"
@@ -836,29 +1120,136 @@ export function SettingsView() {
                         <ChevronDown size={14} className={`tm-sidebar-chevron${expanded ? " open" : ""}`} />
                       </button>
                     </div>
-                    {/* #89 折叠子列表：常驻挂载 + grid-rows 展开/收拢过渡，收起不再瞬间消失 */}
-                    <div className={`tm-sidebar-sub-wrap${expanded ? " open" : ""}`} aria-hidden={!expanded}>
+                    {/* 折叠子列表：常驻挂载 + grid-rows 展开/收拢过渡，收起不再瞬间消失。
+                        inert：收起时子树整体移出焦点序列与交互——CSS 的
+                        pointer-events:none 挡不住键盘 Tab，且 aria-hidden 包可聚焦
+                        元素本身违规（焦点会"消失"在隐形按钮上）。 */}
+                    <div
+                      className={`tm-sidebar-sub-wrap${expanded ? " open" : ""}`}
+                      aria-hidden={!expanded}
+                      inert={!expanded}
+                    >
                       <div className="tm-sidebar-sub">
-                        {viewWidgetCount === 0 && <div className="tm-sidebar-sub-empty">{tr("无小组件")}</div>}
-                        {(viewWidgetIds[v.id] ?? []).map((inst) => {
-                          const meta = getWidgetMeta(inst.type);
-                          const Icon = meta?.icon ?? LayoutGrid;
-                          return (
-                            <button
-                              key={inst.id}
-                              type="button"
-                              className={`tm-sidebar-sub-item${page === `widget-config-${inst.id}` ? " active" : ""}`}
-                              onClick={() => {
-                                if (activeView !== v.id) setActiveView(v.id);
-                                setExpandedViews((prev) => ({ ...prev, [v.id]: true }));
-                                navigate(`widget-config-${inst.id}`);
-                              }}
-                            >
-                              <Icon size={14} />
-                              {meta ? tr(meta.name) : inst.type}
-                            </button>
-                          );
-                        })}
+                        {(() => {
+                          const instances = viewWidgetIds[v.id] ?? [];
+                          const groups = viewGroups[v.id] ?? [];
+                          if (instances.length === 0 && groups.length === 0) {
+                            return <div className="tm-sidebar-sub-empty">{tr("无小组件")}</div>;
+                          }
+                          const memberButton = (inst: WidgetInstance) => {
+                            const meta = getWidgetMeta(inst.type);
+                            const Icon = meta?.icon ?? LayoutGrid;
+                            return (
+                              <button
+                                key={inst.id}
+                                type="button"
+                                className="tm-sidebar-sub-item"
+                                onClick={() => {
+                                  if (activeView !== v.id) setActiveView(v.id);
+                                  setExpandedViews((prev) => ({ ...prev, [v.id]: true }));
+                                  navigate(`widget-config-${inst.id}`);
+                                }}
+                              >
+                                <Icon size={14} />
+                                {widgetDisplayName(inst.type, inst.id, instances, tr)}
+                              </button>
+                            );
+                          };
+                          /* 编组作为中间节点（视图 → 编组 → 成员）：行点击进编组
+                             设置页（组级透明度/成员管理），箭头展开成员子列表。 */
+                          const groupNode = (g: (typeof groups)[number]) => {
+                            const members = g.memberIds
+                              .map((id) => instances.find((i) => i.id === id))
+                              .filter((i): i is WidgetInstance => !!i);
+                            const gOpen = expandedGroups[g.id] ?? page === `group-config-${g.id}`;
+                            return (
+                              <div key={g.id} className="tm-sidebar-sub-group">
+                                <div
+                                  role="button"
+                                  tabIndex={0}
+                                  className={`tm-sidebar-sub-item tm-sidebar-sub-group-row${page === `group-config-${g.id}` ? " active" : ""}`}
+                                  onClick={() => {
+                                    if (activeView !== v.id) setActiveView(v.id);
+                                    setExpandedViews((prev) => ({ ...prev, [v.id]: true }));
+                                    navigate(`group-config-${g.id}`);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
+                                      if (activeView !== v.id) setActiveView(v.id);
+                                      navigate(`group-config-${g.id}`);
+                                    }
+                                  }}
+                                >
+                                  <Layers size={14} />
+                                  <span className="tm-sidebar-sub-group-name">
+                                    {/* 组名（未命名回落「编组」）——两个以上编组
+                                        靠「编组 · N」无法区分。 */}
+                                    {g.name?.trim() || tr("编组")} · {members.length}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="tm-sidebar-chevron-btn"
+                                    aria-expanded={gOpen}
+                                    aria-label={gOpen ? tr("收起") : tr("展开")}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setExpandedGroups((prev) => ({ ...prev, [g.id]: !gOpen }));
+                                    }}
+                                  >
+                                    <ChevronDown size={12} className={`tm-sidebar-chevron${gOpen ? " open" : ""}`} />
+                                  </button>
+                                </div>
+                                <div
+                                  className={`tm-sidebar-sub-wrap${gOpen ? " open" : ""}`}
+                                  aria-hidden={!gOpen}
+                                  inert={!gOpen}
+                                >
+                                  <div className="tm-sidebar-sub">
+                                    {members.map((m) => {
+                                      const meta = getWidgetMeta(m.type);
+                                      const Icon = meta?.icon ?? LayoutGrid;
+                                      return (
+                                        <button
+                                          key={m.id}
+                                          type="button"
+                                          className={`tm-sidebar-sub-item${page === `widget-config-${m.id}` ? " active" : ""}`}
+                                          onClick={() => {
+                                            if (activeView !== v.id) setActiveView(v.id);
+                                            setExpandedViews((prev) => ({ ...prev, [v.id]: true }));
+                                            setExpandedGroups((prev) => ({ ...prev, [g.id]: true }));
+                                            navigate(`widget-config-${m.id}`);
+                                          }}
+                                        >
+                                          <Icon size={14} />
+                                          {widgetDisplayName(m.type, m.id, instances, tr)}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          };
+                          /* 顺序：按实例 z 序穿插输出——编组节点在该组成员首次
+                             出现的位置输出（与桌面视觉顺序一致），其余成员归入
+                             编组子列表不再平铺。布局存储序 ≠ z 序，先按 z 排序。 */
+                          const emitted = new Set<string>();
+                          const nodes: React.ReactNode[] = [];
+                          const byZ = [...instances].sort((a, b) => a.z - b.z);
+                          for (const inst of byZ) {
+                            const owner = groups.find((g) => g.memberIds.includes(inst.id));
+                            if (!owner) {
+                              nodes.push(memberButton(inst));
+                              continue;
+                            }
+                            if (!emitted.has(owner.id)) {
+                              emitted.add(owner.id);
+                              nodes.push(groupNode(owner));
+                            }
+                          }
+                          return nodes;
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -907,27 +1298,38 @@ export function SettingsView() {
             </div>
           </aside>
           <main className="tm-content" key={page}>
-            {page === "style" && <StylePage />}
-            {page === "general" && <GeneralPage />}
-            {page === "animation" && <AnimationPage />}
-            {page === "connection" && <ConnectionPage />}
-            {page === "dock" && <DockPage />}
-            {page === "taskbar" && <TaskbarPage />}
-            {page === "license" && <LicensePage />}
-            {page === "update" && <UpdatePage />}
-            {(page === "display" || page.startsWith("display-")) && (
-              <DisplayPage onManage={openMonitor} monitors={monitors} />
-            )}
-            {page === "widgets" && <WidgetsPage />}
-            {page === "gallery" && <WidgetGalleryPage onBack={() => navigate("widgets")} />}
-            {page.startsWith("view-") && <ViewPage view={page.slice("view-".length)} onNavigate={navigate} />}
-            {page.startsWith("widget-config-") && (
-              <WidgetConfigPage instanceId={page.slice("widget-config-".length)} onNavigate={navigate} />
-            )}
-            {page.startsWith("dock-tile-item-") && <MiscItemConfigPage pageId={page} onNavigate={navigate} />}
-            {page.startsWith("dock-tile-") && !page.startsWith("dock-tile-item-") && (
-              <DockTileConfigPage tileId={page.slice("dock-tile-".length)} onNavigate={navigate} />
-            )}
+            {/* 懒加载页首次进入时按需拉 chunk；fallback 给轻量骨架
+                （null 在冷启动首拉的一拍里整块闪空，见 LazyPageFallback）。 */}
+            <Suspense fallback={<LazyPageFallback />}>
+              {page === "style" && <StylePage.Component />}
+              {page === "general" && <GeneralPage.Component />}
+              {page === "animation" && <AnimationPage.Component />}
+              {page === "connection" && <ConnectionPage.Component />}
+              {page === "dock" && <DockPage.Component />}
+              {page === "taskbar" && <TaskbarPage.Component monitors={monitors} />}
+              {page === "license" && <LicensePage />}
+              {page === "update" && <UpdatePage.Component />}
+              {(page === "display" || page.startsWith("display-")) && (
+                <DisplayPage.Component onManage={openMonitorManage} monitors={monitors} onRefresh={reloadMonitors} />
+              )}
+              {page === "widgets" && <WidgetsPage.Component onNavigate={navigate} monitors={monitors} />}
+              {page === "gallery" && <WidgetGalleryPage.Component onBack={() => navigate("widgets")} />}
+              {page.startsWith("view-") && (
+                <ViewPage.Component view={page.slice("view-".length)} onNavigate={navigate} monitors={monitors} />
+              )}
+              {page.startsWith("widget-config-") && (
+                <WidgetConfigPage.Component instanceId={page.slice("widget-config-".length)} onNavigate={navigate} />
+              )}
+              {page.startsWith("group-config-") && (
+                <GroupConfigPage.Component groupId={page.slice("group-config-".length)} onNavigate={navigate} />
+              )}
+              {page.startsWith("dock-tile-item-") && (
+                <MiscItemConfigPage.Component pageId={page} onNavigate={navigate} />
+              )}
+              {page.startsWith("dock-tile-") && !page.startsWith("dock-tile-item-") && (
+                <DockTileConfigPage.Component tileId={page.slice("dock-tile-".length)} onNavigate={navigate} />
+              )}
+            </Suspense>
           </main>
         </div>
       </div>
@@ -946,13 +1348,14 @@ function LicensePage() {
   return (
     <section className="tm-section">
       <div className="tm-section-title">{tr("许可证")}</div>
-      {/* Particle Text：粒子聚合成 "Vela"；
+      {/* Particle Text（）：粒子聚合成 "Vela"；
           取代原先的转圈环形文字，左下角的品牌小字也随之移除。 */}
       {particleFx && <ParticleText text="Vela" className="tm-license-particles" height={150} />}
-      {/* #95 四行信息错落淡入（--sti 递增 40ms），与其它列表的 rb-row-in 语言一致 */}
+      {/* 四行信息错落淡入（--sti 递增 40ms），与其它列表的 rb-row-in 语言一致 */}
       <div className="tm-license-item" style={{ "--sti": 0 } as CSSProperties}>
         <span>{tr("版本")}</span>
-        <b>0.1.0</b>
+        {/* 此前硬编码 0.1.0，发版即撒谎——改用 package.json 注入的版本。 */}
+        <b>{APP_VERSION}</b>
       </div>
       <div className="tm-license-item" style={{ "--sti": 1 } as CSSProperties}>
         <span>{tr("作者")}</span>

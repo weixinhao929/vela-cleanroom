@@ -38,6 +38,7 @@ import {
   parseTimeList,
   parseTimetableRows,
   profilesPatch,
+  rawWeekNumber,
   sessionColors,
   sessionsInWeek,
   toISODate,
@@ -46,15 +47,25 @@ import {
   type TimetableProfile,
   type TimetableSession
 } from "../timetable";
-import { downloadIcs, draftConflicts, findConflicts, todayClassSlots, weekHolidayMarks } from "../timetable-extras";
+import {
+  downloadIcs,
+  draftConflicts,
+  findConflicts,
+  todayClassSlots,
+  weekHolidayMarks,
+  type TimetableConflict
+} from "../timetable-extras";
 import { WidgetSelect } from "../../components/WidgetSelect";
+import { DatePicker } from "../../components/DatePicker";
+import { useDismissable } from "../../lib/use-dismissable";
 import { downloadTimetableXlsx } from "../timetable-xlsx";
 import { sourceNotify } from "../../lib/notifications";
 import { markReminded } from "../../lib/remind-dedupe";
-import { DAY_NAMES, type Preview } from "./timetable-shared";
+import { DAY_NAMES, dialogKeyDown, type Preview } from "./timetable-shared";
 import { TimetableImportPreview, TimetableSessionEditor } from "./timetable-dialogs";
 import { useNow } from "../../lib/use-now";
 import { useSafeTimeout } from "../../lib/use-safe-timeout";
+import { uiZoom } from "../../lib/ui-zoom";
 
 /**
  * 课程表小组件（Wakeup 风格周视图）。
@@ -67,7 +78,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
   const tr = useT();
   const { config, update } = useWidgetConfig(instanceId);
   const safeTimeout = useSafeTimeout();
-  /* W-019 多方案：profiles 持有全部课表，data 始终镜像激活方案（旧读取方式零改动）。 */
+  /* 多方案：profiles 持有全部课表，data 始终镜像激活方案（旧读取方式零改动）。 */
   const profiles = useMemo(
     () => loadProfiles(config),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- config 整体即失效信号
@@ -124,10 +135,22 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
   const now = useNow();
   const today = now;
   const currentWeek = data ? weekNumberFor(today, data.semesterStart, data.totalWeeks) : 1;
+  /* 假期门控：weekNumberFor 会把学期前/后钳制进 [1,totalWeeks]，寒暑假期间
+     「第 1 周」会伪装成本周——今天高亮 / 回到本周 / 实时状态条必须以未钳制
+     的原始周号判定（今日课程/日历同步侧早已同口径拒绝越界日期）。 */
+  const rawWeek = data ? rawWeekNumber(today, data.semesterStart) : null;
+  const inSemester = !!data && rawWeek !== null && rawWeek >= 1 && rawWeek <= data.totalWeeks;
   const [viewWeek, setViewWeek] = useState(currentWeek);
   useEffect(() => {
     setViewWeek(currentWeek);
   }, [currentWeek]);
+  /* 切到总周数更少的方案时，浏览中的 viewWeek 可能越过新方案上限
+     （currentWeek 数值恰好相同时上面的 effect 不触发），徽标/空表按越界
+     周渲染。切换方案或总周数变化时钳到边界内。 */
+  useEffect(() => {
+    if (!data) return;
+    setViewWeek((w) => Math.min(w, data.totalWeeks));
+  }, [data, activeId]);
 
   const [preview, setPreview] = useState<Preview | null>(null);
   const [importError, setImportError] = useState("");
@@ -136,17 +159,19 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [confirmDeleteSession, setConfirmDeleteSession] = useState(false);
 
-  /** 悬停「同格多课」的课程块：浮层列出该时段全部课程（Portal 到 body）。 */
+  /** 悬停「同格多课」/「冲突计数」时的浮层：list = 该时段课程清单；
+   *  pairs = 全表冲突对（点条目可直接跳去编辑）。Portal 到 body。 */
   const [conflictHover, setConflictHover] = useState<{
     x: number;
     y: number;
     list: TimetableSession[];
+    pairs?: TimetableConflict[];
   } | null>(null);
   /** 冲突浮层退场：先播 120ms 缩放淡出再卸载（动画机会 #117）。 */
   const [tipClosing, setTipClosing] = useState(false);
   /* 退场定时器代数：120ms 内又悬停到别的冲突格时，旧定时器不得把新浮层卸掉。 */
   const tipCloseSeq = useRef(0);
-  const showConflictTip = (cell: { x: number; y: number; list: TimetableSession[] }) => {
+  const showConflictTip = (cell: { x: number; y: number; list: TimetableSession[]; pairs?: TimetableConflict[] }) => {
     tipCloseSeq.current++;
     setTipClosing(false);
     setConflictHover(cell);
@@ -154,11 +179,24 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
   const closeConflictTip = () => {
     const seq = ++tipCloseSeq.current;
     setTipClosing(true);
+    // 200ms：浮层条目可点击后需要留出从课程格移入浮层的指针飞行时间。
     safeTimeout(() => {
       if (tipCloseSeq.current !== seq) return;
       setConflictHover(null);
       setTipClosing(false);
-    }, 120);
+    }, 200);
+  };
+  /** 指针移入浮层本体：取消已排定的退场（悬停意图链）。 */
+  const holdConflictTip = () => {
+    tipCloseSeq.current++;
+    setTipClosing(false);
+  };
+  /** 点击浮层条目：立即卸载并打开对应课程的编辑弹层。 */
+  const pickTipSession = (id: string) => {
+    tipCloseSeq.current++;
+    setConflictHover(null);
+    setTipClosing(false);
+    setEditingId(id);
   };
   /* 触控板横向手势一次会连发几十个 wheel 事件，不节流会一口气跳多周。 */
   const lastWheelWeekAt = useRef(0);
@@ -200,6 +238,27 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
     if (!data) return;
     weekDir.current = dir;
     setViewWeek((w) => Math.max(1, Math.min(data.totalWeeks, w + dir)));
+  };
+
+  /* ---- 学期设置弹层（开学日期 / 总周数）：周次徽标即入口 ----
+     此前小组件本体没有任何改开学日期的地方，只能进设置窗口找「学期第一周
+     周一」；而周次算错（导入默认本周为第 1 周）是导入后第一件要改的事。 */
+  const [semOpen, setSemOpen] = useState(false);
+  const [semPos, setSemPos] = useState({ x: 0, y: 0 });
+  const semBtnRef = useRef<HTMLButtonElement>(null);
+  const semPopRef = useRef<HTMLDivElement>(null);
+  const openSemEdit = () => {
+    const r = semBtnRef.current?.getBoundingClientRect();
+    /* gBCR 视觉坐标 → 布局单位：÷uiZoom（.tt-sem-pop 为 fixed 定位，消费处
+       还与 innerWidth/innerHeight 布局值钳制比较；+6 偏移在布局空间不换算）。 */
+    setSemPos(r ? { x: r.left / uiZoom(), y: r.bottom / uiZoom() + 6 } : { x: 12, y: 12 });
+    setSemOpen((v) => !v);
+  };
+  useDismissable(semOpen, semPopRef, () => setSemOpen(false), { anchors: [semBtnRef], restoreFocus: true });
+  /** 学期字段写入当前方案（沿用 writeActive 的 profiles + 镜像双写）。 */
+  const writeSemester = (patch: { semesterStart?: string; totalWeeks?: number }) => {
+    if (!data) return;
+    writeActive({ ...data, ...patch });
   };
 
   /** 保存新建/编辑的课程（与现有课时间重叠时先确认）。 */
@@ -266,7 +325,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
     setConfirmDeleteSession(false);
   };
 
-  /* W-023 总览模式：开启后不按周次过滤，单双周课程全部可见。 */
+  /* 总览模式：开启后不按周次过滤，单双周课程全部可见。 */
   const showAllWeeks = config.showAllWeeks === true;
   const weekSessions = useMemo(
     () => (data ? (showAllWeeks ? data.sessions : sessionsInWeek(data.sessions, viewWeek)) : []),
@@ -295,7 +354,10 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
     return () => el.removeEventListener("wheel", onWheel);
   }, [viewWeek, maxSection, showTimes]);
   const todayDay = ((today.getDay() + 6) % 7) + 1;
-  const isThisWeek = viewWeek === currentWeek;
+  /* 假期/学期外不算「本周」（见 rawWeek 注释）；仅工作日列与节假日弱化为展示开关。 */
+  const isThisWeek = inSemester && viewWeek === currentWeek;
+  const dayNames = config.hideWeekday === true ? DAY_NAMES.slice(0, 5) : DAY_NAMES;
+  const dimRestDay = config.dimRestDay !== false;
   const weekDates = useMemo(() => {
     if (!data) return null;
     const start = parseISODate(data.semesterStart);
@@ -344,15 +406,17 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
     return map;
   }, [weekSessions]);
 
-  /** 全表冲突：涉事课程的 id 集合（周视图中以红色描边提示）。 */
+  /** 全表冲突：涉事课程的 id 集合（周视图中以红色描边提示）+ 冲突对
+      （头部计数按钮悬停时逐对列出）。 */
+  const conflicts = useMemo(() => findConflicts(data?.sessions ?? []), [data]);
   const conflictIds = useMemo(() => {
     const set = new Set<string>();
-    for (const c of findConflicts(data?.sessions ?? [])) {
+    for (const c of conflicts) {
       set.add(c.a.id);
       set.add(c.b.id);
     }
     return set;
-  }, [data]);
+  }, [conflicts]);
 
   /** 当前视图周的节假日标注（休/班）。 */
   const holidayMarks = useMemo(
@@ -420,11 +484,14 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
       safeTimeout(() => setConfirmClear(false), 2000);
       return;
     }
-    writeActive(null);
+    // 「清空课表」清空的是课程条目，保留方案本身（学期起始/总周数）——
+    // writeActive(null) 的语义是删除整个激活方案，多方案下清空当前课表会
+    // 连带把方案删掉；删方案走下方方案管理的专门入口。
+    if (data) writeActive({ ...data, sessions: [] });
     setConfirmClear(false);
   };
 
-  /* ---- W-019 方案管理：新建（复制当前）/ 重命名 / 删除 ---- */
+  /* ---- 方案管理：新建（复制当前）/ 重命名 / 删除 ---- */
   const addProfile = async () => {
     const name = await promptDialog({
       title: tr("新建课表方案（复制当前课程）"),
@@ -477,7 +544,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
     update(profilesPatch(rest, rest[0].id) as unknown as Record<string, unknown>);
   };
 
-  /* ---- W-021/022 今日课程：每 30s 对表一次当前节次与下节课 ---- */
+  /* ---- /022 今日课程：每 30s 对表一次当前节次与下节课 ---- */
   const todaySlots = useMemo(
     () => (data ? todayClassSlots(data, sectionTimes, sectionTimesEnd, now) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- now 每分钟级变化
@@ -488,26 +555,36 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
   const nextSlot = todaySlots.find((s) => s.startMin > nowMin) ?? null;
   const liveId = currentSlot?.session.id ?? null;
 
-  /* W-021 上课前提醒：下节课开始前推送一次（localStorage 去重）。
+  /* 上课前提醒：下节课开始前推送一次（localStorage 去重）。
      审计修复：原 [8,10] 分钟窗过窄，睡眠/关闭期间错过即永久漏发——
-     放宽为开课前 30 分钟至开课后 45 分钟内到点即补发。 */
+     放宽为开课前 30 分钟；**已开课**的当节在 45 分钟内也补发（睡眠醒来
+     场景）——nextSlot 恒满足 startMin > nowMin，`lead < -45` 是死分支，
+     补发必须看 currentSlot。 */
   useEffect(() => {
-    if (config.classReminder === false || !nextSlot) return;
-    const lead = nextSlot.startMin - nowMin;
-    if (lead > 30 || lead < -45) return;
+    if (config.classReminder === false) return;
+    const candidate =
+      nextSlot && nextSlot.startMin - nowMin <= 30
+        ? nextSlot
+        : currentSlot && nowMin - currentSlot.startMin <= 45
+          ? currentSlot
+          : null;
+    if (!candidate) return;
+    const lead = candidate.startMin - nowMin;
     // 去重键按天写入、由 markReminded 顺带清扫过期键（此前永不清除、无限堆积）。
     const today = toISODate(now);
-    const key = `focus-desk.tt-remind.${nextSlot.session.id}.${today}`;
+    const key = `focus-desk.tt-remind.${candidate.session.id}.${today}`;
     if (!markReminded(key, "focus-desk.tt-remind.", today)) return;
     void sourceNotify(
       "timetable",
       tr("上课提醒"),
-      tr("{n} 分钟后上 {name}")
-        .replace("{n}", String(Math.max(lead, 0)))
-        .replace("{name}", nextSlot.session.name) + (nextSlot.session.location ? ` · ${nextSlot.session.location}` : "")
+      /* 占位符改走 tr 的 params 通道（fillParams
+         的函数替换天然免疫 $&/$' 注入）——课程名是用户导入文本，手工
+         .replace 的替换串会把它当特殊模式解释。 */
+      tr("{n} 分钟后上 {name}", { n: Math.max(lead, 0), name: candidate.session.name }) +
+        (candidate.session.location ? ` · ${candidate.session.location}` : "")
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 30s 节拍轮询
-  }, [Math.floor(now.getTime() / 30000), config.classReminder, nextSlot?.session.id, tr]);
+  }, [Math.floor(now.getTime() / 30000), config.classReminder, nextSlot?.session.id, currentSlot?.session.id, tr]);
 
   /* ---- 弹层（导入预览 / 课程编辑）在空态与周视图中都要渲染。
      首次导入解析成功后 data 仍为 null，若只在周视图渲染弹层，
@@ -570,7 +647,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
 
   return (
     <div className="tt" key="tt-grid">
-      {/* W-019 方案栏：多套课表（本学期/下学期、单双周）一键切换。 */}
+      {/* 方案栏：多套课表（本学期/下学期、单双周）一键切换。 */}
       <div className="tt-profile-bar">
         <WidgetSelect
           value={activeId}
@@ -620,9 +697,20 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
           >
             <ChevronLeft size={14} />
           </button>
-          <span key={viewWeek} className={`tt-week-badge${isThisWeek ? " now" : ""}`}>
+          <button
+            type="button"
+            key={viewWeek}
+            ref={semBtnRef}
+            className={`tt-week-badge${isThisWeek ? " now" : ""}`}
+            onClick={openSemEdit}
+            data-interactive
+            title={tr("学期设置：第一周周一 / 总周数")}
+            aria-label={tr("学期设置：第一周周一 / 总周数")}
+            aria-haspopup="dialog"
+            aria-expanded={semOpen}
+          >
             {tr("第 {n} 周").replace("{n}", String(viewWeek))}
-          </span>
+          </button>
           <button
             className="tt-nav-btn"
             disabled={viewWeek >= data.totalWeeks}
@@ -634,7 +722,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
           </button>
         </div>
         <div className="tt-header-actions">
-          {/* W-023 总览开关：不按周次过滤，单双周全部课程同屏。 */}
+          {/* 总览开关：不按周次过滤，单双周全部课程同屏。 */}
           <button
             className={`tt-mini-btn${showAllWeeks ? " on" : ""}`}
             onClick={() => update({ showAllWeeks: !showAllWeeks })}
@@ -644,7 +732,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
           >
             <Layers size={12} />
           </button>
-          {/* W-024 视图切换：网格 / 列表。 */}
+          {/* 视图切换：网格 / 列表。 */}
           <button
             className={`tt-mini-btn${config.layout === "list" ? " on" : ""}`}
             onClick={() => update({ layout: config.layout === "list" ? "grid" : "list" })}
@@ -660,6 +748,21 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
               data-interactive
               title={tr("存在时间冲突的课程，红色描边标记")}
               aria-label={tr("课程冲突")}
+              aria-expanded={!!conflictHover?.pairs}
+              onMouseEnter={(e) => {
+                /* gBCR 视觉坐标 → 布局单位：÷uiZoom（.tt-conflict-tooltip 为
+                   fixed 定位；+6 偏移在布局空间不换算）。 */
+                const r = e.currentTarget.getBoundingClientRect();
+                const z = uiZoom();
+                showConflictTip({ x: r.left / z, y: r.bottom / z + 6, list: [], pairs: conflicts.slice(0, 12) });
+              }}
+              onMouseLeave={() => closeConflictTip()}
+              onFocus={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                const z = uiZoom();
+                showConflictTip({ x: r.left / z, y: r.bottom / z + 6, list: [], pairs: conflicts.slice(0, 12) });
+              }}
+              onBlur={() => closeConflictTip()}
             >
               <CircleAlert size={12} />{" "}
               <span className="tt-conflict-num" key={conflictIds.size}>
@@ -667,7 +770,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
               </span>
             </button>
           )}
-          {!isThisWeek && (
+          {!isThisWeek && inSemester && (
             <button
               className="tt-mini-btn"
               onClick={() => setViewWeek(currentWeek)}
@@ -702,7 +805,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
           <button
             className={`tt-mini-btn${exported === "ics" ? " done" : ""}`}
             onClick={() => {
-              downloadIcs(data, sectionTimes);
+              downloadIcs(data, sectionTimes, sectionTimesEnd);
               markExported("ics");
             }}
             data-interactive
@@ -732,18 +835,77 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
         </div>
       </div>
 
+      {/* 学期设置弹层：开学日期 / 总周数。Portal 出卡片（WidgetCard 会裁剪
+          溢出内容）；DatePicker 的日历弹层 absolute 定位在其内，容器不得裁剪。 */}
+      {semOpen &&
+        data &&
+        createPortal(
+          (() => {
+            const left = Math.max(8, Math.min(semPos.x, window.innerWidth - 250));
+            const top = Math.max(8, Math.min(semPos.y, window.innerHeight - 250));
+            return (
+              <div
+                className="tt-sem-pop"
+                ref={semPopRef}
+                role="dialog"
+                aria-label={tr("学期设置")}
+                style={{ left, top }}
+                onKeyDown={(e) => dialogKeyDown(e, () => setSemOpen(false))}
+              >
+                <div className="tt-sem-title">{tr("学期设置")}</div>
+                <div className="tt-sem-row">
+                  <span className="tt-sem-label">{tr("第一周周一")}</span>
+                  <DatePicker
+                    value={data.semesterStart}
+                    onChange={(v) => {
+                      if (v) writeSemester({ semesterStart: v });
+                    }}
+                    ariaLabel={tr("第一周周一")}
+                  />
+                </div>
+                <div className="tt-sem-row">
+                  <span className="tt-sem-label">{tr("总周数")}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={60}
+                    className="tt-sem-weeks"
+                    value={data.totalWeeks}
+                    aria-label={tr("总周数")}
+                    onChange={(e) =>
+                      writeSemester({ totalWeeks: Math.max(1, Math.min(60, Number(e.target.value) || 1)) })
+                    }
+                    data-interactive
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="tt-sem-quick"
+                  onClick={() => writeSemester({ semesterStart: toISODate(mondayOf(new Date())) })}
+                  data-interactive
+                >
+                  {tr("以本周为第 1 周")}
+                </button>
+                <div className="tt-sem-hint">{tr("开学日期决定当前是第几周")}</div>
+              </div>
+            );
+          })(),
+          document.body
+        )}
+
       {/* 第 1 行为星期表头，节次从第 2 行起；所有格子显式定位，跨节课程
           用 grid-row span 占位，被覆盖的格子渲染 null。 */}
-      {/* W-024 列表视图：按天分组的清单（窄尺寸小组件更易读）。 */}
+      {/* 列表视图：按天分组的清单（窄尺寸小组件更易读）。 */}
       {config.layout === "list" ? (
         <div
           className={`tt-list${compact ? " compact" : ""}`}
           key={`tt-list:${viewWeek}:${showAllWeeks ? 1 : 0}`}
           style={{ ["--tt-dir" as string]: String(weekDir.current) }}
         >
-          {DAY_NAMES.map((d, di) => {
+          {dayNames.map((d, di) => {
             const daySessions = byDay.get(di + 1) ?? [];
             const isTodayCol = isThisWeek && todayDay === di + 1;
+            const offday = dimRestDay && holidayMarks[di] === "rest";
             return (
               <div
                 key={d}
@@ -763,7 +925,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
                   return (
                     <div
                       key={s.id}
-                      className={`tt-list-item${liveId === s.id && isTodayCol ? " live" : ""}`}
+                      className={`tt-list-item${liveId === s.id && isTodayCol ? " live" : ""}${offday ? " offday" : ""}`}
                       style={{
                         background: `linear-gradient(135deg, color-mix(in srgb, ${c1} 18%, transparent), color-mix(in srgb, ${c2} 27%, transparent))`,
                         borderColor: `color-mix(in srgb, ${c1} 40%, transparent)`,
@@ -778,7 +940,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
                           setEditingId(s.id);
                         }
                       }}
-                      title={tr("点击编辑课程")}
+                      title={tr("点击编辑课程") + (offday ? ` · ${tr("法定节假日，课程可能停课")}` : "")}
                       data-interactive
                     >
                       <span className="tt-list-item-bar" style={{ background: c1 }} />
@@ -852,7 +1014,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
           <div className="tt-corner" style={{ gridRow: 1, gridColumn: 1 }}>
             {tr("节次")}
           </div>
-          {DAY_NAMES.map((d, i) => (
+          {dayNames.map((d, i) => (
             <div
               key={d}
               className={`tt-day-head${isThisWeek && todayDay === i + 1 ? " today" : ""}`}
@@ -881,7 +1043,7 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
               )}
             </div>
           ))}
-          {DAY_NAMES.map((_, di) =>
+          {dayNames.map((_, di) =>
             sections.map((sec) => {
               const key = `${di + 1}:${sec}`;
               const list = byCell.get(key);
@@ -892,12 +1054,14 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
                   const [c1, c2] = sessionColors(s);
                   /* 同格多课（本周同时段叠课）：左上角数字角标 + 悬停浮层列出全部课程。 */
                   const multi = list.length > 1;
-                  /* W-022 当前节次实时高亮（正在上的课）。 */
+                  /* 当前节次实时高亮（正在上的课）。 */
                   const live = liveId === s.id && isThisWeek && todayDay === s.day;
+                  /* 法定节假日当天的课程弱化显示（可能停课）。 */
+                  const offday = dimRestDay && holidayMarks[di] === "rest";
                   return (
                     <div
                       key={key}
-                      className={`tt-course${multi ? " multi" : ""}${isThisWeek && todayDay === s.day ? " today" : ""}${conflictIds.has(s.id) ? " conflict" : ""}${live ? " live" : ""}`}
+                      className={`tt-course${multi ? " multi" : ""}${isThisWeek && todayDay === s.day ? " today" : ""}${conflictIds.has(s.id) ? " conflict" : ""}${live ? " live" : ""}${offday ? " offday" : ""}`}
                       style={{
                         gridRow: `${sec + 1} / span ${span}`,
                         gridColumn: di + 2,
@@ -907,8 +1071,10 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
                       onMouseEnter={
                         multi
                           ? (e) => {
+                              /* gBCR 视觉坐标 → 布局单位：÷uiZoom（fixed 浮层）。 */
                               const r = e.currentTarget.getBoundingClientRect();
-                              showConflictTip({ x: r.left, y: r.top, list: [...list] });
+                              const z = uiZoom();
+                              showConflictTip({ x: r.left / z, y: r.top / z, list: [...list] });
                             }
                           : undefined
                       }
@@ -917,12 +1083,13 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
                         multi
                           ? (e) => {
                               const r = e.currentTarget.getBoundingClientRect();
-                              showConflictTip({ x: r.left, y: r.top, list: [...list] });
+                              const z = uiZoom();
+                              showConflictTip({ x: r.left / z, y: r.top / z, list: [...list] });
                             }
                           : undefined
                       }
                       onBlur={multi ? () => closeConflictTip() : undefined}
-                      title={`${s.name} ${s.weeksLabel ? `· ${s.weeksLabel}` : ""}${s.location ? ` · ${s.location}` : ""}${s.teacher ? ` · ${s.teacher}` : ""}`}
+                      title={`${s.name} ${s.weeksLabel ? `· ${s.weeksLabel}` : ""}${s.location ? ` · ${s.location}` : ""}${s.teacher ? ` · ${s.teacher}` : ""}${offday ? ` · ${tr("法定节假日，课程可能停课")}` : ""}`}
                       role="button"
                       tabIndex={0}
                       aria-label={
@@ -964,18 +1131,24 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
       )}
 
       <div className="tt-footer">
-        {/* W-022 底部实时状态：正在上课 / 下节课倒计时。 */}
-        {isThisWeek && currentSlot
-          ? tr("正在上 {name}").replace("{name}", currentSlot.session.name) +
-            ` · ${tr("距下课 {n} 分钟").replace("{n}", String(Math.max(0, currentSlot.endMin - nowMin)))}`
-          : isThisWeek && nextSlot
-            ? tr("下节课 {time} {name}").replace("{time}", nextSlot.start).replace("{name}", nextSlot.session.name) +
-              ` · ${tr("{n} 分钟后").replace("{n}", String(Math.max(0, nextSlot.startMin - nowMin)))}`
-            : isThisWeek
-              ? todayCount > 0
-                ? tr("今日 {n} 节课").replace("{n}", String(todayCount))
-                : tr("今日无课")
-              : tr("查看历史 / 未来周次")}
+        {/* 底部实时状态：正在上课 / 下节课倒计时；学期外提示假期。 */}
+        {!inSemester
+          ? rawWeek !== null && rawWeek < 1
+            ? tr("未开学")
+            : tr("学期已结束")
+          : isThisWeek && currentSlot
+            ? /* 用户文本（课程名）经 tr 的 params 通道
+                 替换，杜绝手工 .replace 的 $ 模式注入。 */
+              tr("正在上 {name}", { name: currentSlot.session.name }) +
+              ` · ${tr("距下课 {n} 分钟", { n: Math.max(0, currentSlot.endMin - nowMin) })}`
+            : isThisWeek && nextSlot
+              ? tr("下节课 {time} {name}", { time: nextSlot.start, name: nextSlot.session.name }) +
+                ` · ${tr("{n} 分钟后", { n: Math.max(0, nextSlot.startMin - nowMin) })}`
+              : isThisWeek
+                ? todayCount > 0
+                  ? tr("今日 {n} 节课").replace("{n}", String(todayCount))
+                  : tr("今日无课")
+                : tr("查看历史 / 未来周次")}
         {importError && (
           <span className="tt-error">
             <CircleAlert size={12} /> {importError}
@@ -985,37 +1158,87 @@ export function TimetableWidget({ instanceId }: { instanceId: string }) {
 
       {conflictHover &&
         createPortal(
-          <div
-            className={`tt-conflict-tooltip${tipClosing ? " out" : ""}`}
-            style={{ left: conflictHover.x, top: conflictHover.y }}
-            role="tooltip"
-          >
-            <div className="tt-conflict-tooltip-title">
-              <CircleAlert size={11} />
-              {tr("该时段有 {n} 门课").replace("{n}", String(conflictHover.list.length))}
-            </div>
-            {conflictHover.list.map((s) => {
-              const [c1] = sessionColors(s);
-              return (
-                <div key={s.id} className="tt-conflict-item">
-                  <span className="tt-conflict-item-dot" style={{ background: c1 }} />
-                  <div className="tt-conflict-item-body">
-                    <div className="tt-conflict-item-name">{s.name}</div>
-                    <div className="tt-conflict-item-meta">
-                      {s.startSection === s.endSection
-                        ? tr("第 {n} 节").replace("{n}", String(s.startSection))
-                        : tr("第 {a}-{b} 节")
-                            .replace("{a}", String(s.startSection))
-                            .replace("{b}", String(s.endSection))}
-                      {s.location ? ` · ${s.location}` : ""}
-                      {s.teacher ? ` · ${s.teacher}` : ""}
+          (() => {
+            /* 视口钳制：浮层贴边时收回可视区（250px 定宽 + 每条约 46px 高的
+               保守估计），避免窄窗口里右/下溢出看不见。 */
+            const items = conflictHover.pairs?.length ?? conflictHover.list.length;
+            const left = Math.max(8, Math.min(conflictHover.x, window.innerWidth - 266));
+            const top = Math.max(8, Math.min(conflictHover.y, window.innerHeight - 40 - items * 46));
+            return (
+              <div
+                className={`tt-conflict-tooltip interactive${tipClosing ? " out" : ""}`}
+                style={{ left, top }}
+                role="tooltip"
+                onMouseEnter={holdConflictTip}
+                onMouseLeave={closeConflictTip}
+              >
+                {conflictHover.pairs ? (
+                  <>
+                    <div className="tt-conflict-tooltip-title">
+                      <CircleAlert size={11} />
+                      {tr("冲突课程")}
                     </div>
-                    {s.weeksLabel && <div className="tt-conflict-item-weeks">{formatWeeks(s.weeks)}</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>,
+                    {conflictHover.pairs.map((c, i) => (
+                      <button
+                        key={`${c.a.id}:${c.b.id}:${i}`}
+                        type="button"
+                        className="tt-conflict-item pair"
+                        onClick={() => pickTipSession(c.a.id)}
+                        data-interactive
+                        title={tr("点击编辑课程")}
+                      >
+                        <span className="tt-conflict-item-dot" style={{ background: sessionColors(c.a)[0] }} />
+                        <div className="tt-conflict-item-body">
+                          <div className="tt-conflict-item-name">
+                            {c.a.name} ↔ {c.b.name}
+                          </div>
+                          <div className="tt-conflict-item-meta">
+                            {tr(`星期${DAY_NAMES[c.day - 1]}`)}
+                            {c.weeks.length ? ` · ${formatWeeks(c.weeks)}` : ` · ${tr("每周都上")}`}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    <div className="tt-conflict-tooltip-title">
+                      <CircleAlert size={11} />
+                      {tr("该时段有 {n} 门课").replace("{n}", String(conflictHover.list.length))}
+                    </div>
+                    {conflictHover.list.map((s) => {
+                      const [c1] = sessionColors(s);
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          className="tt-conflict-item"
+                          onClick={() => pickTipSession(s.id)}
+                          data-interactive
+                          title={tr("点击编辑课程")}
+                        >
+                          <span className="tt-conflict-item-dot" style={{ background: c1 }} />
+                          <div className="tt-conflict-item-body">
+                            <div className="tt-conflict-item-name">{s.name}</div>
+                            <div className="tt-conflict-item-meta">
+                              {s.startSection === s.endSection
+                                ? tr("第 {n} 节").replace("{n}", String(s.startSection))
+                                : tr("第 {a}-{b} 节")
+                                    .replace("{a}", String(s.startSection))
+                                    .replace("{b}", String(s.endSection))}
+                              {s.location ? ` · ${s.location}` : ""}
+                              {s.teacher ? ` · ${s.teacher}` : ""}
+                            </div>
+                            {s.weeksLabel && <div className="tt-conflict-item-weeks">{formatWeeks(s.weeks)}</div>}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            );
+          })(),
           document.body
         )}
 

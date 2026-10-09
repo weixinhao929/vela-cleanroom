@@ -22,7 +22,7 @@ pub struct FileEntry {
 fn fmt_modified(secs: Option<std::time::SystemTime>) -> Option<String> {
     let secs = secs?;
     let dt: chrono::DateTime<chrono::Local> = secs.into();
-    // C-11: emit RFC3339 with an explicit local offset instead of the ambiguous
+    // emit with an explicit local offset instead of the ambiguous
     // "YYYY-MM-DD HH:mm" (space-separated, no zone) which `new Date()` parses as
     // implementation-defined behavior across engines.
     Some(dt.to_rfc3339())
@@ -78,17 +78,25 @@ fn make_thumb(src: &std::path::Path, thumbs: &std::path::Path) -> Option<std::pa
     }
     // 扩展名可能伪装（JPEG 字节存成 .png），`image::open` 按扩展名选解码器
     // 会失败；与 wallpaper::compute_info 一致按魔数嗅探，嗅探不出再按扩展名兜底。
+    // 像素上限必须在 **decode() 之前**用头信息量尺寸——decode 会按 w*h*4
+    // 全量分配内存，50MB 的高压缩比 PNG 声明 20000×20000 时解码即数 GB（OOM），
+    // 事后再查 `img.width()` 已经晚了。into_dimensions 只读头。
+    const MAX_PIXELS: u64 = 8192 * 8192;
+    let (dim_w, dim_h) = image::ImageReader::open(src)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    if dim_w as u64 * dim_h as u64 > MAX_PIXELS {
+        return None;
+    }
     let img = image::ImageReader::open(src)
         .ok()?
         .with_guessed_format()
         .ok()?
         .decode()
         .ok()?;
-    // 解码后校验像素总量（内存占用 ≈ w*h*4 字节），32k×32k 也会 OOM。
-    const MAX_PIXELS: u64 = 8192 * 8192;
-    if img.width() as u64 * img.height() as u64 > MAX_PIXELS {
-        return None;
-    }
     // 原图已经比缩略图还小，再生成一份纯属浪费磁盘。
     if img.width() <= THUMB_MAX_EDGE && img.height() <= THUMB_MAX_EDGE {
         return None;
@@ -111,7 +119,7 @@ pub async fn gallery_import_file(
     app: tauri::AppHandle,
     path: String,
 ) -> Result<GalleryImport, String> {
-    // S1（审计）：src 为任意路径，无闸门时不可信页面可把磁盘任意图片拷入
+    // src 为任意路径，无闸门时不可信页面可把磁盘任意图片拷入
     // gallery 再经 asset 协议读出（本地图片外泄通道）。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
@@ -129,7 +137,7 @@ pub async fn gallery_import_file(
         if !GALLERY_EXTS.contains(&ext.as_str()) {
             return Err(format!("不支持的图片格式: .{ext}"));
         }
-        // E-4：导入前按原文件体积拦截，避免扩展名伪装的超大文件被完整复制进
+        // 导入前按原文件体积拦截，避免扩展名伪装的超大文件被完整复制进
         // app data 后才在缩略图阶段被拒（与 read_image_data_url 上限对齐）。
         const GALLERY_MAX_BYTES: u64 = 50 * 1024 * 1024;
         let size = fs::metadata(src)
@@ -171,7 +179,7 @@ pub async fn gallery_import_file(
     .map_err(|e| format!("图片导入任务失败: {e}"))?
 }
 
-/// [PASTE]（ZTools 借鉴 #1）粘贴图片 blob 入图库：与 gallery_import_file 同一
+/// [PASTE]粘贴图片 blob 入图库：与 gallery_import_file 同一
 /// 套校验（扩展名白名单按 name 后缀、50MB 上限）与落盘/缩略图流程，只是
 /// 数据来自内存字节（WebView 粘贴板拿不到磁盘路径）。返回导入结果。
 #[tauri::command]
@@ -267,7 +275,12 @@ pub async fn gallery_delete_file(
 /// 清理孤儿缩略图：thumbs/ 里没有对应原图的文件。
 /// 历史版本删除原图时不会清理缩略图，升级后调用一次即可回收空间。
 #[tauri::command]
-pub async fn gallery_clean_thumbs(app: tauri::AppHandle) -> Result<u32, String> {
+pub async fn gallery_clean_thumbs(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<u32, String> {
+    // 无闸门的删除类命令（清 thumbs 缓存）不能对任意 webview 开放。
+    crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let dir = gallery_dir(&app)?;
         let thumbs = dir.join("thumbs");
@@ -457,7 +470,7 @@ mod gallery_tests {
 /// 32 MiB and restricted to .json/.txt/.csv so it can't be abused to slurp
 /// arbitrary large binaries; the path always comes from the user's own file
 /// picker dialog.
-/// C-7：恢复备份只发生在设置窗口，加窗口闸门，禁止 widget-*/quick-note 调用。
+/// 恢复备份只发生在设置窗口，加窗口闸门，禁止 widget-*/quick-note 调用。
 #[tauri::command]
 pub async fn read_text_file(window: tauri::Window, path: String) -> Result<String, String> {
     crate::require_settings_window(&window)?;
@@ -485,7 +498,7 @@ pub async fn read_text_file(window: tauri::Window, path: String) -> Result<Strin
     .map_err(|e| format!("读取任务失败: {e}"))?
 }
 
-/// B5 文件内容预览：读取文本类文件的
+/// 文件内容预览：读取文本类文件的
 /// 头几个字节供列表卡片渲染前几行。与 `read_text_file`（设置窗专用、整读、
 /// 备份恢复用）不同，本命令面向全部受信窗口且只取头部：
 /// - 白名单扩展名（代码/文档/配置类纯文本）；
@@ -554,7 +567,7 @@ pub async fn read_text_preview(
 /// Async + spawn_blocking: directory scans must never run on the main thread
 /// (a sync command would freeze every webview window).
 ///
-/// `show_hidden` opts in to dot-prefixed entries (W-074 隐藏文件开关接通到
+/// `show_hidden` opts in to dot-prefixed entries (隐藏文件开关接通到
 /// 后端；此前 Rust 侧无条件过滤，前端的开关形同虚设)。
 #[tauri::command]
 pub async fn list_directory(
@@ -563,7 +576,7 @@ pub async fn list_directory(
     path: Option<String>,
     show_hidden: Option<bool>,
 ) -> Result<Vec<FileEntry>, String> {
-    // S1（审计）：任意目录列举能力与 open_path 同级，统一收口到受信窗口。
+    // 任意目录列举能力与 open_path 同级，统一收口到受信窗口。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
     }
@@ -581,15 +594,44 @@ pub async fn list_directory(
             return Err(format!("不是有效目录: {}", dir.display()));
         }
 
+        // （上限 + 系统隐藏属性）：巨型目录全量推给前端会拖垮序列化与渲染；
+        // Windows 的系统隐藏文件（desktop.ini / NTUSER.DAT / 用户标记隐藏）不
+        // 以 `.` 开头，dot 前缀过滤漏掉它们——补 FILE_ATTRIBUTE_HIDDEN 判定。
+
+        // 截断次序：此前按枚举顺序直接截 2000 再排序——哪 2000 条存活
+        // 取决于目录枚举序（NTFS 恰好近似字母序，exFAT/U 盘/网络共享是任意
+        // 序），截断可能把目录条目整批切掉、留下“看起来完整”的列表。改为
+        // 先收集到 SCAN 上限、排序后再截 MAX：≤SCAN 的目录截断结果与枚举
+        // 顺序无关；stat 数仍受 SCAN 约束（更大的目录退回近似有序截断）。
+        const MAX_ENTRIES: usize = 2000;
+        const SCAN_CAP: usize = 20_000;
         let mut entries = Vec::new();
+        let mut truncated = false;
         let read = fs::read_dir(&dir).map_err(|e| format!("无法读取目录: {e}"))?;
         for entry in read.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // Skip hidden/system files (leading dot) to keep the widget tidy.
-            if !show_hidden && name.starts_with('.') {
-                continue;
+            if entries.len() >= SCAN_CAP {
+                truncated = true;
+                break;
             }
+            let name = entry.file_name().to_string_lossy().into_owned();
             let meta = entry.metadata().ok();
+            if !show_hidden {
+                // Skip hidden/system files (leading dot or Windows hidden attribute).
+                if name.starts_with('.') {
+                    continue;
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if meta
+                        .as_ref()
+                        .map(|m| m.file_attributes() & 0x2 != 0) // FILE_ATTRIBUTE_HIDDEN
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                }
+            }
             let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
             let size = if is_dir {
                 None
@@ -605,13 +647,22 @@ pub async fn list_directory(
                 modified,
             });
         }
-
         // Directories first, then files; each group sorted by name.
-        entries.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        // （排序 key 预计算）：to_lowercase 每次比较分配两个 String，2 万条
+        // 目录的 O(n log n) 次比较放大成可观的分配压力——sort_by_cached_key
+        // 每元素只算一次。
+        entries.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
+        // 排序在截断之前（见上面的截断次序注释）：确定性存活集。
+        if entries.len() > MAX_ENTRIES {
+            entries.truncate(MAX_ENTRIES);
+            truncated = true;
+        }
+        if truncated {
+            log::debug!(
+                "list_directory: 目录 {} 条目超过 {MAX_ENTRIES}，已截断",
+                dir.display()
+            );
+        }
 
         Ok(entries)
     })
@@ -620,7 +671,7 @@ pub async fn list_directory(
 }
 
 /* ================================================================== *
- * G11 命令面板文件搜索：预算式递归扫描（path-like 查询触发）。
+ * 命令面板文件搜索：预算式递归扫描（path-like 查询触发）。
  * ------------------------------------------------------------------ */
 
 #[derive(Serialize, Clone)]
@@ -702,7 +753,7 @@ fn search_roots_core(
 }
 
 /// 排序：前缀命中在前，其次按修改时间新→旧；截断到 limit。
-/// modified 是带本地偏移的 RFC3339，同偏移下字典序等价时间序。
+/// modified 是带本地偏移的 ，同偏移下字典序等价时间序。
 fn finalize_hits(mut hits: Vec<FileHit>, q: &str, limit: usize) -> Vec<FileHit> {
     hits.sort_by(|a, b| {
         let pa = a.name.to_lowercase().starts_with(q);
@@ -715,7 +766,7 @@ fn finalize_hits(mut hits: Vec<FileHit>, q: &str, limit: usize) -> Vec<FileHit> 
     hits
 }
 
-/// G11：在用户常用目录（桌面/文档/下载/图片/音乐/视频）递归按文件名
+/// 在用户常用目录（桌面/文档/下载/图片/音乐/视频）递归按文件名
 /// 子串匹配。300ms 软超时 + 深度 ≤6 + 噪声目录跳过；spawn_blocking，
 /// 目录遍历不占主线程。query < 2 字符直接回空（不值得扫盘）。
 #[tauri::command]
@@ -725,7 +776,7 @@ pub async fn search_files(
     query: String,
     limit: Option<u32>,
 ) -> Result<Vec<FileHit>, String> {
-    // S1（审计）：与 open_path / list_directory 同级的任意目录读取能力，
+    // 与 open_path / list_directory 同级的任意目录读取能力，
     // 统一收口到受信窗口。
     if !crate::trusted_window(window.label()) {
         return Err("untrusted window".into());
@@ -758,7 +809,7 @@ pub async fn search_files(
     .map_err(|e| format!("文件搜索任务失败: {e}"))?
 }
 
-/// C-14：spawn 出的子进程交后台线程 `wait()` 回收。直接 drop `Child` 会让
+/// spawn 出的子进程交后台线程 `wait()` 回收。直接 drop `Child` 会让
 /// 进程句柄一直挂到 explorer 退出，常驻应用每打开一次文件/链接就累积一个。
 /// 与 lib.rs `open_log_dir` 同一做法。
 pub(crate) fn reap_child(mut child: std::process::Child) {
@@ -775,7 +826,7 @@ pub(crate) fn reap_child(mut child: std::process::Child) {
 /// interpreted as shell metacharacters (command injection).
 fn open_path_impl(path: &str) -> Result<(), String> {
     // A URL (http/https/mailto/…) is opened via the default handler.
-    if path.contains("://") {
+    if has_url_scheme(path) {
         return std::process::Command::new("explorer")
             .arg(path)
             .spawn()
@@ -783,7 +834,7 @@ fn open_path_impl(path: &str) -> Result<(), String> {
             .map_err(|e| format!("无法打开链接: {e}"));
     }
 
-    // Shell namespace URIs (shell:AppsFolder\… for UWP apps, W-090). These are
+    // Shell namespace URIs (shell:AppsFolder\… for UWP apps, ). These are
     // not filesystem paths, so skip the existence check below.
     if path.starts_with("shell:") {
         return std::process::Command::new("explorer")
@@ -793,7 +844,7 @@ fn open_path_impl(path: &str) -> Result<(), String> {
             .map_err(|e| format!("无法打开: {e}"));
     }
 
-    // [MSET]（ZTools 借鉴 #3）系统设置深链 ms-settings:<page>：scheme URI 由
+    // [MSET]系统设置深链 ms-settings:<page>：scheme URI 由
     // Shell 解析（explorer 直接打开设置应用的目标页），同样不走存在性检查。
     if path.starts_with("ms-settings:") {
         return std::process::Command::new("explorer")
@@ -822,7 +873,7 @@ fn open_path_impl(path: &str) -> Result<(), String> {
 /// 进程创建本身也要几十毫秒 —— 同步命令跑在主线程，两者都会冻结所有窗口。
 #[tauri::command]
 pub async fn open_path(window: tauri::Window, path: String) -> Result<(), String> {
-    // S1（审计）：open_path 经系统默认处理器可启动任意可执行文件/脚本，
+    // open_path 经系统默认处理器可启动任意可执行文件/脚本，
     // 必须限定受信窗口（quick-note 等注入面不可达）。Window 由 Tauri 自动
     // 注入，前端 invoke 参数不变。
     if !crate::trusted_window(window.label()) {
@@ -853,7 +904,7 @@ pub async fn classify_path(
 }
 
 fn classify_path_impl(path: &str) -> Result<crate::models::PathKind, String> {
-    if path.contains("://") {
+    if has_url_scheme(path) {
         let label = path
             .split("://")
             .nth(1)
@@ -892,7 +943,7 @@ fn classify_path_impl(path: &str) -> Result<crate::models::PathKind, String> {
             read_url_target(&p)
         };
         if let Some(target) = target {
-            if target.contains("://") {
+            if has_url_scheme(&target) {
                 return Ok(crate::models::PathKind {
                     label,
                     kind: "url".into(),
@@ -922,6 +973,12 @@ fn classify_path_impl(path: &str) -> Result<crate::models::PathKind, String> {
 /// `.url`（Internet 快捷方式）的目标：读 INI 风格文本的 `URL=` 行。系统生成的
 /// .url 常为 UTF-16 编码，按 BOM 分流解码。
 fn read_url_target(p: &std::path::Path) -> Option<String> {
+    // 改名成 .url 的大文件不再整读进内存（解码炸弹修复未覆盖此路径），
+    // 64KB 上限远超任何正常 .url，超限按无法解析处理。
+    const MAX_URL_BYTES: u64 = 64 * 1024;
+    if std::fs::metadata(p).ok().map(|m| m.len()).unwrap_or(0) > MAX_URL_BYTES {
+        return None;
+    }
     let bytes = std::fs::read(p).ok()?;
     let text = if bytes.starts_with(&[0xFF, 0xFE]) {
         let wide: Vec<u16> = bytes[2..]
@@ -968,19 +1025,32 @@ fn resolve_lnk_target(path: &str) -> Option<String> {
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         // spawn_blocking 线程可能被复用：只有本调用成功初始化 COM 的才配对
-        // CoUninitialize（S_FALSE 已初始化也是成功码，同样要配对；其他失败
-        // ——含 RPC_E_CHANGED_MODE——沿用现状直接进行）。
+        // CoUninitialize（S_FALSE 已初始化也是成功码，同样要配对）。其他失败
+        // 里 RPC_E_CHANGED_MODE（本线程已是 MTA）可以沿用现状继续——COM 已
+        // 初始化，CoCreateInstance 仍可用；其余失败继续只会产生不可预测的
+        // 套件行为，直接按解析失败返回（audio.rs 同款判定）。
         let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        const RPC_E_CHANGED_MODE: windows::core::HRESULT =
+            windows::core::HRESULT(0x8001_0106u32 as i32);
+        if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+            log::warn!("resolve_lnk: CoInitializeEx 失败 ({:#x})，跳过解析", hr.0);
+            return None;
+        }
         let owns_init = hr.is_ok();
         let result = (|| {
             let link: IShellLinkW =
                 CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
             let persist: IPersistFile = link.cast().ok()?;
             persist.Load(PCWSTR(wide.as_ptr()), STGM_READ).ok()?;
-            let mut buf = [0u16; 1024];
+            // 1024 wchar 缓冲对 \\?\ 长路径（可到 32k）静默截断成半条路径
+            // 入库；扩到 32768 并在缓冲写满（无 NUL 终止）时按解析失败降级。
+            let mut buf = [0u16; 32768];
             link.GetPath(&mut buf, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
                 .ok()?;
             let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+            if end == buf.len() {
+                return None; // 缓冲写满：路径被截断，宁可不解析也不落半条
+            }
             let target = String::from_utf16_lossy(&buf[..end]).trim().to_string();
             (!target.is_empty()).then_some(target)
         })();
@@ -1002,6 +1072,12 @@ fn resolve_lnk_target(path: &str) -> Option<String> {
 /// folder it browses instead of always defaulting to the Desktop.
 ///
 /// The rfd dialog is a blocking modal: running it bare in an async command
+/// 原生对话框统一锚定调用方窗口——无父窗口的 rfd 对话框不模态于
+/// 任何窗口，可能被自身置顶层覆盖或失焦后沉底；所有调用点经此构造。
+pub(crate) fn parented_file_dialog(window: &tauri::Window) -> rfd::FileDialog {
+    rfd::FileDialog::new().set_parent(window)
+}
+
 /// would park an async-runtime worker for the whole dialog lifetime (it can
 /// stay open for minutes), starving the runtime. spawn_blocking is the
 /// documented pattern (tauri-plugin-dialog does the same) — it keeps the
@@ -1012,13 +1088,20 @@ pub async fn pick_folder(window: tauri::Window) -> Option<String> {
     if !crate::trusted_window(window.label()) {
         return None;
     }
-    tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
+    // （可观测性）：`.ok().flatten()` 把阻塞任务 panic 与「用户取消」混为
+    // 一谈——对话框故障会被当成取消静默吞掉。panic 记日志后再按取消返回
+    //（前端契约不变），排障有迹可循。
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::files::parented_file_dialog(&window)
             .set_title("选择文件夹")
             .pick_folder()
             .map(|p| p.to_string_lossy().into_owned())
     })
     .await
+    .map_err(|e| {
+        log::warn!("pick_folder 后台任务异常（按用户取消返回）: {e}");
+        e
+    })
     .ok()
     .flatten()
 }
@@ -1032,8 +1115,9 @@ pub async fn pick_file(window: tauri::Window) -> Option<String> {
     if !crate::trusted_window(window.label()) {
         return None;
     }
-    tauri::async_runtime::spawn_blocking(|| {
-        rfd::FileDialog::new()
+    // 同 pick_folder——panic 与取消区分记录。
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::files::parented_file_dialog(&window)
             .set_title("选择文件")
             .add_filter("Excel 工作簿", &["xlsx", "xlsm", "xls", "ods"])
             .add_filter("CSV / TSV", &["csv", "tsv"])
@@ -1042,6 +1126,10 @@ pub async fn pick_file(window: tauri::Window) -> Option<String> {
             .map(|p| p.to_string_lossy().into_owned())
     })
     .await
+    .map_err(|e| {
+        log::warn!("pick_file 后台任务异常（按用户取消返回）: {e}");
+        e
+    })
     .ok()
     .flatten()
 }
@@ -1062,7 +1150,10 @@ const SYSTEM_LOCATIONS: &[(&str, &str)] = &[
 /// `kind` is one of the SYSTEM_LOCATIONS keys; unknown keys are ignored.
 /// spawn_blocking：进程创建在主线程上足以造成可感知的窗口卡顿。
 #[tauri::command]
-pub async fn open_system_location(kind: String) -> Result<(), String> {
+pub async fn open_system_location(window: tauri::Window, kind: String) -> Result<(), String> {
+    // 同文件其余命令（open_path/classify_path/...）均有信任窗口闸门，
+    // 白名单 shell: 位置虽低危，低信任窗也不应能弹 explorer（防御纵深一致）。
+    crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
         let Some((_, shell)) = SYSTEM_LOCATIONS.iter().find(|(k, _)| *k == kind) else {
             return Err(format!("未知位置: {kind}"));
@@ -1082,7 +1173,9 @@ pub async fn open_system_location(kind: String) -> Result<(), String> {
 /// Async + spawn_blocking: recursively statting both Start Menu trees can take
 /// hundreds of ms — on the main thread that would stall every window.
 #[tauri::command]
-pub async fn list_apps() -> Result<Vec<AppInfo>, String> {
+pub async fn list_apps(window: tauri::Window) -> Result<Vec<AppInfo>, String> {
+    // 应用清单是注入面信息（低信任窗不该拿到本机安装列表）。
+    crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(|| {
         let mut apps: Vec<AppInfo> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1168,8 +1261,8 @@ fn collect_lnks(
 /// icon cannot be resolved (the frontend then falls back to a colored tile).
 /// Async + spawn_blocking: SHGetFileInfoW + GetDIBits + PNG encode is called
 /// once per app tile — on the main thread that adds up to visible UI stalls.
-/// C-8：任意路径 stat 属读侧门控缺口，收口到可信窗口（settings + widget-*）。
-/// BentoDesk 借鉴 #13：走磁盘缓存（icon_cached）——命中免整条提取链，
+/// 任意路径 stat 属读侧门控缺口，收口到可信窗口（settings + widget-*）。
+/// 走磁盘缓存（icon_cached）——命中免整条提取链，
 /// FolderPopup 每次重开不再重复提取同一批图标。
 #[tauri::command]
 pub async fn get_app_icon(
@@ -1188,8 +1281,7 @@ const ICON_CACHE_CAP: usize = 1024;
 
 /// 图标两级缓存的 warm tier：键 = 版本化路径哈希，值 = base64 PNG 文本。
 /// 单条失效由 shortcut_watch 的 modified 事件调 `invalidate_icon_cache`；
-/// 提取算法/请求尺寸升级时抬 `ICON_CACHE_VERSION` 整体失效（BentoDesk
-/// 缓存版本号做法，旧条目由 prune_icon_cache 按最旧逐出）。缓存目录不可用
+/// 提取算法/请求尺寸升级时抬 `ICON_CACHE_VERSION` 整体失效。缓存目录不可用
 /// 时优雅降级直提。
 fn icon_cached(app: &tauri::AppHandle, path: &str) -> Option<String> {
     let dir = crate::vela_data_dir(app).ok().map(|d| d.join("icon-cache"));
@@ -1212,11 +1304,11 @@ fn icon_cached(app: &tauri::AppHandle, path: &str) -> Option<String> {
     Some(b64)
 }
 
-/// 缓存键版本（BentoDesk 缓存版本号做法）：提取算法或请求尺寸升级时 +1，
+/// 缓存键版本：提取算法或请求尺寸升级时 +1，
 /// 旧版本键整体失效（旧文件由 prune_icon_cache 按 mtime 逐出）。
 const ICON_CACHE_VERSION: u32 = 2;
 
-/// 缓存键：版本前缀 + 路径归一的 FNV-64——小写 + 正斜杠统一反斜杠
+/// 缓存键：版本前缀 + 路径归一的 ——小写 + 正斜杠统一反斜杠
 /// （Windows 两种分隔符混用、大小写不敏感，同一文件只占一个缓存槽）。
 fn icon_cache_key(path: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -1232,7 +1324,7 @@ fn icon_cache_key(path: &str) -> u64 {
     h
 }
 
-/// 图标缓存失效（BentoDesk 借鉴 #4 的配套：目标内容变更 → 删缓存条目）。
+/// 图标缓存失效。
 /// shortcut_watch 的 modified 事件调用；下次 get_app_icon 走完整提取链。
 pub fn invalidate_icon_cache(app: &tauri::AppHandle, path: &str) {
     let Some(dir) = crate::vela_data_dir(app).ok().map(|d| d.join("icon-cache")) else {
@@ -1253,12 +1345,26 @@ fn mtime_secs(path: &str) -> u64 {
 
 /// 批量取路径修改时间（epoch 秒，与入参同序，缺失 = 0）。快捷方式文件夹
 /// 弹层「按时间排序」用。
+/// （入参上限）：串行 stat 在条目指向可移动盘/网络路径时可长时间占住
+/// blocking 线程并整批回传——超上限的尾部按 0 处理（前端 `arr[i] ?? 0`
+/// 同款兜底语义，排序落最后），正常文件夹（几十条）不受影响。
 #[tauri::command]
 pub async fn paths_mtimes(window: tauri::Window, paths: Vec<String>) -> Result<Vec<u64>, String> {
     crate::require_trusted(&window)?;
-    tauri::async_runtime::spawn_blocking(move || Ok(paths.iter().map(|p| mtime_secs(p)).collect()))
-        .await
-        .map_err(|e| format!("读取时间戳任务失败：{e}"))?
+    const MAX_PATHS: usize = 512;
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(paths
+            .iter()
+            .take(MAX_PATHS)
+            .map(|p| mtime_secs(p))
+            .chain(std::iter::repeat_n(
+                0,
+                paths.len().saturating_sub(MAX_PATHS),
+            ))
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("读取时间戳任务失败：{e}"))?
 }
 
 /// 超上限按修改时间逐最旧删除（读 1k 条目目录的代价远小于一次图标提取）。
@@ -1459,15 +1565,21 @@ fn extract_icon_base64(_path: &str) -> Option<String> {
 }
 
 /* ------------------------------------------------------------------ */
-/* W-074…097 文件浏览 / 快捷方式 / 启动器增强的后端支撑                */
+/* …097 文件浏览 / 快捷方式 / 启动器增强的后端支撑 */
 /* ------------------------------------------------------------------ */
 
-/// W-078 根目录快捷 chips：返回常用系统目录的绝对路径（下载/文档/图片/音乐/
+/// 根目录快捷 chips：返回常用系统目录的绝对路径（下载/文档/图片/音乐/
 /// 视频/桌面），供文件浏览组件一键直达。目录缺失的键不出现在返回值里。
 #[tauri::command]
 pub fn known_dirs(
+    window: tauri::Window,
     app: tauri::AppHandle,
 ) -> Result<std::collections::HashMap<String, String>, String> {
+    // 回传用户目录绝对路径（本机文件系统布局），敏感级与
+    // get_backups_dir 对齐——自定义命令 IPC 不受 capability 门控，web-preview
+    // 里的远程页面同样能 invoke。合法调用方 FileBrowserWidget 跑在 widget-*，
+    // 闸门不破坏功能。
+    crate::require_trusted(&window)?;
     use std::collections::HashMap;
     let mut m: HashMap<String, String> = HashMap::new();
     let mut insert = |key: &str, p: Result<std::path::PathBuf, tauri::Error>| {
@@ -1484,7 +1596,7 @@ pub fn known_dirs(
     Ok(m)
 }
 
-/// W-077 在资源管理器中定位文件/文件夹（/select 高亮目标而非打开父目录）。
+/// 在资源管理器中定位文件/文件夹（/select 高亮目标而非打开父目录）。
 /// explorer 自己解析整条命令行，必须把 `/select,"path"` 拼成单个参数。
 /// spawn_blocking：存在性 stat + 进程创建都不能占主线程。
 #[tauri::command]
@@ -1512,7 +1624,7 @@ pub async fn reveal_in_explorer(window: tauri::Window, path: String) -> Result<(
     .map_err(|e| format!("资源管理器定位任务失败: {e}"))?
 }
 
-/// E16 破坏性操作围栏（服务端等价实现）：删除类命令的服务端最后一道闸——
+/// 破坏性操作围栏（服务端等价实现）：删除类命令的服务端最后一道闸——
 /// 拒绝明显超出「用户在文件组件里删一个条目」预期范围的目标：
 /// - 盘根 / 无普通名称组件的路径（`C:\`、`\`）；
 /// - 系统关键目录本体（Windows / Program Files / 用户根 / System32 等）。
@@ -1546,10 +1658,10 @@ pub(crate) fn destructive_path_denied(p: &std::path::Path) -> Option<&'static st
     None
 }
 
-/// W-077 删除到系统回收站（Shell 文件操作 + FOF_ALLOWUNDO）。
-/// C-7：高危命令加窗口闸门（settings + widget-*）。
-/// E16：destructive_path_denied 围栏（拦裸根 / 系统目录）。
-/// E17：破坏性命令审计——成败都写日志且日志
+/// 删除到系统回收站（Shell 文件操作 + FOF_ALLOWUNDO）。
+/// 高危命令加窗口闸门（settings + widget-*）。
+/// destructive_path_denied 围栏（拦裸根 / 系统目录）。
+/// 破坏性命令审计——成败都写日志且日志
 /// 永不影响操作结果（log 宏不抛错，天然满足）。
 #[tauri::command]
 pub async fn delete_to_recycle_bin(window: tauri::Window, path: String) -> Result<(), String> {
@@ -1610,8 +1722,28 @@ fn move_to_recycle_bin(_path: &str) -> Result<(), String> {
     Err("仅支持 Windows".into())
 }
 
-/// W-077 重命名（仅同目录，拒绝借道移动到任意位置）。
-/// C-7：高危命令加窗口闸门（settings + widget-*）。
+/// 重命名目标冲突判定（纯函数，可单测）：目标已存在时，仅 Windows 上
+/// 「与源仅大小写不同」（NTFS 大小写不敏感，`Foo.txt` 与 `foo.txt` 是同一
+/// 文件）不算冲突——此前直接 `new.exists()` 恒真，仅改大小写的重命名
+/// 100% 被误拦。非 Windows 文件系统大小写敏感，存在即冲突。
+fn rename_conflict(old_path: &str, new_path: &str, new_exists: bool) -> bool {
+    if !new_exists {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        let norm = |p: &str| p.replace('/', "\\").to_lowercase();
+        norm(old_path) != norm(new_path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (old_path, new_path);
+        true
+    }
+}
+
+/// 重命名（仅同目录，拒绝借道移动到任意位置）。
+/// 高危命令加窗口闸门（settings + widget-*）。
 #[tauri::command]
 pub async fn rename_path(
     window: tauri::Window,
@@ -1625,7 +1757,7 @@ pub async fn rename_path(
         if !old.exists() {
             return Err(format!("路径不存在: {old_path}"));
         }
-        if new.exists() {
+        if rename_conflict(&old_path, &new_path, new.exists()) {
             return Err("目标名称已存在".into());
         }
         if old.parent() != new.parent() {
@@ -1637,8 +1769,168 @@ pub async fn rename_path(
     .map_err(|e| format!("重命名任务失败: {e}"))?
 }
 
-/// DeskOrder 借鉴 #3：在指定目录下新建空文件 / 文件夹。
-/// C-7：写文件系统属高危命令，挂窗口闸门；名字只接受单个普通路径组件
+/// 传输（复制 / 移动）进目标目录的单条结果：dest 有值 = 成功落点。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferOutcome {
+    pub source: String,
+    pub dest: Option<String>,
+    pub error: Option<String>,
+}
+
+/// 传输进度事件载荷（files:transfer-progress，emit_filter 受信窗口）。
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TransferProgress<'a> {
+    done: usize,
+    total: usize,
+    current: &'a str,
+}
+
+fn emit_transfer_progress(app: &tauri::AppHandle, p: TransferProgress<'_>) {
+    let _ = tauri::Emitter::emit_filter(app, "files:transfer-progress", p, |win| match win {
+        tauri::EventTarget::WebviewWindow { label }
+        | tauri::EventTarget::Webview { label }
+        | tauri::EventTarget::Window { label }
+        | tauri::EventTarget::AnyLabel { label } => crate::trusted_window(label),
+        _ => false,
+    });
+}
+
+/// 删除文件或目录（不分类型；传输命令的删源步骤专用，失败要上报）。
+fn remove_path(p: &std::path::Path) -> Result<(), String> {
+    let md = std::fs::symlink_metadata(p).map_err(|e| e.to_string())?;
+    if md.is_dir() {
+        std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+    } else {
+        std::fs::remove_file(p).map_err(|e| e.to_string())
+    }
+}
+
+/// 把一批文件/目录复制或移动进目标目录（文件组件 OS 拖放与 Ctrl+V 粘贴
+/// 共用）。重名自动 (n) 后缀（资源管理器语义，unique_destination 同款）；
+/// cut 模式同卷 rename（瞬时），跨卷回退复制+删源；把目录移进自己内部
+/// 会被自包含守卫拒绝（递归炸弹）。逐条返回结果，进度经事件广播。
+#[tauri::command]
+pub async fn transfer_into_dir(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    sources: Vec<String>,
+    dest_dir: String,
+    cut: bool,
+) -> Result<Vec<TransferOutcome>, String> {
+    crate::require_trusted(&window)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dest = std::path::PathBuf::from(&dest_dir);
+        if !dest.is_dir() {
+            return Err(format!("目录不存在: {dest_dir}"));
+        }
+        let total = sources.len();
+        let mut out = Vec::with_capacity(total);
+        let mut done = 0usize;
+        for src in sources {
+            let current = src.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+            emit_transfer_progress(
+                &app,
+                TransferProgress {
+                    done,
+                    total,
+                    current: &current,
+                },
+            );
+            let s = std::path::PathBuf::from(&src);
+            let Some(name) = s.file_name().map(|n| n.to_os_string()) else {
+                out.push(TransferOutcome {
+                    source: src,
+                    dest: None,
+                    error: Some("无效源路径".into()),
+                });
+                continue;
+            };
+            // 自包含守卫：把目录复制/移动进自己或自己的子目录 = 递归炸弹。
+            if dest.starts_with(&s) {
+                out.push(TransferOutcome {
+                    source: src,
+                    dest: None,
+                    error: Some("不能传输到自身内部".into()),
+                });
+                continue;
+            }
+            let target = crate::file_history::unique_destination(&dest.join(&name));
+            let result = if cut {
+                if std::fs::rename(&s, &target).is_ok() {
+                    Ok(())
+                } else {
+                    // 跨卷：复制 + 删源；删源失败按「复制成功、源保留」降级
+                    //（与资源管理器部分失败的行为一致），日志可查。
+                    let mut budget = u64::MAX;
+                    crate::file_history::copy_tree(&s, &target, &mut budget, 0).map(|()| {
+                        if let Err(e) = remove_path(&s) {
+                            log::warn!("transfer: 跨卷移动删源失败（源保留）: {e}");
+                        }
+                    })
+                }
+            } else {
+                let mut budget = u64::MAX;
+                crate::file_history::copy_tree(&s, &target, &mut budget, 0)
+            };
+            match result {
+                Ok(()) => {
+                    done += 1;
+                    out.push(TransferOutcome {
+                        source: src,
+                        dest: Some(target.to_string_lossy().into_owned()),
+                        error: None,
+                    });
+                }
+                Err(e) => out.push(TransferOutcome {
+                    source: src,
+                    dest: None,
+                    error: Some(e),
+                }),
+            }
+        }
+        emit_transfer_progress(
+            &app,
+            TransferProgress {
+                done,
+                total,
+                current: "",
+            },
+        );
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("传输任务失败: {e}"))?
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::rename_conflict;
+
+    #[test]
+    fn no_conflict_when_target_missing() {
+        assert!(!rename_conflict("C:\\d\\a.txt", "C:\\d\\b.txt", false));
+    }
+
+    #[test]
+    fn distinct_existing_target_is_conflict() {
+        assert!(rename_conflict("C:\\d\\a.txt", "C:\\d\\b.txt", true));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn case_only_rename_is_not_conflict() {
+        // NTFS 大小写不敏感：Foo.txt → foo.txt 是同一文件（new.exists() 恒真），
+        // 必须放行，否则仅改大小写的重命名永远失败。
+        assert!(!rename_conflict("C:\\d\\Foo.txt", "C:\\d\\foo.txt", true));
+        // 斜杠/大小写归一后相同才算同一文件。
+        assert!(!rename_conflict("C:/d/Foo.txt", "c:\\D\\foo.TXT", true));
+    }
+}
+
+/// 在指定目录下新建空文件 / 文件夹。
+/// 写文件系统属高危命令，挂窗口闸门；名字只接受单个普通路径组件
 /// （拒绝分隔符/盘符/..，防借道在目录树任意位置创建）。
 #[tauri::command]
 pub async fn create_entry(
@@ -1661,14 +1953,29 @@ pub async fn create_entry(
         ) {
             return Err("名称不能包含路径分隔符".into());
         }
+        // Windows 保留设备名（CON/NUL/COM1…，含带扩展名的 CON.txt）与
+        // 结尾点/空格能通过上面的组件校验，但落盘行为反直觉——File::create
+        // 打开的是设备而非普通文件；`foo.` 实际落盘为 `foo`，返回串与真实
+        // 名称不符，后续 exists/去重判断全部失配产生“幽灵条目”。
+        #[cfg(windows)]
+        {
+            const RESERVED: [&str; 22] = [
+                "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+                "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8",
+                "lpt9",
+            ];
+            let stem = name.split('.').next().unwrap_or("").to_lowercase();
+            if RESERVED.contains(&stem.as_str()) || name.ends_with('.') || name.ends_with(' ') {
+                return Err("名称无效（Windows 保留名或结尾点/空格）".into());
+            }
+        }
         let dir_path = std::path::Path::new(&dir);
         if !dir_path.is_dir() {
             return Err(format!("目录不存在: {dir}"));
         }
-        let dest = dir_path.join(name);
-        if dest.exists() {
-            return Err("同名项已存在".into());
-        }
+        // （重名自动后缀）：资源管理器语义——「新建文件夹」已存在时自动落
+        // 「新建文件夹 (2)」，此前直接报「同名项已存在」让用户手动改输入。
+        let dest = crate::file_history::unique_destination(&dir_path.join(name));
         if is_dir {
             fs::create_dir_all(&dest).map_err(|e| format!("创建文件夹失败: {e}"))?;
         } else {
@@ -1680,7 +1987,27 @@ pub async fn create_entry(
     .map_err(|e| format!("创建任务失败: {e}"))?
 }
 
-/// W-088 带参数启动应用（exe/lnk/UWP 皆可）。ShellExecuteW 会解析 .lnk 并
+/// （`://` 误判 URL）：裸 `contains("://")` 会把 `C://Users` 这类双斜杠
+/// 盘符写法（或任何含该子串的本地路径）当 URL 分流。RFC 3986 scheme 语法：
+/// `[A-Za-z][A-Za-z0-9+.-]*://` 且必须出现在开头。
+fn has_url_scheme(path: &str) -> bool {
+    match path.split_once("://") {
+        // 单字符 scheme（如 `C://...` 盘符双斜杠写法）按本地路径处理：
+        // 实际协议 scheme 最短也有 2 字符（ws/wss/ftp…），单字母只有盘符。
+        Some((scheme, _)) if scheme.len() >= 2 => {
+            let mut chars = scheme.chars();
+            match chars.next() {
+                Some(c) if c.is_ascii_alphabetic() => {
+                    chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// 带参数启动应用（exe/lnk/UWP 皆可）。ShellExecuteW 会解析 .lnk 并
 /// 把参数传给目标；比 explorer 中转更可控。返回值 >32 视为成功。
 /// spawn_blocking：存在性 stat + ShellExecuteW（会解析 .lnk，可能碰盘）
 /// 都不该占主线程。
@@ -1690,7 +2017,7 @@ fn launch_app_impl(path: &str, args: Option<&str>) -> Result<(), String> {
         use windows::core::PCWSTR;
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        if path.starts_with("shell:") || path.contains("://") {
+        if path.starts_with("shell:") || has_url_scheme(path) {
             return open_path_impl(path);
         }
         let p = std::path::Path::new(path);
@@ -1740,11 +2067,13 @@ pub async fn launch_app(
         .map_err(|e| format!("启动任务失败: {e}"))?
 }
 
-/// W-090 UWP / 商店应用：Get-StartApps 里 AppID 带 `!` 的是打包应用，启动
+/// UWP / 商店应用：Get-StartApps 里 AppID 带 `!` 的是打包应用，启动
 /// 走 `shell:AppsFolder\<AppID>`。PowerShell 输出强制 UTF-8，避免中文应用名
 /// 按 OEM 代码页解码成乱码；CREATE_NO_WINDOW 防止 GUI 进程闪控制台黑框。
 #[tauri::command]
-pub async fn list_uwp_apps() -> Result<Vec<AppInfo>, String> {
+pub async fn list_uwp_apps(window: tauri::Window) -> Result<Vec<AppInfo>, String> {
+    // 与 list_apps 同一信息类（商店应用清单），同款信任窗口闸门。
+    crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(|| {
         #[cfg(windows)]
         {
@@ -1813,7 +2142,7 @@ pub async fn list_uwp_apps() -> Result<Vec<AppInfo>, String> {
     .map_err(|e| format!("UWP 扫描任务失败: {e}"))?
 }
 
-/// W-082 系统回收站真实角标：统计各盘 `$Recycle.Bin` 下可读 SID 目录中的
+/// 系统回收站真实角标：统计各盘 `$Recycle.Bin` 下可读 SID 目录中的
 /// `$R*` 条目（即回收的项目数；其它用户的 SID 目录无权限读取会被跳过，
 /// 恰好只统计到自己的）。
 /// 回收站计数缓存：每次调用都要顺序扫 C:→Z: 全部盘符下 $Recycle.Bin 的
@@ -1850,14 +2179,15 @@ fn cached_recycle_bin_count() -> u64 {
 }
 
 #[tauri::command]
-pub async fn recycle_bin_count() -> Result<u64, String> {
+pub async fn recycle_bin_count(window: tauri::Window) -> Result<u64, String> {
+    crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(cached_recycle_bin_count)
         .await
         .map_err(|e| format!("回收站统计任务失败: {e}"))
 }
 
 /* ------------------------------------------------------------------ */
-/* W-103 涂鸦存储升级：PNG 存 app data 文件，localStorage 只留标记。   */
+/* 涂鸦存储升级：PNG 存 app data 文件，localStorage 只留标记。 */
 /* 原先整张 dataURL 塞 localStorage，一笔一存且受 5MB 配额限制，画几  */
 /* 张就爆 quota。像素进文件后 key 里只剩 `file` 标记（随镜像进备份，  */
 /* 体积极小）。                                                        */
@@ -1883,7 +2213,7 @@ fn safe_sketch_name(instance_id: &str) -> Result<String, String> {
     Ok(format!("{instance_id}.png"))
 }
 
-/// W-103 保存涂鸦：解析 `data:image/png;base64,…` 写入 sketches/<id>.png。
+/// 保存涂鸦：解析 `data:image/png;base64,…` 写入 sketches/<id>.png。
 /// 异步 + spawn_blocking：PNG 编码/写盘在数据量大时会卡主线程。
 #[tauri::command]
 pub async fn save_sketch_image(
@@ -1909,17 +2239,23 @@ pub async fn save_sketch_image(
             .decode(b64)
             .map_err(|e| format!("Base64 解码失败: {e}"))?;
         let path = sketches_dir(&app)?.join(&name);
-        // 先写临时文件再原子改名，避免进程中途被杀留下半个 PNG。
-        let tmp = path.with_extension("png.tmp");
+        // 先写临时文件再原子改名，避免进程中途被杀留下半个 PNG。tmp 名带
+        // pid：同一实例两个窗口并发保存时固定名 tmp 互踩，可能 rename 出
+        // 对方写一半的文件。
+        let tmp = path.with_extension(format!("png.{}.tmp", std::process::id()));
         fs::write(&tmp, &bytes).map_err(|e| format!("写入涂鸦失败: {e}"))?;
-        fs::rename(&tmp, &path).map_err(|e| format!("保存涂鸦失败: {e}"))?;
+        let renamed = fs::rename(&tmp, &path);
+        if renamed.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        renamed.map_err(|e| format!("保存涂鸦失败: {e}"))?;
         Ok(())
     })
     .await
     .map_err(|e| format!("涂鸦保存任务失败: {e}"))?
 }
 
-/// W-103 读取涂鸦：返回 dataURL；没有存档时返回 `None`（前端回退空白画布）。
+/// 读取涂鸦：返回 dataURL；没有存档时返回 `None`（前端回退空白画布）。
 #[tauri::command]
 pub async fn read_sketch_image(
     window: tauri::Window,
@@ -1947,7 +2283,7 @@ pub async fn read_sketch_image(
     .map_err(|e| format!("涂鸦读取任务失败: {e}"))?
 }
 
-/// W-103 清空涂鸦：删除存档文件（前端同时清掉 localStorage 标记）。
+/// 清空涂鸦：删除存档文件（前端同时清掉 localStorage 标记）。
 #[tauri::command]
 pub async fn delete_sketch_image(
     window: tauri::Window,
@@ -1970,37 +2306,43 @@ pub async fn delete_sketch_image(
     .map_err(|e| format!("涂鸦删除任务失败: {e}"))?
 }
 
-/// W-104 置入图片标注：读取本地图片并转成 PNG dataURL 供 canvas 贴图。
+/// 置入图片标注：读取本地图片并转成 PNG dataURL 供 canvas 贴图。
 /// 超过 2048px 长边的图先缩到 2048（涂鸦画布本身远小于此，保真足够，
 /// 又能避免几十 MB 的照片撑爆 dataURL 与 canvas 内存）。
-/// C-8：任意路径图片→base64 属读侧门控缺口，收口到可信窗口。
+/// 任意路径图片→base64 属读侧门控缺口，收口到可信窗口。
 #[tauri::command]
 pub async fn read_image_data_url(window: tauri::Window, path: String) -> Result<String, String> {
     use base64::Engine as _;
 
     crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        // 解码前体积上限 + 解码后像素总量上限：防"图片炸弹"在缩放前就把
-        // 数 GB 解压进内存（thumbnail 发生在全量解码之后，挡不住）。
-        if std::fs::metadata(&path)
-            .map_err(|e| format!("无法读取图片: {e}"))?
-            .len()
-            > 128 * 1024 * 1024
-        {
+        // 读一次字节进内存再做全部校验与解码：此前尺寸校验与 decode 各 open
+        // 一遍同一文件——双倍 I/O 之外，两次 open 之间文件被替换可绕过像素
+        // 上限直入 decode（TOCTOU）。字节数检查兼作 128MB 体积上限（且不再
+        // 依赖可能过期的 metadata）。扩展名可能伪装（JPEG 字节存成 .png），
+        // 按魔数嗅探格式而非扩展名。
+        let bytes = std::fs::read(&path).map_err(|e| format!("无法读取图片: {e}"))?;
+        if bytes.len() > 128 * 1024 * 1024 {
             return Err("图片过大（超过 128MB）".to_string());
         }
-        // 扩展名可能伪装（JPEG 字节存成 .png），按魔数嗅探格式而非扩展名。
-        let img = image::ImageReader::open(&path)
-            .map_err(|e| format!("无法读取图片: {e}"))?
-            .with_guessed_format()
-            .map_err(|e| format!("无法读取图片: {e}"))?
-            .decode()
-            .map_err(|e| format!("无法读取图片: {e}"))?;
+        // 像素上限在 decode() **之前**用头信息校验（into_dimensions 只读
+        // 头）——decode 按 w*h*4 全量分配，小体积高压缩比 PNG 解码即数 GB。
         const MAX_EDGE: u32 = 2048;
         const MAX_PIXELS: u64 = 8192 * 8192;
-        if img.width() as u64 * img.height() as u64 > MAX_PIXELS {
+        let open_reader = || {
+            image::ImageReader::new(std::io::Cursor::new(bytes.as_slice()))
+                .with_guessed_format()
+                .map_err(|e| format!("无法读取图片: {e}"))
+        };
+        let (dim_w, dim_h) = open_reader().and_then(|r| {
+            r.into_dimensions()
+                .map_err(|e| format!("无法读取图片: {e}"))
+        })?;
+        if dim_w as u64 * dim_h as u64 > MAX_PIXELS {
             return Err("图片尺寸超出范围".to_string());
         }
+        let img =
+            open_reader().and_then(|r| r.decode().map_err(|e| format!("无法读取图片: {e}")))?;
         let img = if img.width() > MAX_EDGE || img.height() > MAX_EDGE {
             img.thumbnail(MAX_EDGE, MAX_EDGE)
         } else {
@@ -2092,7 +2434,7 @@ mod classify_tests {
         assert_eq!(resolve_lnk_target("C:/not-a-link.txt"), None);
     }
 
-    /// E16 破坏性围栏：裸根与系统关键目录拒绝；普通条目与深层系统目录内的
+    /// 破坏性围栏：裸根与系统关键目录拒绝；普通条目与深层系统目录内的
     /// 具体文件放行（围栏只拦「目录本体」级事故，不做全路径黑名单）。
     #[test]
     fn destructive_fence_denies_roots_and_critical_dirs() {

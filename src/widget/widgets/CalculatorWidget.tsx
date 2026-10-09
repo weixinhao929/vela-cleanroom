@@ -1,8 +1,7 @@
 /**
  * 计算器小组件：表达式求值（自写 tokenizer + shunting-yard，无 eval），
  * 支持四则/幂/括号/百分比与历史记录，键盘输入可用。
- * 顶部页签切换「计算 / 编码 / 哈希」三模式（编码哈希原为独立小组件，
- * ClassSoftwareHub #2 并入此处）：后两页由 ConverterPane 渲染，
+ * 顶部页签切换「计算 / 编码 / 哈希」三模式：后两页由 ConverterPane 渲染，
  * 当前模式持久化在 config.mode；OS 文件拖入卡片自动切哈希页开算。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,13 +29,20 @@ const SCI_KEYS: { label: string; apply: (expr: string) => string }[] = [
   { label: "1/x", apply: (e) => `1/(${e || "0"})` },
   { label: "ln", apply: (e) => `ln(${e || "0"})` },
   { label: "log", apply: (e) => `log(${e || "0"})` },
-  { label: "π", apply: (e) => `${e}PI` },
-  { label: "e", apply: (e) => `${e}E` },
+  // 表达式非空且不以运算符/左括号结尾时先补 ×（"5"+π → "5PI" 非法）。
+  {
+    label: "π",
+    apply: (e) => (e && !/[+\-*/%(^√]$/.test(e.trimEnd()) ? `${e}*PI` : `${e}PI`)
+  },
+  {
+    label: "e",
+    apply: (e) => (e && !/[+\-*/%(^√]$/.test(e.trimEnd()) ? `${e}*E` : `${e}E`)
+  },
   { label: "(", apply: (e) => `${e}(` },
   { label: ")", apply: (e) => `${e})` }
 ];
 
-/** 求值器保留字（函数名/常量），W-117 变量替换时跳过。 */
+/** 求值器保留字（函数名/常量），变量替换时跳过。 */
 const KNOWN_IDS = new Set(["sin", "cos", "tan", "sqrt", "ln", "log", "PI", "E", "Math"]);
 
 /**
@@ -59,8 +65,8 @@ function isSafeExpression(cleaned: string): boolean {
 }
 
 /**
- * 求值：符号 → JS 标识符后以参数注入实现（W-112：deg 模式三角入参 ×π/180；
- * W-117：未知标识符先查变量表）。π→PI、独立 e→E 后再替换变量。
+ * 求值：符号 → JS 标识符后以参数注入实现（deg 模式三角入参 ×π/180；
+ * 未知标识符先查变量表）。π→PI、独立 e→E 后再替换变量。
  */
 function evaluate(expr: string, angle: "deg" | "rad", vars: Record<string, string>): string {
   const cleaned = expr
@@ -87,7 +93,12 @@ function evaluate(expr: string, angle: "deg" | "rad", vars: Record<string, strin
       Math.E
     );
     if (typeof result !== "number" || !isFinite(result)) return "错误";
-    return String(Math.round(result * 1e10) / 1e10);
+    // 先判有限再舍入——|result| ≳1.8e298 时 ×1e10 会溢出成 Infinity
+    // （界面显示 "Infinity"），|result|<1e-11 被舍成 "0"。改为有效位格式化：
+    // 大数走科学计数，小数保留 10 位有效数字而非固定小数位。
+    const abs = Math.abs(result);
+    if (abs !== 0 && (abs >= 1e15 || abs < 1e-9)) return result.toExponential(6).replace(/\.?0+e/, "e");
+    return String(Number(result.toPrecision(12)));
   } catch {
     return "错误";
   }
@@ -102,7 +113,7 @@ function preview(expr: string, angle: "deg" | "rad", vars: Record<string, string
   return r === "错误" ? "0" : r;
 }
 
-/** W-115 结果展示格式化：千分位分组（Intl.NumberFormat，跟随应用语言）；
+/** 结果展示格式化：千分位分组（Intl.NumberFormat，跟随应用语言）；
  *  极大/极小值转科学计数。复制仍取原值。 */
 function fmtResult(raw: string): string {
   if (raw === "错误" || raw === "") return raw;
@@ -114,9 +125,9 @@ function fmtResult(raw: string): string {
   return new Intl.NumberFormat(appLocale(), { maximumFractionDigits: 10 }).format(v);
 }
 
-/** W-111 历史记录纸带条目。 */
+/** 历史记录纸带条目。 */
 type CalcHistoryItem = { id: string; expr: string; result: string; at: number };
-/** W-117 公式变量：name → 可代入的数值表达式。 */
+/** 公式变量：name → 可代入的数值表达式。 */
 type CalcVar = { name: string; value: string };
 
 export function CalculatorWidget({ instanceId }: { instanceId: string }) {
@@ -133,9 +144,9 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
   const [result, setResult] = useState("0");
   const [justEq, setJustEq] = useState(false);
   const [copied, setCopied] = useState(false);
-  /* W-114 记忆键：会话内保存一个数（M+/M−/MR/MC）。 */
+  /* 记忆键：会话内保存一个数（M+/M−/MR/MC）。 */
   const [memory, setMemory] = useState<number | null>(null);
-  /* W-116 键盘作用域：悬停或内部聚焦时才接管全局按键。 */
+  /* 键盘作用域：悬停或内部聚焦时才接管全局按键。 */
   const rootRef = useRef<HTMLDivElement | null>(null);
   const hoverRef = useRef(false);
   const [hover, setHover] = useState(false);
@@ -149,6 +160,11 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
   const [dropRequest, setDropRequest] = useState<ConverterDropRequest | null>(null);
   const dropSeq = useRef(0);
   useOsFileDrop((ev) => {
+    // 拖拽离开窗口：清高亮（leave 此前被钩子吞掉导致 is-over 滞留）。
+    if (ev.type === "leave") {
+      setFileDragOver(false);
+      return;
+    }
     const rect = rootRef.current?.getBoundingClientRect();
     if (!rect) return;
     const inside = ev.x >= rect.left && ev.x <= rect.right && ev.y >= rect.top && ev.y <= rect.bottom;
@@ -159,7 +175,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
       setDropRequest({ path: ev.paths[0], seq: dropSeq.current });
     }
   });
-  /* W-111 历史纸带（持久化，重启保留）。 */
+  /* 历史纸带（持久化，重启保留）。 */
   const historyKey = `focus-desk.calc.history.${instanceId}`;
   const [history, setHistory] = useState<CalcHistoryItem[]>(() => {
     try {
@@ -171,7 +187,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
   });
   /* 清空历史两段式确认：首次点击仅武装，2s 内再次点击才清空。 */
   const [confirmClear, setConfirmClear] = useState(false);
-  /* W-117 变量表（持久化）。 */
+  /* 变量表（持久化）。 */
   const varsKey = `focus-desk.calc.vars.${instanceId}`;
   const [vars, setVars] = useState<CalcVar[]>(() => {
     try {
@@ -198,11 +214,11 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
     persistMirrored(varsKey, JSON.stringify(next));
   };
   const varMap = useMemo(() => Object.fromEntries(vars.map((v) => [v.name, v.value])), [vars]);
-  /* W-113 表达式受控输入引用（插入变量时保持光标位置）。 */
+  /* 表达式受控输入引用（插入变量时保持光标位置）。 */
   const exprRef = useRef<HTMLInputElement | null>(null);
 
   const views = useWidgetStore((s) => s.views);
-  /* W-116：全应用只有一块计算器时保持旧的「全局可输入」体验；多块时仅
+  /* 全应用只有一块计算器时保持旧的「全局可输入」体验；多块时仅
      悬停/聚焦的实例响应。 */
   const calcCount = useMemo(() => {
     let n = 0;
@@ -228,7 +244,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
     setResult(previewNow(next));
   };
 
-  /** 在光标处插入文本（未聚焦时追加到末尾），W-113/W-117 共用。 */
+  /** 在光标处插入文本（未聚焦时追加到末尾），共用。 */
   const insert = (text: string) => {
     const el = exprRef.current;
     if (el && document.activeElement === el) {
@@ -263,7 +279,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
     commitHistory([]);
   };
 
-  /** W-111 点击历史条目：结果回填为当前算式（可继续运算）。 */
+  /** 点击历史条目：结果回填为当前算式（可继续运算）。 */
   const reuseHistory = (item: CalcHistoryItem) => {
     setExpr(item.result);
     setResult(item.result);
@@ -339,6 +355,23 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
   // 通过 ref 持有最新 press，避免每次按键都重新绑定监听、以及 justEq 状态过期。
   const pressRef = useRef(press);
   pressRef.current = press;
+  /* （按键按压态滞留）：小组件是独立小窗，按住按键拖出窗口边界后 WebView
+     收不到 pointerup，CSS :active 的按压/缩放态滞留到下次点击。全局
+     pointerup/pointercancel/blur 时释放焦点即可复位 :active。 */
+  useEffect(() => {
+    const release = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (el && rootRef.current?.contains(el)) el.blur();
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("blur", release);
+    };
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // 编码 / 哈希页不接管键盘：数字键属于文本框，Esc / 退格留给全局手势。
@@ -349,7 +382,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) {
         return;
       }
-      // W-116 多实例键盘作用域：多块计算器时只响应悬停/聚焦的那块；
+      // 多实例键盘作用域：多块计算器时只响应悬停/聚焦的那块；
       // 单块时保持旧行为（随处可输）。
       const focusedWithin = !!rootRef.current?.contains(document.activeElement);
       if (calcCount > 1 && !hoverRef.current && !focusedWithin) return;
@@ -389,7 +422,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [calcCount]);
 
-  /* W-113 算式受控输入：光标任意处编辑；「= 后接数字」仍视为新算式。 */
+  /* 算式受控输入：光标任意处编辑；「= 后接数字」仍视为新算式。 */
   const onExprChange = (v: string) => {
     if (justEq) {
       const appended = v.length === expr.length + 1 && v.startsWith(expr) && /[\d.]/.test(v.slice(-1));
@@ -404,7 +437,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
     applyExpr(v);
   };
 
-  /* W-117 添加变量：名称 → 数值两步输入。 */
+  /* 添加变量：名称 → 数值两步输入。 */
   const addVar = async () => {
     const name = await promptDialog({ title: tr("添加变量"), placeholder: tr("变量名（如 a、tax）") });
     const n = name?.trim();
@@ -458,7 +491,8 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
                 value={expr}
                 onChange={(e) => onExprChange(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") {
+                  /* IME 组合期 Enter（确认候选词）不当作求值。 */
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     pressRef.current("=");
                   } else if (e.key === "Escape") {
@@ -473,7 +507,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
               />
             )}
             <div className="calc-result-row">
-              {/* W-112 角度模式：deg 下 sin(30)=0.5，不再反直觉。 */}
+              {/* 角度模式：deg 下 sin(30)=0.5，不再反直觉。 */}
               <button
                 className="calc-angle"
                 onClick={() => update({ angleMode: angle === "deg" ? "rad" : "deg" })}
@@ -558,7 +592,7 @@ export function CalculatorWidget({ instanceId }: { instanceId: string }) {
               ))}
             </div>
           )}
-          {/* W-114 记忆键：标准计算器惯例 M+/M−/MR/MC。 */}
+          {/* 记忆键：标准计算器惯例 M+/M−/MR/MC。 */}
           <div className="calc-mem" data-interactive>
             <span className={`calc-mem-ind${memory !== null ? " on" : ""}`}>M</span>
             <button onClick={() => setMemory(null)} disabled={memory === null}>

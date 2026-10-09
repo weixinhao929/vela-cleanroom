@@ -4,7 +4,10 @@
  */
 import type { ClipboardEntry } from "../../types/bindings/ClipboardEntry";
 
-/** 文本条目的行数（>1 时在元信息里提示，摘要只显首行）。结尾换行不算新行。 */
+/** 文本条目的行数。生产路径已由服务端现算（list 的 text_lines 列 /
+ *  Rust count_lines，见 repositories.rs）；本函数是其 JS 镜像，测试用来
+ *  构造 fixture 并锁定跨语言口径（\n 计数、结尾换行不补、空串为 0）。
+ *  结尾换行不算新行。 */
 export function lineCountOf(text: string | null): number {
   if (!text) return 0;
   let n = 1;
@@ -19,7 +22,7 @@ export function sortEntries(list: ClipboardEntry[]): ClipboardEntry[] {
   return [...list].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.created_at.localeCompare(a.created_at));
 }
 
-/** [FILES]（ZTools 借鉴 #8）文件条目的路径列表（坏 JSON / 非数组回空）。 */
+/** [FILES]文件条目的路径列表（坏 JSON / 非数组回空）。 */
 export function filesListOf(entry: ClipboardEntry): string[] {
   if (entry.kind !== "files" || !entry.files) return [];
   try {

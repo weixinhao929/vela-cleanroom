@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "snip",
+  "description": "N-28（2026-10-07 审查第二轮）：截图窗从 default 拆出——需要 dialog（SnipView 的 save() 保存截图走 tauri-plugin-dialog 附着本窗），但模块图内不可达 plugin-notification（notify 路径只在主入口的 handlers/提醒链挂载），不再白得通知面。窗口控制面与 default 同集：close（closeSelf 逐级退出）、show/set-focus（SnipView 取到冻结帧后自显握手）、hide/unminimize/minimize/is-minimized/start-dragging 保留整集防边缘路径（权限只放宽到插件边界，core 面不变）。",
+  "windows": ["snip"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-is-minimized"
+  ]
+}

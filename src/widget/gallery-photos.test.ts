@@ -1,5 +1,5 @@
 /**
- * G12 图库上限测试：trimGallery 保留最新、loadGallery 的缺失/损坏回退
+ * 图库上限测试：trimGallery 保留最新、loadGallery 的缺失/损坏回退
  * 与读时截断、evictGalleryFiles 只清本地导入副本（invoke 不在 jsdom 里跑，
  * 断言调用形状即可——isTauri 为 false 时它必须是 no-op）。
  */

@@ -4,7 +4,15 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { useSettingsStore } from "../store/settings-store";
-import { parseIpGeo, fetchIpGeo, readIpGeoCache, clearIpGeoCache, IPGEO_CACHE_KEY, IPGEO_TTL_MS } from "./ip-geo";
+import {
+  parseIpGeo,
+  parseIpSbGeo,
+  fetchIpGeo,
+  readIpGeoCache,
+  clearIpGeoCache,
+  IPGEO_CACHE_KEY,
+  IPGEO_TTL_MS
+} from "./ip-geo";
 
 /** ipwho.is 真实成功响应的字段子集（其余字段调用方不关心，解析器须忽略）。 */
 const OK_PAYLOAD = {
@@ -29,8 +37,15 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("parseIpGeo", () => {
-  it("解析成功：取 latitude/longitude/city，忽略其余字段", () => {
-    expect(parseIpGeo(OK_PAYLOAD)).toEqual({ lat: 31.2304, lon: 121.4737, city: "Shanghai" });
+  it("解析成功：取 latitude/longitude/city 与 ip/country/isp，忽略其余字段", () => {
+    expect(parseIpGeo(OK_PAYLOAD)).toEqual({
+      lat: 31.2304,
+      lon: 121.4737,
+      city: "Shanghai",
+      ip: "203.0.113.7",
+      country: "China"
+    });
+    expect(parseIpGeo({ ...OK_PAYLOAD, connection: { isp: "China Telecom" } })?.isp).toBe("China Telecom");
   });
 
   it("success:false（保留地址段 / 限流）返回 null", () => {
@@ -52,7 +67,9 @@ describe("parseIpGeo", () => {
     expect(parseIpGeo({ ...OK_PAYLOAD, latitude: 90, longitude: -180 })).toEqual({
       lat: 90,
       lon: -180,
-      city: "Shanghai"
+      city: "Shanghai",
+      ip: "203.0.113.7",
+      country: "China"
     });
   });
 
@@ -64,6 +81,38 @@ describe("parseIpGeo", () => {
     expect(parseIpGeo({ ...OK_PAYLOAD, city: undefined })?.city).toBe("当前位置");
     expect(parseIpGeo({ ...OK_PAYLOAD, city: "   " })?.city).toBe("当前位置");
     expect(parseIpGeo({ ...OK_PAYLOAD, city: "  Suzhou " })?.city).toBe("Suzhou");
+  });
+});
+
+describe("parseIpSbGeo（备用源 api.ip.sb/geoip）", () => {
+  const SB_PAYLOAD = {
+    organization: "AS4134 CHINANET",
+    country: "China",
+    country_code: "CN",
+    city: "Shanghai",
+    latitude: 31.2304,
+    longitude: 121.4737,
+    ip: "203.0.113.9",
+    asn: "4134"
+  };
+
+  it("解析成功：organization → isp，ip/country 附带", () => {
+    expect(parseIpSbGeo(SB_PAYLOAD)).toEqual({
+      lat: 31.2304,
+      lon: 121.4737,
+      city: "Shanghai",
+      ip: "203.0.113.9",
+      country: "China",
+      isp: "AS4134 CHINANET"
+    });
+  });
+
+  it("坏形状 / 缺坐标 / 越界坐标 / 纯文本错误体一律 null", () => {
+    expect(parseIpSbGeo("error")).toBeNull();
+    expect(parseIpSbGeo(null)).toBeNull();
+    expect(parseIpSbGeo({ ip: "1.2.3.4", city: "X" })).toBeNull();
+    expect(parseIpSbGeo({ ...SB_PAYLOAD, latitude: 91 })).toBeNull();
+    expect(parseIpSbGeo({ ...SB_PAYLOAD, city: "" })?.city).toBe("当前位置");
   });
 });
 
@@ -79,20 +128,42 @@ describe("fetchIpGeo", () => {
     clearIpGeoCache();
   });
 
-  it("网络失败（fetch 抛 TypeError，重试耗尽）回退 null 且不抛；不写缓存", async () => {
+  it("网络失败（fetch 抛 TypeError，重试耗尽）逐源尝试后回退 null 且不抛；不写缓存", async () => {
     const spy = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
     vi.stubGlobal("fetch", spy);
     await expect(fetchIpGeo()).resolves.toBeNull();
-    // retries: 1 → 共 2 次尝试；退避走真实计时器（≈0.8s ±30%）。
-    expect(spy).toHaveBeenCalledTimes(2);
+    // retries: 1 → 每源共 2 次尝试；主备两源都失败 = 4 次（真实退避 ≈0.8s×2 起）。
+    expect(spy).toHaveBeenCalledTimes(4);
     expect(localStorage.getItem(IPGEO_CACHE_KEY)).toBeNull();
   });
 
-  it("服务端 4xx（429 除外）不重试、直接回退 null", async () => {
-    const spy = vi.fn().mockResolvedValue(jsonResponse({ success: false }, 403));
+  it("主源 4xx 不重试直接换备源；备源成功即返回（主源单点故障不拖垮整功能）", async () => {
+    const spy = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ success: false }, 403))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          ip: "203.0.113.9",
+          city: "Shanghai",
+          country: "China",
+          latitude: 31.23,
+          longitude: 121.47,
+          organization: "AS4134"
+        })
+      );
     vi.stubGlobal("fetch", spy);
-    await expect(fetchIpGeo()).resolves.toBeNull();
-    expect(spy).toHaveBeenCalledTimes(1);
+    const geo = await fetchIpGeo();
+    expect(geo).toEqual({
+      lat: 31.23,
+      lon: 121.47,
+      city: "Shanghai",
+      ip: "203.0.113.9",
+      country: "China",
+      isp: "AS4134"
+    });
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(String(spy.mock.calls[0][0])).toContain("ipwho.is");
+    expect(String(spy.mock.calls[1][0])).toContain("ip.sb");
   });
 
   it("离线时不发请求，直接返回 null", async () => {
@@ -108,7 +179,13 @@ describe("fetchIpGeo", () => {
     vi.stubGlobal("fetch", spy);
 
     const first = await fetchIpGeo();
-    expect(first).toEqual({ lat: 31.2304, lon: 121.4737, city: "Shanghai" });
+    expect(first).toEqual({
+      lat: 31.2304,
+      lon: 121.4737,
+      city: "Shanghai",
+      ip: "203.0.113.7",
+      country: "China"
+    });
     expect(spy).toHaveBeenCalledTimes(1);
     // 中文界面（测试默认语言）带 lang=zh-CN 取中文城市名。
     expect(String(spy.mock.calls[0][0])).toBe("https://ipwho.is/?lang=zh-CN");
@@ -122,7 +199,7 @@ describe("fetchIpGeo", () => {
 
     spy.mockResolvedValue(jsonResponse({ ...OK_PAYLOAD, city: "Hangzhou", latitude: 30.27, longitude: 120.15 }));
     const forced = await fetchIpGeo({ force: true });
-    expect(forced).toEqual({ lat: 30.27, lon: 120.15, city: "Hangzhou" });
+    expect(forced).toEqual({ lat: 30.27, lon: 120.15, city: "Hangzhou", ip: "203.0.113.7", country: "China" });
     expect(spy).toHaveBeenCalledTimes(2);
     expect(readIpGeoCache()?.city).toBe("Hangzhou");
   });
@@ -163,7 +240,13 @@ describe("fetchIpGeo", () => {
     expect(spy).toHaveBeenCalledTimes(1);
     release(jsonResponse(OK_PAYLOAD));
     const [ra, rb] = await Promise.all([a, b]);
-    expect(ra).toEqual({ lat: 31.2304, lon: 121.4737, city: "Shanghai" });
+    expect(ra).toEqual({
+      lat: 31.2304,
+      lon: 121.4737,
+      city: "Shanghai",
+      ip: "203.0.113.7",
+      country: "China"
+    });
     expect(rb).toEqual(ra);
     expect(spy).toHaveBeenCalledTimes(1);
     // 在途结束后再次调用命中缓存，不再请求。

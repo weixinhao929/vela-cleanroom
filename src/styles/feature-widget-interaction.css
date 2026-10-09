@@ -1,6 +1,6 @@
 ﻿/* === 小组件交互增强：点击置顶 / 悬停反馈 / 菜单动画 === */
 
-/* A11（审计合并）：.widget-card 静息阴影/过渡与 hover 反馈已统一收编到
+/* .widget-card 静息阴影/过渡与 hover 反馈已统一收编到
    widget.css 单一出处——本文件此前动态加载，双写导致加载前后 transition
    列表不一致、background-color 过渡丢失。此处只保留拖拽态与菜单动画等
    真正的「交互增强」。 */
@@ -25,11 +25,30 @@
     0 28px 64px -20px var(--widget-drag-shadow, rgba(0, 0, 0, 0.18));
 }
 
-/* BentoDesk #2 拖拽合并投放目标：主色虚线环 + 类挂上时的一次性扩散脉冲，
+/* 编组容器拖拽托起（与 .widget-card.dragging 同语言）：位移由 GroupCard 逐帧
+   写 --drag-dx/--drag-dy（合成器路径），在此与 scale(1.01) 组合进同一 transform；
+   zIndex 抬升（MAX_Z+1）由 GroupCard 内联。投影只跟随组壳本身。 */
+.widget-group.dragging {
+  transform: translate3d(var(--drag-dx, 0px), var(--drag-dy, 0px), 0) scale(1.01);
+  /* 拖拽期间从过渡列表移除 transform（同卡片：预览位移需 1:1 跟手）。 */
+  transition:
+    border-color var(--dur-fx, 0.2s) var(--ease-fx, ease),
+    box-shadow var(--anim-dur, 0.25s) var(--ease-fx, ease);
+  box-shadow:
+    inset 0 0.5px 0 0 color-mix(in srgb, var(--ink) 8%, transparent),
+    0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent),
+    0 10px 28px -8px var(--widget-drag-shadow, rgba(0, 0, 0, 0.18)),
+    0 28px 64px -20px var(--widget-drag-shadow, rgba(0, 0, 0, 0.18));
+}
+
+/* 同类桌面整理工具 #2 拖拽合并投放目标：主色虚线环 + 类挂上时的一次性扩散脉冲，
    提示「松手即合并到此卡」。此前命中判定只在松手后弹 toast，拖拽全程没有
    投放意图提示。仅 border/box-shadow（重绘级，一次性动画短于 1s），
    环本体由 border 过渡（基础声明）平滑浮现。 */
-.widget-card.merge-target {
+/* 同款提示作用于编组容器：拖卡松手到组上 = 并入该组（findMergeTargetAt
+   已把组容器纳入候选），组壳与卡片共用一条脉冲语言。 */
+.widget-card.merge-target,
+.widget-group.merge-target {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--accent) 70%, var(--line-strong));
   animation: w-merge-pulse calc(0.6s * var(--fx-scale, 1)) var(--ease-fx, ease);
@@ -43,7 +62,11 @@
   }
 }
 
-/* C. 右键菜单打开动画：淡入 + 轻微缩放/上移，时长跟随 --anim-dur。 */
+/* C. 右键菜单打开动画：淡入 + 轻微缩放/上移。
+   时长由基础档 --anim-dur(0.25s) 统一到
+   var(--dur-fx-xfast)——「菜单出现」同交互族三档并存（ctx-in xfast /
+   tm-menu-in fast / tw-menu-in 基础档），主窗小组件菜单比右键菜单慢一倍，
+   现与 ContextMenu 的 ctx-in 同档。 */
 @keyframes tw-menu-in {
   from {
     opacity: 0;
@@ -57,7 +80,7 @@
 
 .widget-menu {
   transform-origin: top left;
-  animation: tw-menu-in var(--anim-dur, 0.25s) var(--ease-out) both;
+  animation: tw-menu-in var(--dur-fx-xfast, 0.12s) var(--ease-out) both;
 }
 
 /* === 待办 / DDL 悬浮窗打磨 ===
@@ -69,7 +92,7 @@
   min-height: 0;
 }
 /* 列表在浮窗内独立滚动，不撑破卡片。
-   P2 三轮：滚动条由「彻底隐藏」改为「悬停浮现」——长列表无可滚暗示的问题
+   三轮：滚动条由「彻底隐藏」改为「悬停浮现」——长列表无可滚暗示的问题
    修掉，非悬停时保持极简观感（thumb 透明，列表 hover 时浮现全局 3px 细条）。 */
 .widget-card .task-list,
 .widget-card .deadline-groups {
@@ -193,23 +216,10 @@
   font-size: var(--fs-13);
 }
 
-/* === 应用启动器 / 图库浮窗适配 ===
-   网格在浮窗内滚动，图标间距与大小更贴合浮窗比例。 */
-.widget-card .launcher-grid {
-  gap: 6px;
-  align-content: start;
-}
-.widget-card .launcher-tile {
-  gap: 4px;
-}
-.widget-card .launcher-tile-icon {
-  width: 52px;
-  height: 52px;
-  border-radius: var(--rad-14);
-}
-.widget-card .launcher-tile-name {
-  font-size: var(--fs-10);
-}
+/* === 图库浮窗适配 ===
+   网格在浮窗内滚动，图标间距更贴合浮窗比例。
+   应用启动器浮窗适配段（.launcher-grid/-tile/
+   -tile-icon/-tile-name）已删——applauncher 组件退役（RETIRED_TYPES），0 引用。 */
 .widget-card .gal-grid {
   gap: 6px;
 }

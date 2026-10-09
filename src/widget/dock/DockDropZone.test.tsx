@@ -1,5 +1,5 @@
 /**
- * ISLAND-DROP 组件测试：画布卡片拖入灵动岛（F-2 入口 a，D1 默认复制 / Alt 移动）
+ * ISLAND-DROP 组件测试：画布卡片拖入灵动岛（入口 a，默认复制 / Alt 移动）
  * + 图库「添加到灵动岛」入口。
  *
  * 岛 DOM 用契约类名（.dock / .dock-tiles > .dock-tile）的假节点，不依赖并行会话
@@ -7,13 +7,14 @@
  * 拖动走真实 WidgetCard 的 pointer 事件链（pointerdown → rAF 节流 pointermove →
  * pointerup），断言落在 widget-store 的 dock.tiles / instances / trash / dockDrag。
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { ToastHost } from "../../components/ToastHost";
 import { WidgetCard } from "../WidgetCard";
 import { WidgetGallery } from "../WidgetGallery";
 import { DEFAULT_DOCK, useWidgetStore } from "../widget-store";
+import { HIT_RECTS_DIRTY_EVENT } from "../useClickThrough";
 import {
   DROP_HIT_MARGIN,
   DockDropZone,
@@ -135,7 +136,7 @@ function pointer(el: Element, type: PointerKind, x: number, y: number, extra: Re
 /** 从卡片 (150,450) 抓起，拖到岛内 (950,30)——落在第 1、2 枚磁贴之间（insertIndex 1）。 */
 async function dragCardOverIsland(card: Element) {
   pointer(card, "pointerDown", 150, 450);
-  // P2 三轮拖拽阈值：按下不再立即升级拖拽会话，位移过 3px 死区才托起。
+  // 三轮拖拽阈值：按下不再立即升级拖拽会话，位移过 3px 死区才托起。
   expect(card.classList.contains("dragging")).toBe(false);
   pointer(card, "pointerMove", 950, 30);
   await frame();
@@ -216,7 +217,7 @@ describe("画布卡片拖入灵动岛（WidgetCard × DockDropZone）", () => {
     expect(overlay.querySelector(".dock-drop-bar")?.getAttribute("data-insert-index")).toBe("1");
     const ghost = overlay.querySelector(".dock-drop-ghost") as HTMLElement;
     expect(ghost.textContent).toContain("待办清单");
-    expect(ghost.textContent).toContain("松手复制 · Alt 移动");
+    expect(ghost.textContent).toContain("松手添加 · Alt 移动");
     expect(ghost.style.transform).toContain("scale(1.04)");
 
     // 指针离开命中区 → 预览清除、插入位归 0；普通拖拽继续（位移直写
@@ -361,21 +362,70 @@ describe("画布卡片拖入灵动岛（WidgetCard × DockDropZone）", () => {
     expect(st.dock.tiles.some((t) => t.id === tileId)).toBe(false);
     expect(st.dock.tiles.map((t) => t.type)).toEqual(["clock", "pomodoro"]);
   });
+
+  it("拖动中岛几何变化（收合→弹出过渡结束派发 HIT_RECTS_DIRTY_EVENT）→ 会话缓存重读，命中按新几何判定", async () => {
+    const { card } = mountScene();
+    // 起拖：指针在岛外，会话缓存采到 ISLAND 几何（模拟收合态起拖的陈旧快照）。
+    pointer(card, "pointerDown", 150, 450);
+    pointer(card, "pointerMove", 300, 500);
+    await frame();
+    expect(useWidgetStore.getState().dockDrag?.overIsland).toBe(false);
+
+    // 岛「滑到」新位置（屏左上角 300×40），指针随后移进新范围——缓存不重读就永不命中。
+    const island = screen.getByTestId("island");
+    stubRect(island, { left: 0, top: 0, width: 300, height: 40 });
+    island.querySelectorAll(".dock-tile").forEach((el, i) =>
+      stubRect(
+        el,
+        [
+          { left: 6, top: 4, width: 100, height: 32 },
+          { left: 110, top: 4, width: 100, height: 32 }
+        ][i]
+      )
+    );
+    pointer(card, "pointerMove", 150, 20);
+    await frame();
+    expect(useWidgetStore.getState().dockDrag?.overIsland).toBe(false); // 旧缓存：未命中
+
+    // DockShell 在收合/弹出/吸附过渡结束派发本事件（此处直接模拟）。
+    act(() => {
+      window.dispatchEvent(new CustomEvent(HIT_RECTS_DIRTY_EVENT));
+    });
+    expect(useWidgetStore.getState().dockDrag).toMatchObject({ overIsland: true, insertIndex: 1 });
+
+    pointer(card, "pointerUp", 150, 20);
+    expect(useWidgetStore.getState().dock.tiles.map((t) => t.type)).toEqual(["clock", "todo", "pomodoro"]);
+  });
+
+  it("松手与最后一次移动同帧（快速甩动）：最终指针补写后仍按松手位置判定投放", () => {
+    const { card } = mountScene();
+    // 抓起 → 位移直接进岛 → 同帧松手，不等 rAF（旧实现 overIsland 停在上一帧甚至为空）。
+    pointer(card, "pointerDown", 150, 450);
+    pointer(card, "pointerMove", 950, 30);
+    pointer(card, "pointerUp", 950, 30);
+
+    const st = useWidgetStore.getState();
+    expect(st.dockDrag).toBeNull();
+    expect(st.dock.tiles.map((t) => t.type)).toEqual(["clock", "todo", "pomodoro"]);
+    expect(st.dock.tiles[1].instanceId).toBe(CARD.id);
+    // 投放语义不提交拖拽位移：卡片留在原位。
+    expect(st.instances.find((i) => i.id === CARD.id)).toMatchObject({ x: CARD.x, y: CARD.y });
+    expect(st.dragPreview).toEqual({});
+  });
 });
 
-describe("图库入口「添加到灵动岛」", () => {
+describe("图库入口「添加到灵动岛」（卡片悬停「岛」钮）", () => {
   const cardByName = (name: string) =>
-    screen.getByText(name, { selector: ".widget-gallery-card-name" }).closest("button")!;
+    screen.getByText(name, { selector: ".widget-gallery-card-name" }).closest('[role="button"]') as HTMLElement;
 
   it("未入岛类型可添加（无实例磁贴、追加末尾）；已在岛上的类型显示禁用态「已在灵动岛」", () => {
     render(<WidgetGallery onClose={() => {}} />);
 
-    fireEvent.click(cardByName("时钟"));
-    const disabled = screen.getByRole("button", { name: "已在灵动岛" }) as HTMLButtonElement;
+    // 时钟磁贴已在岛上：卡片「岛」钮呈禁用态（每张卡各一枚，用 within 限定）
+    const disabled = within(cardByName("时钟")).getByRole("button", { name: "已在灵动岛" }) as HTMLButtonElement;
     expect(disabled.disabled).toBe(true);
 
-    fireEvent.click(cardByName("天气"));
-    const add = screen.getByRole("button", { name: "添加到灵动岛" }) as HTMLButtonElement;
+    const add = within(cardByName("天气")).getByRole("button", { name: "添加到灵动岛" }) as HTMLButtonElement;
     expect(add.disabled).toBe(false);
     fireEvent.click(add);
 
@@ -383,8 +433,22 @@ describe("图库入口「添加到灵动岛」", () => {
     expect(tiles.map((t) => t.type)).toEqual(["clock", "pomodoro", "weather"]);
     expect(tiles[2].instanceId).toBeUndefined();
     // 同类型第二次：按钮即刻翻成禁用态
-    expect((screen.getByRole("button", { name: "已在灵动岛" }) as HTMLButtonElement).disabled).toBe(true);
-    // 图库本身不关闭、不加画布实例
+    expect((within(cardByName("天气")).getByRole("button", { name: "已在灵动岛" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+    // 入岛不加画布实例
     expect(useWidgetStore.getState().instances).toHaveLength(1);
+  });
+
+  it("单击卡片即入画布并打勾反馈；图库保持打开可连续添加", () => {
+    const onClose = vi.fn();
+    render(<WidgetGallery onClose={onClose} />);
+
+    fireEvent.click(cardByName("天气"));
+    expect(useWidgetStore.getState().instances.map((i) => i.type)).toEqual(["todo", "weather"]);
+    expect(cardByName("天气").className).toContain("just-added");
+    // 图库不自动关闭（旧版双击添加即关）：连续添加，退出走遮罩 / 返回 / Esc
+    expect(screen.getByText("专注", { selector: ".widget-gallery-cat-label" })).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

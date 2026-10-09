@@ -1,7 +1,7 @@
 /**
- * [MSET]（ZTools 借鉴 #3）Windows 设置深链指令表 + 搜索。
+ * [MSET]Windows 设置深链指令表 + 搜索。
  *
- * ZTools 内置 87 个 ms-settings: URI（12 分类）让启动器直达任意设置页；
+ * 同类启动器 内置 87 个 ms-settings: URI（12 分类）让启动器直达任意设置页；
  * Vela 的命令面板此前只有蓝牙页一个硬编码深链。这里按 Win11 设置应用的
  * 分区整理一份常用子集（名称 / 别名 / 分类），经 open_path 的
  * `ms-settings:` 分支交给 Shell 打开。

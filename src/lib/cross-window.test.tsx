@@ -34,19 +34,21 @@ import {
   flattenLeaves,
   mergeLeaves,
   mergeRows,
+  pruneAppTombstones,
   setWidgetsSyncSuspended,
   useCrossWindowSync,
   resetReplayBackoffForTests,
   type AppSyncPayload,
   type LeafMem
 } from "./cross-window";
+import * as tauriEvent from "@tauri-apps/api/event";
 import { isRemoteApplying, withRemoteApply } from "./sync-gate";
 import { currentScreenId, useWidgetStore, type DockConfig, type WidgetInstance } from "../widget/widget-store";
 import { useHabitsStore, type Habit } from "../store/habits-store";
 import { useSettingsStore } from "../store/settings-store";
-import { useAppStore } from "../store/app-store";
+import { getPomodoroControlEpoch, hydrateApp, resetHydrateOnceGateForTests, useAppStore } from "../store/app-store";
 import type { Task } from "../domain/schemas";
-import { isPersistSuspended, resumePersistence } from "./persist-gate";
+import { isPersistSuspended, resetPersistGateForTests } from "./persist-gate";
 
 const inst = (id: string): WidgetInstance => ({ id, type: "clock", x: 0, y: 0, w: 320, h: 200, z: 1 });
 const habit = (id: string): Habit => ({ id, name: `习惯${id}`, done: {} });
@@ -66,13 +68,13 @@ describe("useCrossWindowSync", () => {
     localStorage.clear();
     handlers.clear();
     emitMock.mockClear();
-    resumePersistence();
+    resetPersistGateForTests();
     useWidgetStore.setState({ instances: [], selectedId: null, selectedIds: [] });
     useHabitsStore.setState({ habits: [] });
   });
   afterEach(() => {
     setWidgetsSyncSuspended(false);
-    resumePersistence();
+    resetPersistGateForTests();
   });
 
   it("挂载后注册全部同步通道与 pause-ack 协议监听", async () => {
@@ -206,6 +208,25 @@ describe("useCrossWindowSync", () => {
     expect(ids()).toEqual(["c"]);
     r.unmount();
   });
+
+  it("habits 接收端采纳后推进去重基线：改回与旧内容相同的编辑不被误判为重复而漏播", async () => {
+    const r = await mountSync();
+    act(() => useHabitsStore.setState({ habits: [habit("a"), habit("b")] }));
+    await vi.waitFor(() => expect(habitEmits().length).toBeGreaterThanOrEqual(1));
+    const onHabits = handlers.get(SYNC_EVENTS.habits)!;
+
+    // 远端整包 [c] 到达并采纳——接收端去重基线应随之推进到 [c]（与 uDock 同口径）。
+    act(() => onHabits({ payload: { instanceId: "peer", rev: 5, habits: [habit("c")] } }));
+    expect(useHabitsStore.getState().habits.map((h) => h.id)).toEqual(["c"]);
+
+    // 本地改回「与采纳前自己最后一次发射相同」的 [a,b]：内容 ≠ 当前基线 → 必须照常
+    // 广播（旧实现基线停在 [a,b] 会误判重复而漏播，对端从此停在旧值）。
+    act(() => useHabitsStore.setState({ habits: [habit("a"), habit("b")] }));
+    await vi.waitFor(() => expect(habitEmits().length).toBeGreaterThanOrEqual(2));
+    const second = habitEmits()[1][1] as { habits: Habit[] };
+    expect(second.habits.map((h) => h.id)).toEqual(["a", "b"]);
+    r.unmount();
+  });
 });
 
 /* ---- 灵动岛配置通道（sync:dock）：设置窗改动即时到桌面层，桌面层不再用陈旧内存覆盖 ---- */
@@ -222,7 +243,7 @@ describe("useCrossWindowSync · sync:dock", () => {
   });
   afterEach(() => {
     setWidgetsSyncSuspended(false);
-    resumePersistence();
+    resetPersistGateForTests();
   });
 
   it("dock 变化经防抖广播，载荷带 instanceId / 单调 rev / screenId 与整份配置", async () => {
@@ -302,7 +323,7 @@ describe("useCrossWindowSync · sync:view-switch", () => {
   });
   afterEach(() => {
     setWidgetsSyncSuspended(false);
-    resumePersistence();
+    resetPersistGateForTests();
     useWidgetStore.setState({ instances: [], activeView: "home" });
   });
 
@@ -524,7 +545,7 @@ describe("useCrossWindowSync · sync:app 行级三方合并", () => {
     useAppStore.setState({ tasks: [], deadlines: [] });
   });
   afterEach(() => {
-    resumePersistence();
+    resetPersistGateForTests();
     useAppStore.setState({ tasks: [], deadlines: [] });
   });
 
@@ -534,10 +555,10 @@ describe("useCrossWindowSync · sync:app 行级三方合并", () => {
     await vi.waitFor(() => expect(appEmits()).toHaveLength(1));
     // 本窗口改 X（防抖未到点，尚未发出）。
     setTasks([task("a1", "X1"), task("a2", "Y0")]);
-    // 对端在同一窗口期改了 Y，其整表快照里 X 仍是旧值——旧实现整包覆盖会把 X1 回滚。
+    // 对端在同一窗口期改了 Y，其整表快照里 X 仍是旧值——旧实现整包覆盖会把 回滚。
     remote(Date.now() + 5, [task("a1", "X0"), task("a2", "Y1")]);
     expect(titles()).toEqual({ a1: "X1", a2: "Y1" });
-    // 保留了对端没有的 X1 → 立即回播，回播载荷同时含双方的改动。
+    // 保留了对端没有的 → 立即回播，回播载荷同时含双方的改动。
     await vi.waitFor(() => expect(appEmits()).toHaveLength(2));
     expect(lastApp().tasks!.map((t) => t.title)).toEqual(["X1", "Y1"]);
     r.unmount();
@@ -590,6 +611,29 @@ describe("useCrossWindowSync · sync:app 行级三方合并", () => {
     expect(appEmits()).toHaveLength(1); // 采纳远端不回播
     r.unmount();
   });
+
+  /* 水合窗口内收到的删除凭证此前只进
+     hydrationTombstones（仅保护本次水合的快照合并）——水合结束后，持有旧
+     内存的第三个窗口广播的陈旧整包仍带着已删行，mergeRows 在 appTombstones
+     查无记录会当「远端新增」采纳并回播扩散（删除复活）。修复后凭证生效时
+     同步镜像进 appTombstones，陈旧整包被墓碑拦截。 */
+  it("T-8：水合窗口内的删除凭证镜像进跨窗墓碑，水合后陈旧整包不复活已删行", async () => {
+    // 跳过迁移等待（主窗口身份会先跑一次性迁移；flag 已置位时立即返回）。
+    localStorage.setItem("focus-desk.migrated.v1", "1");
+    const r = await mountSync();
+    const t0 = Date.now() + 10;
+    // 水合窗口内（hydrateApp 的同步前缀置位 hydrating）收到删除凭证 h1。
+    resetHydrateOnceGateForTests();
+    const hydration = hydrateApp();
+    remote(t0, [], { removedTasks: ["h1"] });
+    await hydration;
+    expect(Object.keys(titles())).toEqual([]);
+    // 水合已结束：持有旧内存的窗 C 迟到的陈旧整包仍带着 h1——必须被
+    // appTombstones 拦截（修复前会当远端新增采纳复活）。
+    remote(t0 + 5, [task("h1")]);
+    expect(Object.keys(titles())).toEqual([]);
+    r.unmount();
+  });
 });
 
 /* ---- sync:settings 叶子级三方合并：旧实现按顶层字段整对象比较，且基线在编辑瞬间同步成
@@ -609,13 +653,14 @@ describe("useCrossWindowSync · sync:settings 叶子级三方合并", () => {
     g0 = general();
   });
   afterEach(() => {
-    resumePersistence();
+    resetPersistGateForTests();
     act(() => useSettingsStore.setState({ general: g0 }));
   });
 
   it("两窗口并发改同一嵌套对象的不同子键：两个子键都生效并回播", async () => {
     const r = await mountSync();
-    const lang = g0.language === "en" ? "zh" : "en";
+    // 用真实语言枚举值（sanitize 有白名单，任意串会在采纳远端时被清洗回默认）。
+    const lang = g0.language === "English" ? "简体中文" : "English";
     act(() => useSettingsStore.setState({ general: { ...g0, language: lang } }));
     // 对端基于旧 general 改了 reduceEffects，其快照里 language 仍是旧值。
     remote(Date.now() + 5, { general: { ...g0, reduceEffects: !g0.reduceEffects } });
@@ -644,6 +689,258 @@ describe("useCrossWindowSync · sync:settings 叶子级三方合并", () => {
 });
 
 /* ---- 合并核心纯函数：并发仲裁的确定性与删除/编辑仲裁 ---- */
+describe("useCrossWindowSync · sync:pomodoro（P0-1 门闩 / 纪元仲裁回归）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    handlers.clear();
+    emitMock.mockClear();
+    resetPersistGateForTests();
+    useWidgetStore.setState({ instances: [], selectedId: null, selectedIds: [] });
+    useHabitsStore.setState({ habits: [] });
+  });
+
+  function pomoEmits() {
+    return emitMock.mock.calls.filter(([name]) => name === SYNC_EVENTS.pomodoro);
+  }
+
+  it("P0-1：水合（withRemoteApply 内）重建 pomodoro 不得广播陈旧快照", async () => {
+    const r = await mountSync();
+    emitMock.mockClear();
+    // 复现 hydrateApp 的形态：setState 包在 withRemoteApply 里、pomodoro 对象
+    // 引用必变——此前 pomodoro 订阅只查 applyingRemote，会把这份 defaults+LS
+    // 旧值广播出去，静默重置其他窗口正在运行的计时。
+    act(() => {
+      withRemoteApply(() => {
+        useAppStore.setState((s) => ({ pomodoro: { ...s.pomodoro, remainingSeconds: 42, isRunning: false } }));
+      });
+    });
+    await new Promise((res) => setTimeout(res, 120));
+    expect(pomoEmits()).toHaveLength(0);
+    r.unmount();
+  });
+
+  it("本地控制变更正常广播，载荷携带控制纪元", async () => {
+    const r = await mountSync();
+    emitMock.mockClear();
+    act(() => {
+      useAppStore.setState((s) => ({ pomodoro: { ...s.pomodoro, isRunning: !s.pomodoro.isRunning } }));
+    });
+    await vi.waitFor(() => expect(pomoEmits().length).toBeGreaterThanOrEqual(1));
+    const payload = pomoEmits()[0][1] as { controlEpoch?: number };
+    expect(typeof payload.controlEpoch).toBe("number");
+    r.unmount();
+  });
+
+  it("P1：纪元更旧的锚点包不得回滚更新的控制态（暂停竞态）", async () => {
+    const r = await mountSync();
+    const h = handlers.get(SYNC_EVENTS.pomodoro)!;
+    const snap = (over: Record<string, unknown>) => ({
+      pomodoro: { ...useAppStore.getState().pomodoro, remainingSeconds: 300, isRunning: true },
+      segmentAnchorMs: null,
+      segmentBaseSeconds: 0,
+      segmentStartedAt: null,
+      segmentPlannedAtStart: 0,
+      segmentAdjustSeconds: 0,
+      pausedAtMs: null,
+      controlEpoch: 0,
+      ...over
+    });
+    // 纪元基线改为启动时刻（墙钟）——相对基准从当前本地纪元推导，
+    // 不再用绝对小值（0 起算时本地纪元会恒大于手造包，包全部被拒收）。
+    const base = getPomodoroControlEpoch();
+    // 迷你窗（其他实例）先暂停：epoch base+6 / wallMs 1000。
+    act(() =>
+      h({
+        payload: {
+          instanceId: "other-window",
+          wallMs: 1000,
+          ...snap({ controlEpoch: base + 6, pomodoro: { ...useAppStore.getState().pomodoro, isRunning: false } })
+        }
+      })
+    );
+    expect(useAppStore.getState().pomodoro.isRunning).toBe(false);
+    // 主窗的锚点包后到：wallMs 更新（2000>1000）但纪元更旧（base+5 < base+6）——必须拒收。
+    act(() => h({ payload: { instanceId: "other-window", wallMs: 2000, ...snap({ controlEpoch: base + 5 }) } }));
+    expect(useAppStore.getState().pomodoro.isRunning).toBe(false);
+    // 同纪元的更旧 wallMs 也拒收（既有行为保留）。
+    act(() => h({ payload: { instanceId: "other-window", wallMs: 500, ...snap({ controlEpoch: base + 6 }) } }));
+    expect(useAppStore.getState().pomodoro.isRunning).toBe(false);
+    // 更新纪元的包正常采纳。
+    act(() => h({ payload: { instanceId: "other-window", wallMs: 3000, ...snap({ controlEpoch: base + 7 }) } }));
+    expect(useAppStore.getState().pomodoro.isRunning).toBe(true);
+    r.unmount();
+  });
+});
+
+describe("useCrossWindowSync · sync:interruption（P2 打断跨窗同步）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    handlers.clear();
+    emitMock.mockClear();
+    resetPersistGateForTests();
+    useWidgetStore.setState({ instances: [], selectedId: null, selectedIds: [] });
+    useHabitsStore.setState({ habits: [] });
+    useAppStore.setState((s) => ({ ...s, interruptions: [] }));
+  });
+
+  function intrEmits() {
+    return emitMock.mock.calls.filter(([name]) => name === SYNC_EVENTS.interruption);
+  }
+
+  const rec = (at: string) => ({
+    startedAt: at,
+    endedAt: at,
+    reason: "电话",
+    mode: "focus" as const,
+    elapsedSeconds: 120
+  });
+
+  it("本地新打断记录增量广播（副窗口中断计数即时刷新）", async () => {
+    const r = await mountSync();
+    emitMock.mockClear();
+    act(() => {
+      useAppStore.setState((s) => ({ interruptions: [...s.interruptions, rec("2026-08-13T09:00:00Z")] }));
+    });
+    await vi.waitFor(() => expect(intrEmits().length).toBeGreaterThanOrEqual(1));
+    const payload = intrEmits()[0][1] as { record?: { reason: string } };
+    expect(payload.record?.reason).toBe("电话");
+    r.unmount();
+  });
+
+  it("接收端按 起始|结束|原因 组合键去重 append；自身回声拒收", async () => {
+    const r = await mountSync();
+    // 用本窗真实 INSTANCE_ID（从本地广播载荷里取）验证回声拒收。
+    act(() => {
+      useAppStore.setState((s) => ({ interruptions: [...s.interruptions, rec("2026-08-13T08:00:00Z")] }));
+    });
+    await vi.waitFor(() => expect(intrEmits().length).toBeGreaterThanOrEqual(1));
+    const selfId = (intrEmits()[0][1] as { instanceId: string }).instanceId;
+    useAppStore.setState((s) => ({ ...s, interruptions: [] }));
+    emitMock.mockClear();
+
+    const h = handlers.get(SYNC_EVENTS.interruption)!;
+    act(() => h({ payload: { instanceId: "other-window", record: rec("2026-08-13T10:00:00Z") } }));
+    expect(useAppStore.getState().interruptions).toHaveLength(1);
+    // 同组合键重复包：拒收。
+    act(() => h({ payload: { instanceId: "other-window", record: rec("2026-08-13T10:00:00Z") } }));
+    expect(useAppStore.getState().interruptions).toHaveLength(1);
+    // 自己实例的回声：拒收。
+    act(() => h({ payload: { instanceId: selfId, record: rec("2026-08-13T11:00:00Z") } }));
+    expect(useAppStore.getState().interruptions).toHaveLength(1);
+    // 远端采纳不回播（无新 emit）。
+    await new Promise((res) => setTimeout(res, 80));
+    expect(intrEmits()).toHaveLength(0);
+    r.unmount();
+  });
+});
+
+describe("useCrossWindowSync · T-13 监听链中途失败的自拆", () => {
+  /** 包装 listen mock：指定事件名的注册直接 reject，其余走原实现。 */
+  function rejectListenOn(badName: string): () => void {
+    const listenMock = vi.mocked(tauriEvent.listen);
+    const realImpl = listenMock.getMockImplementation()!;
+    const wrapped = (async (name: string, cb: (e: { payload: unknown }) => void) => {
+      if (name === badName) throw new Error("ipc down");
+      return realImpl(name as never, cb as never);
+    }) as unknown as typeof realImpl;
+    listenMock.mockImplementation(wrapped);
+    return () => listenMock.mockImplementation(realImpl);
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    handlers.clear();
+    emitMock.mockClear();
+    resetPersistGateForTests();
+  });
+
+  it("主链 u2 注册失败：u1（settings）已被拆而非泄漏，失败上报且无 unhandled rejection", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const restore = rejectListenOn(SYNC_EVENTS.widgets);
+    try {
+      const r = renderHook(() => useCrossWindowSync());
+      // 以失败上报为完成信号（handlers 初始为空，不能拿「尚未注册」当拆除
+      // 证据），再断言已注册的 settings 监听确实被拆（修复前：unsubs 在全部
+      // listen 成功后才赋值，catch 迭代空数组，settings 监听泄漏）。
+      await vi.waitFor(() =>
+        expect(errSpy).toHaveBeenCalledWith("[sync] cross-window listen chain interrupted:", expect.any(Error))
+      );
+      expect(handlers.has(SYNC_EVENTS.settings)).toBe(false);
+      // 失败点之后的通道从未注册。
+      expect(handlers.has(SYNC_EVENTS.app)).toBe(false);
+      r.unmount();
+    } finally {
+      restore();
+      errSpy.mockRestore();
+    }
+  });
+
+  it("persist-gate 的 resume 注册失败：已注册的 pause 监听被拆（不再半残泄漏）", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const restore = rejectListenOn("sync:persist-resume");
+    try {
+      const r = renderHook(() => useCrossWindowSync());
+      await vi.waitFor(() =>
+        expect(errSpy).toHaveBeenCalledWith("[sync] persist-gate listen failed", expect.any(Error))
+      );
+      expect(handlers.has("sync:persist-pause")).toBe(false);
+      r.unmount();
+    } finally {
+      restore();
+      errSpy.mockRestore();
+    }
+  });
+});
+
+/* ---- ：switchScreen 冲刷 widgets 80ms 广播防抖。
+   旧实现 switchScreen 只冲 dock，widgets 的待发射定时器被切屏 set()
+   触发的订阅回调直接 clear（旧屏那次编辑丢播）；屏号又在发射时才取，迟到
+   的旧屏快照会打上新屏标。修复后：切屏前以「旧屏号 + 订阅期快照」先冲刷，
+   且定时器发射时现取 store 现值（屏号与数据同源同时刻）。 ---- */
+describe("useCrossWindowSync · switchScreen 冲刷 widgets 广播（T-14）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    handlers.clear();
+    emitMock.mockClear();
+    resetPersistGateForTests();
+    useWidgetStore.setState({ instances: [], selectedId: null, selectedIds: [], activeView: "home", trash: [] });
+  });
+  afterEach(() => {
+    setWidgetsSyncSuspended(false);
+    resetPersistGateForTests();
+    // currentScreen 是模块级状态：切回默认屏，防串扰文件内其他 describe。
+    if (currentScreenId() !== "0") act(() => useWidgetStore.getState().switchScreen("0"));
+    useWidgetStore.setState({ instances: [], selectedId: null, selectedIds: [] });
+  });
+
+  it("防抖窗口内编辑后立即切屏：旧屏快照以旧屏号先冲刷，此后发射的都是新屏数据", async () => {
+    const r = await mountSync();
+    // 80ms 防抖窗口内：屏 0 编辑 → 立即切到屏 1（定时器尚未到期）。
+    act(() => useWidgetStore.getState().addWidget("clock", { w: 320, h: 200 }));
+    act(() => useWidgetStore.getState().switchScreen("1"));
+    expect(currentScreenId()).toBe("1");
+    // 冲刷的旧屏包：屏号 0 + 屏 0 的实例（此刻 currentScreenId 已是 1，证明
+    // 屏号取自冲刷时刻的旧屏）。不依赖到达顺序：本环境下 emit 首试可能走真实
+    // 模块失败、300ms 退避重试后才经 mock 到达，存在性断言两种时序都成立。
+    await vi.waitFor(() => {
+      const flushed = widgetEmits().find(([, p]) => (p as { screenId: string }).screenId === "0");
+      expect(flushed).toBeTruthy();
+      expect((flushed![1] as { instances: unknown[] }).instances).toHaveLength(1);
+    });
+    // 切屏后的常规防抖发射：屏号与数据同属屏 1（屏 1 无布局 → 空实例表）。
+    await vi.waitFor(() => {
+      const post = widgetEmits().filter(([, p]) => (p as { screenId: string }).screenId === "1");
+      expect(post.length).toBeGreaterThanOrEqual(1);
+    });
+    // 全程不存在「旧屏数据打新屏标」的错标包：带实例的包只允许屏号 0。
+    for (const [, p] of widgetEmits()) {
+      const q = p as { screenId: string; instances: unknown[] };
+      if (q.instances.length > 0) expect(q.screenId).toBe("0");
+    }
+    r.unmount();
+  });
+});
+
 describe("mergeRows / mergeLeaves", () => {
   type Row = { id: string; v: string };
   const mem = (json: string, ts: number): LeafMem => ({ json, ts });
@@ -685,6 +982,37 @@ describe("mergeRows / mergeLeaves", () => {
     expect(revived.revived).toEqual(["x"]);
     const older = mergeRows<Row>([], [{ id: "x", v: "2" }], [], b, new Map(), tomb, 400);
     expect(older.merged).toEqual([]);
+  });
+
+  it("墓碑 TTL 边界（F-11/F-17）：29s 仍拒收并滑动续期；31s 过期后按远端新增采纳", () => {
+    const b = base([{ id: "x", v: "0" }]);
+    const deletedAt = 1_000;
+    // +29s：prune 保留墓碑 → 陈旧包拒收，且 renewedTombstones 请求续期。
+    const tomb29 = new Map([["x", deletedAt]]);
+    pruneAppTombstones(deletedAt + 29_000);
+    // prune 操作模块级 appTombstones；此处用同款谓词驱动独立 map（保持纯函数口径）。
+    const stale = mergeRows<Row>([], [{ id: "x", v: "0" }], [], b, new Map(), tomb29, deletedAt + 29_000);
+    expect(stale.merged).toEqual([]);
+    expect(stale.renewedTombstones).toEqual(["x"]);
+    // 续期后（renew=+29s）再过 29s：仍有效，继续拒收。
+    const tombRenewed = new Map([["x", deletedAt + 29_000]]);
+    const stillStale = mergeRows<Row>([], [{ id: "x", v: "0" }], [], b, new Map(), tombRenewed, deletedAt + 58_000);
+    expect(stillStale.merged).toEqual([]);
+    // +31s（无续期）：墓碑被 prune 删除 → 同一包按远端新增采纳（TTL 到期
+    // 信任远端是既定语义，续期把该语义限制在「真的 30s 无重播」之后）。
+    pruneAppTombstones(deletedAt + 31_000);
+    const revivedByExpiry = mergeRows<Row>(
+      [],
+      [{ id: "x", v: "0" }],
+      [],
+      b,
+      new Map(),
+      new Map(), // prune 已删
+      deletedAt + 31_000
+    );
+    expect(revivedByExpiry.merged).toEqual([{ id: "x", v: "0" }]);
+    expect(revivedByExpiry.changed).toBe(true);
+    expect(revivedByExpiry.renewedTombstones).toEqual([]);
   });
 
   it("叶子级：嵌套对象的不同子键各取所变，未触及的子树引用不变", () => {
@@ -753,5 +1081,112 @@ describe("mergeRows / mergeLeaves", () => {
     const take = mergeLeaves({ extra: { fxToggles: allOff } }, { extra: { fxToggles: {} } }, b, new Map(), 120);
     expect((take.next.extra as { fxToggles: unknown }).fxToggles).toEqual({});
     expect(take.changed).toBe(true);
+  });
+});
+
+/* ---- ：五条 80ms 广播防抖的 pagehide 冲刷 ----
+   关窗时防抖尾包随定时器蒸发 → 对端错过最后一次编辑 → 对端下一次任意编辑
+   以陈旧内存整包回写磁盘。修复后 pagehide 对「计时中」的通道立即现值发射。 */
+describe("useCrossWindowSync · Q-18 pagehide 冲刷", () => {
+  const task = (id: string): Task => ({
+    id,
+    title: id,
+    completed: false,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    dueAt: "",
+    priority: 0,
+    tags: [],
+    sortOrder: 0
+  });
+  const firePageHide = () => act(() => window.dispatchEvent(new Event("pagehide")));
+  const emitted = (name: string) => emitMock.mock.calls.filter(([n]) => n === name);
+
+  beforeEach(() => {
+    localStorage.clear();
+    handlers.clear();
+    emitMock.mockClear();
+    resetPersistGateForTests();
+    resetReplayBackoffForTests();
+    useWidgetStore.setState({ instances: [], selectedId: null, selectedIds: [] });
+    useHabitsStore.setState({ habits: [] });
+    useAppStore.setState({ tasks: [], deadlines: [] });
+  });
+  afterEach(() => {
+    setWidgetsSyncSuspended(false);
+    resetPersistGateForTests();
+  });
+
+  it("五通道防抖窗口内 pagehide：仅计时中的通道立即冲刷发射（widgets/dock/app/habits/settings 逐通道验证）", async () => {
+    const r = await mountSync();
+    // 等挂载后的回读/水合异步链沉淀，避免其写入混入断言。
+    await act(async () => {});
+    // 注：五通道同一 tick 并发发射会让 vitest 的动态 import mock 只命中首个
+    // （其余落到真实 @tauri-apps/api 并失败）——故逐通道「写入 → 关窗 → 断言」，
+    // 同时更精确地锁定「仅定时器计时中的通道才冲刷」的语义。
+    const flushAndExpect = async (arm: () => void, name: string, extra?: () => void) => {
+      emitMock.mockClear();
+      act(arm);
+      firePageHide();
+      await act(async () => {});
+      await vi.waitFor(() => expect(emitted(name).length).toBeGreaterThanOrEqual(1));
+      if (extra) extra();
+    };
+
+    let lastWidgets = 0;
+    await flushAndExpect(
+      () => useWidgetStore.getState().addWidget("clock", { w: 320, h: 200 }),
+      SYNC_EVENTS.widgets,
+      () => {
+        // 冲刷与定时器回调同口径：现取现值（防抖窗内的最新布局随包带出）。
+        const w = emitted(SYNC_EVENTS.widgets).at(-1)![1] as { instances: unknown[] };
+        expect(w.instances).toHaveLength(++lastWidgets);
+        expect(emitted(SYNC_EVENTS.dock)).toHaveLength(0);
+      }
+    );
+    await flushAndExpect(
+      () => useWidgetStore.setState((s) => ({ dock: { ...s.dock } })),
+      SYNC_EVENTS.dock,
+      () => expect(emitted(SYNC_EVENTS.widgets)).toHaveLength(0)
+    );
+    await flushAndExpect(
+      () => useAppStore.setState({ tasks: [task("p1")] }),
+      SYNC_EVENTS.app,
+      () => expect(emitted(SYNC_EVENTS.habits)).toHaveLength(0)
+    );
+    await flushAndExpect(
+      () => useHabitsStore.setState({ habits: [habit("h1")] }),
+      SYNC_EVENTS.habits,
+      () => expect(emitted(SYNC_EVENTS.settings)).toHaveLength(0)
+    );
+    await flushAndExpect(() => useSettingsStore.setState({ zoom: 1.6 }), SYNC_EVENTS.settings);
+    r.unmount();
+  });
+
+  it("无待发定时器时 pagehide 不制造任何发射（幂等，不发噪声包）", async () => {
+    const r = await mountSync();
+    await act(async () => {});
+    emitMock.mockClear();
+    firePageHide();
+    await new Promise((res) => setTimeout(res, 150));
+    for (const name of [
+      SYNC_EVENTS.widgets,
+      SYNC_EVENTS.dock,
+      SYNC_EVENTS.app,
+      SYNC_EVENTS.habits,
+      SYNC_EVENTS.settings
+    ]) {
+      expect(emitted(name)).toHaveLength(0);
+    }
+    r.unmount();
+  });
+
+  it("卸载后 pagehide 冲刷监听已移除，不再发射", async () => {
+    const r = await mountSync();
+    await act(async () => {});
+    emitMock.mockClear();
+    r.unmount();
+    firePageHide();
+    await new Promise((res) => setTimeout(res, 150));
+    expect(emitMock.mock.calls.filter(([n]) => n.startsWith("sync:"))).toHaveLength(0);
   });
 });

@@ -41,6 +41,13 @@ describe("番茄钟面板（改版）", () => {
     expect(document.querySelector(".pomodoro-seg-thumb")).not.toBeNull();
     expect(document.querySelector(".focus-timer")).not.toBeNull();
   });
+
+  it("ZV-2：空闲态（无进行段）不渲染「记录中断」入口——点击 no-op 的死按钮不再出现", () => {
+    // 全新启动默认态：mode=focus、倒计时、未运行、剩余=满额。修复引入的
+    // planned==null 分支曾让空闲态误判「暂停中」，按钮常驻但 store no-op。
+    render(<PomodoroPanel instanceId="pom-zv2" />);
+    expect(screen.queryByRole("button", { name: /放弃本次专注并记录原因/ })).not.toBeInTheDocument();
+  });
 });
 
 describe("专注统计面板（改版）", () => {

@@ -68,7 +68,7 @@ function load(instanceId: string): Bookmark[] {
   }
 }
 
-/** W-072：解析浏览器导出的 Netscape 书签 HTML（Chrome/Edge/Firefox 通用格式）。 */
+/** 解析浏览器导出的 Netscape 书签 HTML（Chrome/Edge/Firefox 通用格式）。 */
 // 被 notes-store.test.ts 复用，需保留导出；非组件导出与 Fast Refresh 冲突，故显式豁免。
 // eslint-disable-next-line react-refresh/only-export-components
 export function parseNetscapeBookmarks(html: string): Bookmark[] {
@@ -94,7 +94,7 @@ export function parseNetscapeBookmarks(html: string): Bookmark[] {
         } else {
           const h3 = el.querySelector(":scope > h3");
           if (h3) {
-            // Netscape 格式中文件夹的 <DL> 通常是 <DT><H3> 的后续兄弟节点，
+            // Netscape 格式中文件夹的 <DL> 通常是 <DT><> 的后续兄弟节点，
             // 但部分解析器（DOMParser 的 HTML 容错）会把它挪成子节点——两处都找。
             let sub: Element | null = el.querySelector(":scope > dl");
             if (!sub) {
@@ -116,7 +116,7 @@ export function parseNetscapeBookmarks(html: string): Bookmark[] {
   return out;
 }
 
-/** W-068：favicon 双源回退（DuckDuckGo → Google s2 → 首字母头像）。 */
+/** favicon 双源回退（DuckDuckGo → Google s2 → 首字母头像）。 */
 function Favicon({ url, name }: { url: string; name: string }) {
   const [stage, setStage] = useState(0);
   const host = hostOf(url);
@@ -160,7 +160,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
   const showFavicon = config.showFavicon !== false;
   const showSearch = config.showSearch !== false;
 
-  // W-069：搜索过滤（名称 / 网址 / 分组）。
+  // 搜索过滤（名称 / 网址 / 分组）。
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return items;
@@ -195,7 +195,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
     step: 40
   });
 
-  // W-070：分组渲染（手动排序时不分组，避免拖拽与分组头互相干扰）。
+  // 分组渲染（手动排序时不分组，避免拖拽与分组头互相干扰）。
   const grouped = useMemo(() => {
     if (manualSort) return null;
     const ungrouped: Bookmark[] = [];
@@ -254,12 +254,14 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
     persistMirrored(bookmarkKey(instanceId), JSON.stringify(next));
   };
 
-  const normalizeUrl = (raw: string) => (/^https?:\/\//.test(raw) ? raw : `https://${raw}`);
+  // 正则加 i 标志——`HTTP://example.com` 此前判不中协议头，被拼成
+  // `https://HTTP://example.com` 坏链。
+  const normalizeUrl = (raw: string) => (/^https?:\/\//i.test(raw.trim()) ? raw.trim() : `https://${raw.trim()}`);
 
   // Tauri WebView 会拦截 <a target="_blank">（新窗口被吞或替换整个应用页面），
   // 因此桌面端必须走 Rust 侧 open_path 用系统默认浏览器打开；浏览器开发模式
   // 回退到 window.open。
-  /** L5：仅放行 http(s)（外加 about:blank#blocked 这类惰性占位）。书签可经
+  /** 仅放行 http(s)（外加 about:blank#blocked 这类惰性占位）。书签可经
    *  .url 快捷方式导入（URL= 行内容不受控），javascript:/data: 等方案若进了
    *  href，中键 / 右键“打开链接”会绕过 onClick 拦截触发原生导航。 */
   const safeHref = (url: string): string => {
@@ -274,7 +276,12 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
   const openBookmark = (url: string) => {
     if (safeHref(url) === "javascript:void(0)") return;
     if (isTauri()) {
-      void invoke("open_path", { path: url }).catch(() => {});
+      // 打开失败不再空吞——点了没反应且无提示，用户无从判断是链接坏了
+      // 还是没点上。复用现有 error 通道 + 3s 自动清除（与导入失败提示同款）。
+      void invoke("open_path", { path: url }).catch(() => {
+        setError(tr("打开失败，请检查链接"));
+        safeTimeout(() => setError(""), 3000);
+      });
     } else {
       window.open(url, "_blank", "noreferrer");
     }
@@ -328,15 +335,15 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
   };
 
   /* 删除退场：先播收拢淡出，再真正移除（时长由 hook 按 --dur-fx 运行时派生，
-     P1：写死 220ms 不随动效速度档缩放）。 */
+     写死 220ms 不随动效速度档缩放）。 */
   const { confirmingId: confirmDeleteId, request: confirmRequest } = useConfirmAction();
   const { removingIds, begin: beginRemoval } = useDelayedRemoval((id) => persist(items.filter((b) => b.id !== id)));
   const remove = (id: string) => {
     if (confirmRequest(id)) beginRemoval(id);
   };
 
-  // W-071：手动拖拽排序（以显示顺序为基准重写 order）。
-  // D8：落位用 FLIP 过渡回弹，替代此前的瞬间跳变。
+  // 手动拖拽排序（以显示顺序为基准重写 order）。
+  // 落位用 FLIP 过渡回弹，替代此前的瞬间跳变。
   const reorderManual = (from: number, to: number, container: HTMLElement | null) => {
     if (from < 0 || to < 0 || from === to || from >= items.length || to >= items.length) return;
     const display = [...items].sort(
@@ -362,7 +369,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
     reorderManual(from, to, container);
   };
 
-  // B10：键盘替代——书签行聚焦后 Alt+↑/↓ 移动顺序（对齐 TodayTasksPanel）。
+  // 键盘替代——书签行聚焦后 Alt+↑/↓ 移动顺序（对齐 TodayTasksPanel）。
   const moveBookmark = (id: string, dir: -1 | 1, container: HTMLElement | null) => {
     const display = [...items].sort(
       (a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER)
@@ -371,7 +378,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
     reorderManual(from, from + dir, container);
   };
 
-  // W-072：导入浏览器书签 HTML（按 URL 去重后合并）。
+  // 导入浏览器书签 HTML（按 URL 去重后合并）。
   const importHtml = (file: File) => {
     void file.text().then((html) => {
       const imported = parseNetscapeBookmarks(html);
@@ -393,7 +400,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
     });
   };
 
-  // W-070：分组折叠。
+  // 分组折叠。
   const toggleGroup = (g: string) => {
     setCollapsedGroups((s) => {
       const nx = new Set(s);
@@ -411,7 +418,8 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
             placeholder={tr("名称")}
             value={editName}
             onChange={(e) => setEditName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && saveEdit()}
+            /* IME 组合期 Enter（确认候选词）不当作提交。 */
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && saveEdit()}
             autoFocus
             data-interactive
           />
@@ -419,7 +427,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
             placeholder={tr("网址")}
             value={editUrl}
             onChange={(e) => setEditUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && saveEdit()}
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && saveEdit()}
             data-interactive
           />
           <input
@@ -479,10 +487,10 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          // W-073：右键就地操作。
+          // 右键就地操作。
           openContextMenu(e, [
             { label: tr("打开链接"), icon: <ExternalLink size={13} />, onSelect: () => openBookmark(b.url) },
-            // [WEB-PREVIEW]（借鉴 CSH #11）：应用内浮层预览——查完文档就回来的路径不断。
+            // [WEB-PREVIEW]：应用内浮层预览——查完文档就回来的路径不断。
             {
               label: tr("在浮层中打开"),
               icon: <PanelTop size={13} />,
@@ -592,7 +600,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
             placeholder={tr("名称")}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && add()}
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()}
             autoFocus
             data-interactive
           />
@@ -600,7 +608,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
             placeholder="https://…"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && add()}
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()}
             data-interactive
           />
           <input
@@ -608,7 +616,7 @@ export function BookmarksWidget({ instanceId }: { instanceId: string }) {
             placeholder={tr("分组（可选）")}
             value={group}
             onChange={(e) => setGroup(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && add()}
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()}
             data-interactive
           />
           {error && <div className="bm-error">{error}</div>}

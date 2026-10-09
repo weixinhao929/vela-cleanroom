@@ -1,4 +1,4 @@
-//! 省电模式状态源（F-3 P2；标杆 :292-301 OnPowerBroadcast / :1515-1523
+//! 省电模式状态源（OnPowerBroadcast 事件 +
 //! 初始 GetSystemPowerStatus）。
 //!
 //! 事件线：CORE 的 win_watcher 消息窗已
@@ -8,7 +8,7 @@
 //! POWERBROADCAST_SETTING（纯函数，可单测）。初始值：
 //! `GetSystemPowerStatus().SystemStatusFlag`（非 0 = 省电开启）。
 
-/// GUID_POWER_SAVING_STATUS {E00958C0-C213-4ACE-AC77-FECCED2EEEA5}（与
+/// GUID_POWER_SAVING_STATUS {E00958C0--4ACE--FECCED2EEEA5}（与
 /// win_watcher.rs 手写常量同值，避免互相依赖）。
 pub const GUID_POWER_SAVING_STATUS_U128: u128 = 0xe00958c0_c213_4ace_ac77_fecced2eeea5;
 
@@ -16,8 +16,8 @@ pub const GUID_POWER_SAVING_STATUS_U128: u128 = 0xe00958c0_c213_4ace_ac77_fecced
 /// Win32_System_Power feature 下重复定义，本地别名保持独立）。
 pub const PBT_POWERSETTING_CHANGE: u32 = 0x8013;
 
-/// 初始省电状态（GetSystemPowerStatus；读取失败按关闭，与标杆
-/// LastErrorHandle 后保持原值等价——原值初始即 false）。
+/// 初始省电状态（GetSystemPowerStatus；读取失败按关闭——
+/// 保持原值等价，原值初始即 false）。
 #[cfg(windows)]
 pub fn initial_battery_saver() -> bool {
     // SAFETY: 输出结构体按值返回的只读查询。

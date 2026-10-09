@@ -9,6 +9,10 @@ import { t } from "../i18n-lite";
 
 interface Props {
   children: ReactNode;
+  /** 「重试」按下时先回调这里——调用方丢弃缓存的 rejected import
+      （make-resettable-lazy 的 reset），重试才是真的重新拉 chunk；
+      不接线的窗口形态仍有「重新加载窗口」兜底。 */
+  onRetry?: () => void;
 }
 
 interface State {
@@ -39,7 +43,16 @@ export class ErrorBoundary extends Component<Props, State> {
     });
   }
 
-  private reset = () => this.setState({ error: null });
+  private reset = () => {
+    // 先丢弃缓存的 rejected import 再清错误态——否则重渲染的仍是同一
+    // 个 lazy 实例，重试只是重放已缓存的失败。
+    try {
+      this.props.onRetry?.();
+    } catch {
+      // 回调异常不得再次抛入边界
+    }
+    this.setState({ error: null });
+  };
 
   /** 确定性错误下「重试」会立刻再抛；给一条真正能跳出去的路。 */
   private reload = () => window.location.reload();

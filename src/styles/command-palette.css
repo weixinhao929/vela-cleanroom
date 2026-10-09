@@ -1,4 +1,4 @@
-﻿/* === 全局命令面板（I1）=== */
+﻿/* === 全局命令面板=== */
 .cmd-palette {
   position: fixed;
   inset: 0;
@@ -75,7 +75,7 @@ html[data-reduce-motion="1"] .cmd-palette-box {
   padding: 3px 6px;
 }
 
-/* [PASTE]（ZTools #1）粘贴态载荷芯片：输入框下、列表上的一行当前载荷 +
+/* [PASTE]粘贴态载荷芯片：输入框下、列表上的一行当前载荷 +
    清除按钮（Esc 第一步同义）。 */
 .cmd-palette-payload {
   display: flex;
@@ -116,7 +116,7 @@ html[data-reduce-motion="1"] .cmd-palette-box {
 .cmd-palette-payload-clear:hover {
   color: var(--ink);
 }
-/* P2 三轮补退场：清除后保留一拍播淡出（useDelayedUnmount 快照渲染承载）。 */
+/* 三轮补退场：清除后保留一拍播淡出（useDelayedUnmount 快照渲染承载）。 */
 .cmd-palette-payload.is-closing {
   animation: cmd-palette-fade-out var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease) forwards;
   pointer-events: none;
@@ -147,10 +147,10 @@ html[data-reduce-motion="1"] .cmd-palette-box {
   text-align: left;
   transition: background var(--dur-fx-xfast, 0.12s) var(--ease-fx, ease);
 }
-/* #110 起高亮由滑移指示条（.cmd-palette-indicator，accent 药丸）独自承载：
+/* 起高亮由滑移指示条（.cmd-palette-indicator，accent 药丸）独自承载：
    此处保留的 .active 静态底色与指示条以不同速度/曲线同时变化，键盘连按时
    可见「药丸追底色」叠影——不再二选一，删底色。 */
-/* A4 按压态：state-layer pressed 一档（高亮本体仍由指示条承载）。 */
+/* 按压态：state-layer pressed 一档（高亮本体仍由指示条承载）。 */
 .cmd-palette-item:active {
   background: color-mix(in srgb, var(--ink) var(--state-layer-pressed, 0.12), transparent);
 }
@@ -183,7 +183,7 @@ html[data-reduce-motion="1"] .cmd-palette-box {
 }
 
 /* === C 节 #56/#57/#111 补全 === */
-/* #56 空态淡入 */
+/* 空态淡入 */
 .cmd-palette-empty {
   animation: cmd-palette-fade-in var(--dur-fx, 0.2s) var(--ease-fx, ease) backwards;
 }
@@ -195,7 +195,7 @@ html[data-reduce-motion="1"] .cmd-palette-box {
     opacity: 1;
   }
 }
-/* #56 列表项错落入场（延迟由 TSX 内联注入，7 项封顶） */
+/* 列表项错落入场（延迟由 TSX 内联注入，7 项封顶） */
 .cmd-palette-item {
   animation: cmd-palette-fade-in var(--dur-fx-fast, 0.15s) var(--ease-out, ease-out) backwards;
 }

@@ -1,8 +1,8 @@
 /**
  * 音乐小组件：系统「正在播放」卡片（SMTC §4.8 事件化：media:snapshot 变化
  * 才发 + 250ms 本地进度推进）、频谱可视化与多媒体会话选择（锁定特定播放源）。
- * 配置经统一就地弹层 WidgetConfigPopover（B1）：组件右键打开；此前的右键
- * 勾选式快捷菜单（布局/检测源/样式）已删除。播放源选择（W-123）仍在
+ * 配置经统一就地弹层 WidgetConfigPopover：组件右键打开；此前的右键
+ * 勾选式快捷菜单（布局/检测源/样式）已删除。播放源选择仍在
  * 「正在播放」卡片的右键/齿轮里。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -29,6 +29,7 @@ import { openContextMenu } from "../../components/ContextMenu";
 import { useT } from "../../i18n-lite";
 import { useTauriEvent } from "../../lib/use-tauri-event";
 import { useNowPlaying } from "../../lib/use-now-playing";
+import { uiZoom } from "../../lib/ui-zoom";
 import { useMediaSessions } from "../../lib/media-sessions";
 import { useSettingsStore } from "../../store/settings-store";
 import { useWidgetConfig } from "../widget-config";
@@ -41,9 +42,14 @@ import {
   type BandDistMode,
   type VisualStyle
 } from "./AudioVisualizer";
+import type { AudioStatusPayload } from "../../types/bindings/AudioStatusPayload";
 
-/** W-118 布局：纯频谱 / 正在播放卡 / 两者。 */
+/** 布局：纯频谱 / 正在播放卡 / 两者。 */
 type MusicLayout = "spectrum" | "nowplaying" | "both";
+
+/** Rust audio.rs 的 audio:status / get_audio_status 载荷（ts_rs 生成绑定，
+ * 与 Rust 侧字段漂移有编译期保护）：采集管线健康态 + 当前活动口径。 */
+type AudioStatusEvent = AudioStatusPayload;
 
 function fmtTime(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return "0:00";
@@ -53,21 +59,21 @@ function fmtTime(sec: number): string {
 }
 
 /**
- * W-118 「正在播放」卡片：歌名/歌手/封面/进度条 + 播放控制。
+ * 「正在播放」卡片：歌名/歌手/封面/进度条 + 播放控制。
  * §4.8 事件化：数据源换共享 useNowPlaying（Rust WinRT 事件 → media:snapshot，
  * 变化才发 + 本地插值推进 + 事件校准），替代此前每秒全量轮询——base64
  * 封面不再每秒过 IPC，换曲/播放态变化即时到达。控制键走 control_system_media。
  *
- * W-130 进度条增强：进度条可点/可拖 seek（会话支持时，拖动中显示
+ * 借鉴 同类媒体浮窗：进度条可点/可拖 seek（会话支持时，拖动中显示
  * 预览位置、松手下发）；按快照 controls 能力位置灰无效按钮（浏览器视频页
  * 常无上一曲/定位）；播放/暂停走 toggle（不依赖可能过期的 playing 快照）。
  *
- * W-123 卡片右键 = 多媒体会话选择器：Spotify / 浏览器等多个播放源并存时
+ * 卡片右键 = 多媒体会话选择器：Spotify / 浏览器等多个播放源并存时
  * 锁定其中一个，自动模式取「前台或正在播放」的那个。
  */
 /** 正在播放卡片的展示开关（设置窗专段 / 齿轮快捷表可调，均默认生效）。 */
 type NowPlayingCardOptions = {
-  /** 标题与歌手居中（同类媒体浮窗同款）。 */
+  /** 标题与歌手居中（同类媒体浮窗 CenterTitleArtist 同款）。 */
   centerTitle: boolean;
   /** 显示进度条（可点/可拖 seek）。 */
   showSeekbar: boolean;
@@ -91,14 +97,14 @@ function NowPlayingCard({
     void invoke("control_system_media", { action }).catch(() => {});
   };
 
-  /* W-131 封面点击唤起播放器（同类媒体浮窗同目的）：
+  /* 封面点击唤起播放器（同类媒体浮窗 TryOpenMediaPlayer 同目的）：
      带曲目标题，浏览器多窗口时可定位到播放那个。 */
   const openPlayer = () => {
     if (!media?.aumid) return;
     void invoke("open_media_player", { aumid: media.aumid, title: media.title }).catch(() => {});
   };
 
-  /* W-131 滚轮调「正在播放应用」的会话音量（ISimpleAudioVolume）：上滚 +
+  /* 滚轮调「正在播放应用」的会话音量（ISimpleAudioVolume）：上滚 +
      5%、下滚 −5%，卡片浮标回显约 1.2s。120ms 节流防 WASAPI 请求风暴；
      应用没有音频会话（如部分 UWP 桥接）时后端返回 None，浮标不出现。 */
   const [volPill, setVolPill] = useState<number | null>(null);
@@ -113,8 +119,10 @@ function NowPlayingCard({
     void invoke<number | null>("adjust_media_app_volume", { aumid: media.aumid, delta })
       .then((v) => {
         if (typeof v !== "number") return;
-        /* G10：滚轮调应用音量 → 灵动岛 OSD 接管（卡片浮标照常回显）。 */
-        notifyOsd("volume", tr("音量"), `${Math.round(v * 100)}%`);
+        /* 滚轮调应用音量 → 灵动岛 OSD 接管（卡片浮标照常回显）。文案
+           用「应用音量」与系统音量 OSD 区分——这里调的是该应用的会话音量
+           （ISimpleAudioVolume），不是主音量。 */
+        notifyOsd("volume", tr("应用音量"), `${Math.round(v * 100)}%`);
         setVolPill(Math.round(v * 100));
         window.clearTimeout(volTimer.current);
         volTimer.current = window.setTimeout(() => setVolPill(null), 1200);
@@ -123,7 +131,7 @@ function NowPlayingCard({
   };
   useEffect(() => () => window.clearTimeout(volTimer.current), []);
 
-  /* W-130 进度条 seek：点击 + 拖动（pointer capture），拖动中只更新预览，
+  /* 进度条 seek：点击 + 拖动（pointer capture），拖动中只更新预览，
      松手一次性下发，拖动期间本地推进被预览值覆盖。 */
   const barRef = useRef<HTMLDivElement>(null);
   const [dragRatio, setDragRatio] = useState<number | null>(null);
@@ -174,19 +182,37 @@ function NowPlayingCard({
   if (!media) {
     return (
       <div className="np np-empty">
-        <Disc3 size={22} className="np-empty-spin" />
+        {/* P-占用④：「暂无播放信息」是稳态而非加载中——此前 np-empty-spin
+            以 1s/圈无限旋转，无媒体时桌面层 24/7 跑一个永动动画（合成器
+            常驻开销 + loading 语义误导）。静止唱片与上方 !isTauri 分支同款。 */}
+        <Disc3 size={22} />
         <span>{tr("暂无播放信息")}</span>
       </div>
     );
   }
 
-  /* 能力位（W-130）：旧载荷缺失（undefined）时按可用降级，不误灰。 */
+  /* 能力位：旧载荷缺失（undefined）时按可用降级，不误灰。 */
   const ctl = media.controls;
   const canToggle = !ctl || ctl.play || ctl.pause;
   const canSkip = !ctl || ctl.next || ctl.previous;
   const seekable = !ctl || ctl.seek;
 
   const displayPos = dragRatio != null ? dragRatio * media.duration : pos;
+
+  /* 键盘 seek（a11y）：←/→ ±5s（Shift ±30s）、Home/End 到首尾；不可 seek
+   * 或时长未知（直播）时与拖动同口径禁用。 */
+  const onBarKeyDown = (e: React.KeyboardEvent) => {
+    if (!seekable || !(media.duration > 0)) return;
+    const step = e.shiftKey ? 30 : 5;
+    let next: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next = Math.min(media.duration, pos + step);
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = Math.max(0, pos - step);
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = media.duration;
+    if (next == null) return;
+    e.preventDefault();
+    seekTo(next);
+  };
 
   return (
     <div
@@ -202,15 +228,22 @@ function NowPlayingCard({
       </div>
       <div className="np-cover-wrap">
         {media.playing && <span className="np-cover-glow" aria-hidden="true" />}
+        {/* 无 aumid（会话未上报来源 id）时退化为纯封面容器——此前
+            role="button"/aria-label 无条件挂载，读屏会遇到宣称能打开播放器
+            却无动作的控件。 */}
         <div
           className={`np-cover${media.playing ? " is-playing" : ""}${media.aumid ? " is-openable" : ""}`}
-          onClick={openPlayer}
-          role="button"
-          tabIndex={media.aumid ? 0 : -1}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") openPlayer();
-          }}
-          aria-label={tr("打开播放器")}
+          onClick={media.aumid ? openPlayer : undefined}
+          role={media.aumid ? "button" : undefined}
+          tabIndex={media.aumid ? 0 : undefined}
+          onKeyDown={
+            media.aumid
+              ? (e) => {
+                  if (e.key === "Enter" || e.key === " ") openPlayer();
+                }
+              : undefined
+          }
+          aria-label={media.aumid ? tr("打开播放器") : undefined}
           title={media.aumid ? tr("打开播放器") : undefined}
           data-interactive={media.aumid ? true : undefined}
         >
@@ -233,39 +266,52 @@ function NowPlayingCard({
         {options.showSeekbar && (
           <div className="np-progress">
             <span className="np-time">{fmtTime(displayPos)}</span>
-            <div
-              ref={barRef}
-              className={`np-bar-hit${seekable ? "" : " is-disabled"}`}
-              aria-label={tr("播放进度")}
-              onPointerDown={(e) => {
-                if (!seekable) return;
-                const r = ratioFromEvent(e);
-                if (r == null) return;
-                e.currentTarget.setPointerCapture(e.pointerId);
-                setDragRatio(r);
-              }}
-              onPointerMove={(e) => {
-                if (dragRatio == null) return;
-                const r = ratioFromEvent(e);
-                if (r != null) setDragRatio(r);
-              }}
-              onPointerUp={(e) => {
-                if (dragRatio == null) return;
-                e.currentTarget.releasePointerCapture?.(e.pointerId);
-                const r = ratioFromEvent(e) ?? dragRatio;
-                setDragRatio(null);
-                seekTo(r * media.duration);
-              }}
-              onPointerCancel={() => setDragRatio(null)}
-            >
-              <div className="np-bar">
-                <div
-                  className={`np-bar-fill${pctSnapped ? " snap" : ""}`}
-                  style={{ transform: `scaleX(${displayPct / 100})` }}
-                />
+            {/* 时长未知（直播/部分流媒体）不渲染拖条与总时长——scaleX(0) 的
+                「坏进度条」观感差，只保留已播放时间。 */}
+            {media.duration > 0 && (
+              <div
+                ref={barRef}
+                className={`np-bar-hit${seekable ? "" : " is-disabled"}`}
+                role="slider"
+                aria-label={tr("播放进度")}
+                aria-valuemin={0}
+                aria-valuemax={media.duration}
+                aria-valuenow={displayPos}
+                aria-valuetext={`${fmtTime(displayPos)} / ${fmtTime(media.duration)}`}
+                aria-disabled={!seekable}
+                tabIndex={seekable ? 0 : -1}
+                data-interactive={seekable || undefined}
+                onKeyDown={onBarKeyDown}
+                onPointerDown={(e) => {
+                  if (!seekable) return;
+                  const r = ratioFromEvent(e);
+                  if (r == null) return;
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setDragRatio(r);
+                }}
+                onPointerMove={(e) => {
+                  if (dragRatio == null) return;
+                  const r = ratioFromEvent(e);
+                  if (r != null) setDragRatio(r);
+                }}
+                onPointerUp={(e) => {
+                  if (dragRatio == null) return;
+                  e.currentTarget.releasePointerCapture?.(e.pointerId);
+                  const r = ratioFromEvent(e) ?? dragRatio;
+                  setDragRatio(null);
+                  seekTo(r * media.duration);
+                }}
+                onPointerCancel={() => setDragRatio(null)}
+              >
+                <div className="np-bar">
+                  <div
+                    className={`np-bar-fill${pctSnapped ? " snap" : ""}`}
+                    style={{ transform: `scaleX(${displayPct / 100})` }}
+                  />
+                </div>
               </div>
-            </div>
-            <span className="np-time">{fmtTime(media.duration)}</span>
+            )}
+            {media.duration > 0 && <span className="np-time">{fmtTime(media.duration)}</span>}
           </div>
         )}
       </div>
@@ -283,7 +329,7 @@ function NowPlayingCard({
         >
           <Settings size={13} />
         </button>
-        {/* 随机/循环（W-130，与音乐沉浸页同款）：按会话上报能力位出现，
+        {/* 随机/循环（与音乐沉浸页同款）：按会话上报能力位出现，
               开关式动作由 Rust 按会话当前态处理；设置可整体隐藏。 */}
         {options.showModeButtons && ctl?.shuffle && (
           <button
@@ -356,16 +402,16 @@ function NowPlayingCard({
  *  - 正在播放：SMTC（media.rs）→ get_system_media_info / control_system_media。
  *
  * 配置（config-schemas.ts）：
- *  - layout        spectrum / nowplaying / both（W-118）
- *  - visualStyle   bars / wave / mirror / minimal / radial / butterfly
- *  - visualHeight  可视化高度（10–100，占卡片内容区高度的百分比）
- *  - mode          检测源：playback / microphone / both
- *  - colorMode     theme / mono / rainbow（W-124）
- *  - gain          灵敏度 0.5–3（W-125）
- *  - smoothing     平滑度 0–1（W-125）
- *  - bandCount     频带数 16–96（W-119）
- *  - peakHold      峰值保持帽线（W-119）
- *  - dist          频带分布 log / linear（W-127）
+ *  - layout spectrum / nowplaying / both
+ *  - visualStyle bars / wave / mirror / minimal / radial / butterfly
+ *  - visualHeight 可视化高度（10–100，占卡片内容区高度的百分比）
+ *  - mode 检测源：playback / microphone / both
+ *  - colorMode theme / mono / rainbow
+ *  - gain 灵敏度 0.5–3
+ *  - smoothing 平滑度 0–1
+ *  - bandCount 频带数 16–96
+ *  - peakHold 峰值保持帽线
+ *  - dist 频带分布 log / linear
  *  - showStatusText 底部状态文字行显示开关
  */
 export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; forceLayout?: MusicLayout }) {
@@ -396,8 +442,8 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
     wheelVolume: config.wheelVolume !== false
   };
 
-  /* 监听音频事件：状态角标（是否正在发声）+ W-120 响度数值。
-   * P2（审计修复）：事件率 30fps 直接 setLevelPct 会让本子树以事件率重渲。
+  /* 监听音频事件：状态角标（是否正在发声）+ 响度数值。
+   * 事件率 30fps 直接 setLevelPct 会让本子树以事件率重渲。
    * 改为 rAF 合帧 + 差值阈值：仅在取整百分比变化时 setState，稳态音频播放
    * 时重渲染从 30 次/s 降到个位数。 */
   const [active, setActive] = useState(false);
@@ -406,6 +452,9 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
   const levelRaf = useRef(0);
   const pendingLevel = useRef<number | null>(null);
   const levelLastAt = useRef(0);
+  /** 电平读数是否实际可见（状态行渲染 = showSpectrum && showStatusText）；
+   * 渲染期赋值，rAF 回调事件期读取。 */
+  const levelVisibleRef = useRef(false);
   useEffect(
     () => () => {
       window.clearTimeout(activeTimer.current);
@@ -427,42 +476,69 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
       levelRaf.current = 0;
       const pct = pendingLevel.current;
       pendingLevel.current = null;
+      /* 电平读数不可见（纯卡片布局或状态行隐藏）时不驱动重渲——此前同窗口
+       * 存在频谱实例时，5Hz 的 levelPct setState 纯属空转（审计）。 */
+      if (pct == null || !levelVisibleRef.current) return;
       /* 200ms 最小间隔（P-perf 三轮）：电平条的 style 写会触发 useClickThrough
          全量命中采集，5Hz 对 VU 读数与电平条视觉无损。 */
       const now = performance.now();
-      if (pct == null || now - levelLastAt.current < 200) return;
+      if (now - levelLastAt.current < 200) return;
       levelLastAt.current = now;
       setLevelPct((prev) => (prev === pct ? prev : pct));
     });
   });
 
-  /* W-123 多媒体会话：3 秒轮询可用会话与当前锁定项，右键卡片即出选择器。
-     只在「正在播放」卡实际显示时轮询：纯频谱布局下选择器没有入口，轮询是
-     纯空转 IPC（每实例 2 次/3s，多实例放大）。 */
+  /* 采集管线健康态（审计修复）：开流降级/恢复/换代时 Rust 发 audio:status
+   * （状态变化才到，低频）。麦克风源打开失败（隐私设置/独占占用）此前只有
+   * 后端日志，状态行仍宣称「麦克风实时频谱」；多窗口/实例配置不一致时进程
+   * 级单管线被后启动者顶掉，本实例据 mode/dist 与活动口径的差异提示「跟随
+   * 全局」（跨窗口口径互踩的 UI 侧补丁）。 */
+  const [audioStatus, setAudioStatus] = useState<AudioStatusEvent | null>(null);
+  useTauriEvent<AudioStatusEvent>("audio:status", (payload) => {
+    if (payload && Array.isArray(payload.sources)) setAudioStatus(payload);
+  });
+  /* 初值：事件只在状态变化时发，晚挂载的组件（换布局/新建实例）会错过
+   * 管线已有的降级/口径状态——挂载时拉一次 get_audio_status 补上。 */
+  useEffect(() => {
+    if (!isTauri()) return;
+    void invoke<AudioStatusEvent | null>("get_audio_status")
+      .then((p) => {
+        if (p && Array.isArray(p.sources)) setAudioStatus(p);
+      })
+      .catch(() => {});
+  }, []);
+
+  /* 多媒体会话：共享事件源（lib/media-sessions，Rust 每拍枚举变化时
+     emit media:sessions + 30s 兜底复核）。只在「正在播放」卡实际显示时订阅：
+     纯频谱布局下选择器没有入口，订阅是纯空转。 */
   const pollSessions = layout === "nowplaying" || layout === "both";
-  // 共享轮询器（lib/media-sessions）：沉浸页展开 / 多实例并存时窗口内只跑
-  // 一份 3s 轮询，订阅分发且内容不变保持旧引用。
+  // 共享订阅器（lib/media-sessions）：沉浸页展开 / 多实例并存时窗口内只跑
+  // 一份订阅，内容不变保持旧引用。
   const { sessions, selectedId: sessionId } = useMediaSessions(pollSessions);
   const setSessionId = (id: string | null) => {
     if (isTauri()) void invoke("select_media_session", { id }).catch(() => {});
   };
 
-  /* W-131 媒体监控行为偏好（全局设置 general.media）：黑名单在会话菜单里
+  /* 媒体监控行为偏好（全局设置 general.media）：黑名单在会话菜单里
      维护；独占播放入口有两处——此处就近管理 + 设置窗「正在播放」专段，
      两处读写同一份（双入口同源，灵动岛设置同款模式）。 */
   const mediaPrefs = useSettingsStore((s) => s.general.media);
-  const setGeneral = useSettingsStore((s) => s.setGeneral);
   const blockedIds = mediaPrefs?.blockedSessions ?? [];
-  const setBlocked = (list: string[]) =>
-    setGeneral({
+  /* （同型）：整节切片写前现取最新基底——右键菜单 items 在渲染期
+     构建，菜单打开期间远端 sync:settings 到达后回调仍持旧闭包，用快照
+     展开整节写回会把设置窗在途的并发写整节回退。 */
+  const setBlocked = (list: string[]) => {
+    const cur = useSettingsStore.getState().general.media;
+    useSettingsStore.getState().setGeneral({
       media: {
-        pauseOthers: mediaPrefs?.pauseOthers ?? false,
+        pauseOthers: cur?.pauseOthers ?? false,
         blockedSessions: list,
-        focusPause: mediaPrefs?.focusPause === true
+        focusPause: cur?.focusPause === true
       }
     });
+  };
 
-  /* W-123/W-131 卡片右键：多媒体会话选择器。锁定点击会话名；「隐藏播放源…」
+  /* 卡片右键：多媒体会话选择器。锁定点击会话名；「隐藏播放源…」
      二级弹出选择要隐藏的应用；已隐藏项在菜单底部点击恢复。 */
   const menuAnchor = useRef({ x: 0, y: 0 });
   const reopenMenuAtAnchor = (items: Parameters<typeof openContextMenu>[1]) => {
@@ -482,8 +558,9 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
       { label: tr("自动选择播放源"), icon: sessionId ? <Check size={15} /> : null, onSelect: () => setSessionId(null) },
       { type: "separator" as const },
       ...visible.map((s) => ({
-        label: `${s.name}${s.playing ? " ▶" : ""}`,
-        icon: s.id === sessionId ? <Check size={15} /> : null,
+        label: s.name,
+        /* 在播标记走 icon 列（与勾选同位）：此前是 " ▶" 文本前缀 hack。 */
+        icon: s.id === sessionId ? <Check size={15} /> : s.playing ? <Play size={14} /> : null,
         onSelect: () => setSessionId(s.id)
       })),
       ...(visible.length > 0
@@ -492,14 +569,17 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
             {
               label: tr("独占播放"),
               icon: pauseOthers ? <Check size={15} /> : null,
-              onSelect: () =>
-                setGeneral({
+              onSelect: () => {
+                /* 菜单 items 渲染期构建，现取最新基底再翻转（同 setBlocked）。 */
+                const cur = useSettingsStore.getState().general.media;
+                useSettingsStore.getState().setGeneral({
                   media: {
-                    pauseOthers: !pauseOthers,
-                    blockedSessions: blockedIds,
-                    focusPause: mediaPrefs?.focusPause === true
+                    pauseOthers: !(cur?.pauseOthers ?? false),
+                    blockedSessions: cur?.blockedSessions ?? [],
+                    focusPause: cur?.focusPause === true
                   }
-                })
+                });
+              }
             },
             {
               label: tr("隐藏播放源…"),
@@ -525,7 +605,7 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
     ]);
   };
 
-  /** W-121 组件右键 → 统一就地配置弹层（B1；原勾选式快捷菜单已删除）。
+  /** 组件右键 → 统一就地配置弹层（原勾选式快捷菜单已删除）。
       类型取实例真实注册类型：nowplaying 实例布局锁定，快捷表只收卡片专属
       开关（进度条/居中/随机循环/滚轮音量），频谱字段只在音乐类型出现。 */
   const rootRef = useRef<HTMLDivElement>(null);
@@ -536,12 +616,24 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
     e.preventDefault();
     e.stopPropagation();
     const r = rootRef.current?.getBoundingClientRect();
-    if (r) setConfigAnchor({ x: r.x, y: r.y, w: r.width, h: r.height });
+    /* gBCR 视觉坐标 → 布局单位：÷uiZoom（PopoverAnchor 契约要求布局单位，
+       与 ClockWidget/DockTile 同款换算），否则缩放 ≠100% 时弹层漂移。 */
+    if (r) {
+      const z = uiZoom();
+      setConfigAnchor({ x: r.x / z, y: r.y / z, w: r.width / z, h: r.height / z });
+    }
     setConfigOpen(true);
   };
 
   const showSpectrum = layout === "spectrum" || layout === "both";
   const showCard = layout === "nowplaying" || layout === "both";
+  levelVisibleRef.current = showSpectrum && showStatusText;
+  /* 采集降级提示：本实例配置含麦克风但管线报告 capture 源打开失败。 */
+  const micUnavailable =
+    mode !== "playback" && audioStatus?.sources?.some((s) => s.kind === "capture" && !s.ok) === true;
+  /* 口径冲突提示：进程级单管线的当前参数与本实例配置不一致（别的窗口/实例
+   * 后启动顶掉了口径，频谱事件是别人口径的）。 */
+  const followGlobal = !!audioStatus && (audioStatus.mode !== mode || audioStatus.dist !== dist);
 
   return (
     <div
@@ -573,7 +665,7 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
             <span>{active ? tr("正在发声") : tr("监听中")}</span>
           </span>
           <span className="music-pure-hint">
-            {/* W-120 响度数值：简易 VU 表读数；迷你电平条以 scaleX 呈现同一数值。 */}
+            {/* 响度数值：简易 VU 表读数；迷你电平条以 scaleX 呈现同一数值。 */}
             <span className="music-pure-level">{levelPct}%</span>
             <span className="music-pure-meter" aria-hidden="true">
               <i style={{ transform: `scaleX(${levelPct / 100})` }} />
@@ -584,6 +676,19 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
               : mode === "both"
                 ? tr("播放 + 麦克风实时频谱")
                 : tr("系统音频实时频谱")}
+            {micUnavailable && (
+              <span
+                className="music-pure-flag is-warn"
+                title={tr("默认麦克风不可用（被占用/隐私设置），仅显示其余来源")}
+              >
+                · {tr("麦克风不可用")}
+              </span>
+            )}
+            {followGlobal && (
+              <span className="music-pure-flag" title={tr("其它小组件配置了不同的检测源/分布，频谱已跟随全局口径")}>
+                · {tr("跟随全局")}
+              </span>
+            )}
           </span>
         </div>
       )}
@@ -599,7 +704,7 @@ export function MusicWidget({ instanceId, forceLayout }: { instanceId: string; f
   );
 }
 
-/** W-129 「正在播放」作为独立小组件类型：复用 MusicWidget，锁定卡片布局。 */
+/** 「正在播放」作为独立小组件类型：复用 MusicWidget，锁定卡片布局。 */
 export function NowPlayingWidget({ instanceId }: { instanceId: string }) {
   return <MusicWidget instanceId={instanceId} forceLayout="nowplaying" />;
 }

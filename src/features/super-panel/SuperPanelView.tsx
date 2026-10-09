@@ -1,5 +1,5 @@
 /**
- * [SUPER-PANEL]（ZTools 借鉴 #11）超级面板视图（index.html#super-panel）。
+ * [SUPER-PANEL]超级面板视图（index.html#super-panel）。
  *
  * Rust 侧长按右键取词流程建窗后 emit `super-panel:content`（载荷 = 取到的
  * 文本/文件列表 + 光标位置——窗口定位已在 Rust 完成）。本视图：
@@ -7,8 +7,14 @@
  *    并完成就绪握手（show 窗口）；
  *  - 复用 #1 的粘贴态动作构建器（buildPayloadCommands）渲染动作列表；
  *  - Esc / 点选动作 / 窗口失焦 → 收起（hide，不销毁——下次复用）。
+ *
+ * （键盘可达）：role=dialog 此前无初始焦点、无方向键巡览、无 Tab 陷阱——
+ * 键盘焦点落在 body 上打空。借 CommandPalette 的范式补齐：打开（每次取词
+ * epoch 重挂）即聚焦面板容器（tabIndex=-1，listbox 巡览经 aria-activedescendant
+ * 播报）；ArrowUp/Down 循环移动高亮、Enter 激活、Tab 在面板内循环不逃逸；
+ * Esc 收起沿用原有 window 级监听。鼠标交互（点击 / 悬停高亮）不受影响。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke, isTauri } from "../../lib/tauri";
 import { useTauriEvent } from "../../lib/use-tauri-event";
@@ -36,7 +42,7 @@ function payloadOfContent(c: SuperPanelContent): PalettePayload {
   return { kind: "text", text: c.text ?? "" };
 }
 
-/** C-11：Rust 载荷守卫——kind/坐标/文本/文件列表任一形状不对就当畸形丢弃，
+/** Rust 载荷守卫——kind/坐标/文本/文件列表任一形状不对就当畸形丢弃，
  * 不再 as 断言直喂动作构建器（畸形载荷会渲染出 undefined 摘要与空动作）。 */
 function isSuperPanelContent(c: unknown): c is SuperPanelContent {
   if (!c || typeof c !== "object") return false;
@@ -58,6 +64,23 @@ export function SuperPanelView() {
   const [closing, setClosing] = useState(false);
   const [epoch, setEpoch] = useState(0);
   const hideTimer = useRef(0);
+
+  /* 键盘巡览状态——hi 为高亮动作下标（listbox 语义，容器持有焦点经
+     aria-activedescendant 播报）。每次取词（epoch 重挂）归零。 */
+  const [hi, setHi] = useState(0);
+  /* 指针扫过高亮合帧（CommandPalette 同范式）：onPointerEnter 逐行 setState
+     会整面板重渲；rAF 合帧让快速扫过 N 行至多每帧一次。 */
+  const hiRaf = useRef(0);
+  const hoverHi = useCallback((i: number) => {
+    if (hiRaf.current) cancelAnimationFrame(hiRaf.current);
+    hiRaf.current = requestAnimationFrame(() => {
+      hiRaf.current = 0;
+      setHi(i);
+    });
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(hiRaf.current), []);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const hidePanel = useCallback(() => {
     if (hideTimer.current) return; // 已在退场窗口内
@@ -82,6 +105,8 @@ export function SuperPanelView() {
       setClosing(false);
     }
     setEpoch((e) => e + 1);
+    // 新载荷 = 新列表，键盘高亮归零（防止残留越界下标）。
+    setHi(0);
     const p = payloadOfContent(c);
     setLocalPayload(p);
     setPalettePayload(p);
@@ -94,7 +119,7 @@ export function SuperPanelView() {
     []
   );
 
-  /* 就绪握手 + 补拉：窗口创建 visible(false)，拉到载荷才显示。C-11：补拉
+  /* 就绪握手 + 补拉：窗口创建 visible(false)，拉到载荷才显示。：补拉
      结果同样过形状守卫——畸形载荷按「未取到内容」处理，不喂动作构建器。 */
   useEffect(() => {
     if (!isTauri()) return;
@@ -119,7 +144,7 @@ export function SuperPanelView() {
     };
   }, [accept]);
 
-  /* 后续取词（窗口已复用）：Rust 定位 + show 后 emit。C-11：畸形载荷不再
+  /* 后续取词（窗口已复用）：Rust 定位 + show 后 emit。：畸形载荷不再
      as 断言透传，直接收起面板（宁可无动作也不渲染垃圾）。 */
   useTauriEvent<SuperPanelContent>("super-panel:content", (c) => {
     if (!isSuperPanelContent(c)) {
@@ -164,6 +189,64 @@ export function SuperPanelView() {
     });
   }, [payload, tr, engine, hidePanel]);
 
+  /* 打开（每次取词 epoch 重挂面板节点）即把焦点移进面板容器——
+     role=dialog 无初始焦点时方向键落空在 body 上。容器 tabIndex=-1 不进
+     Tab 序；巡览状态 hi 由容器 onKeyDown 驱动。 */
+  useEffect(() => {
+    if (epoch > 0) panelRef.current?.focus({ preventScroll: true });
+  }, [epoch]);
+
+  /* 列表收缩（畸形载荷收起 / 换词重建）时钳制高亮，防止
+     aria-activedescendant 指向已不存在的选项。 */
+  useEffect(() => {
+    setHi((h) => Math.max(0, Math.min(h, commands.length - 1)));
+  }, [commands.length]);
+
+  /* 高亮项滚入视野（面板定高、列表可滚）。 */
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>(`[data-item-index="${hi}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [hi]);
+
+  const commandsRef = useRef(commands);
+  commandsRef.current = commands;
+  const hiRef = useRef(hi);
+  hiRef.current = hi;
+
+  /* 容器级键盘巡览（CommandPalette 同款语义）：
+     - ArrowUp/Down 循环移动高亮（焦点恒在容器，经 aria-activedescendant 播报）；
+     - Enter 激活高亮项——焦点已落在某个动作按钮上时（Tab 进入）让浏览器原生
+       激活，避免双触发；
+     - Tab 在面板内循环（陷阱），shift+Tab 反向，不逃逸到 body；
+     - Esc 由上方 window 级监听收起（保留原行为）。 */
+  const onPanelKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const cur = commandsRef.current;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (cur.length === 0) return;
+      e.preventDefault();
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      setHi((h) => (h + delta + cur.length) % cur.length);
+    } else if (e.key === "Enter") {
+      if (e.target !== e.currentTarget) return; // 焦点在动作按钮上：原生激活
+      if (cur.length === 0) return;
+      e.preventDefault();
+      const c = cur[Math.max(0, Math.min(hiRef.current, cur.length - 1))];
+      c?.run();
+    } else if (e.key === "Tab") {
+      const box = panelRef.current;
+      if (!box) return;
+      e.preventDefault();
+      const focusables = Array.from(box.querySelectorAll<HTMLElement>("button:not([disabled])")).filter(
+        (el) => el.offsetParent !== null || el === document.activeElement
+      );
+      if (focusables.length === 0) return;
+      const idx = focusables.indexOf(document.activeElement as HTMLElement);
+      const next = e.shiftKey
+        ? focusables[(idx <= 0 ? focusables.length : idx) - 1]
+        : focusables[(idx + 1) % focusables.length];
+      next?.focus();
+    }
+  };
+
   const summary = payload
     ? payload.kind === "text"
       ? payload.text.split("\n")[0].slice(0, 80)
@@ -175,17 +258,33 @@ export function SuperPanelView() {
     : "";
 
   return (
-    <div key={epoch} className={`super-panel${closing ? " is-closing" : ""}`} role="dialog" aria-label={tr("超级面板")}>
+    <div
+      key={epoch}
+      ref={panelRef}
+      className={`super-panel${closing ? " is-closing" : ""}`}
+      role="dialog"
+      aria-label={tr("超级面板")}
+      /* 容器可聚焦（打开即 focus），巡览高亮经 aria-activedescendant 播报
+         ——焦点不逐项移动，Tab 陷阱 / Enter 激活见 onPanelKeyDown。 */
+      tabIndex={-1}
+      aria-activedescendant={commands.length > 0 ? `sp-opt-${hi}` : undefined}
+      onKeyDown={onPanelKeyDown}
+    >
       <div className="super-panel-summary" title={summary}>
         {summary || tr("未取到内容")}
       </div>
-      <div className="super-panel-list">
+      <div className="super-panel-list" ref={listRef} role="listbox" aria-label={tr("可用操作")}>
         {commands.map((c, i) => (
           <button
             key={c.id}
             type="button"
-            className="super-panel-item"
+            role="option"
+            id={`sp-opt-${i}`}
+            aria-selected={i === hi}
+            data-item-index={i}
+            className={`super-panel-item${i === hi ? " active" : ""}`}
             style={{ animationDelay: `${Math.min(i, 7) * 0.02}s` }}
+            onPointerEnter={() => hoverHi(i)}
             onClick={() => c.run()}
           >
             <span className="super-panel-item-label">{c.label}</span>

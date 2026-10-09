@@ -1,5 +1,5 @@
 /**
- * 灵动岛全局热键（F-10，ISLAND-LINK）：把 shortcuts.rs 第 8/9 个可配置动作接到岛上。
+ * 灵动岛全局热键（ISLAND-LINK）：把 shortcuts.rs 第 8/9 个可配置动作接到岛上。
  *
  * 挂载点是 WidgetCanvas（不是 DockShell）：DockShell 在 dock.enabled=false 时整体
  * 返回 null，监听若随它卸载，关岛后 Ctrl+Alt+I / `--toggle-dock` 就只能关不能开。
@@ -19,7 +19,7 @@
  * 不依赖渲染闭包。
  *
  * 岛内键盘导航（Tab 进岛后 ←/→ 移焦、Enter 展开、Esc 收起、Ctrl+←/→ 排序、
- * Delete 移除）属 F-12，由 KEYS 会话在此补齐。
+ * Delete 移除）属 ，由 KEYS 会话在此补齐。
  */
 import { isPrimaryWidgetWindow } from "../../lib/tauri";
 import { useTauriEvent } from "../../lib/use-tauri-event";

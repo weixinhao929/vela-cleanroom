@@ -1,8 +1,8 @@
 /**
  * 时钟时区数据共享模块。
  *
- * 世界时钟（W-001）的常用时区表与全量 IANA 枚举此前内联在 ClockWidget 里，
- * 就地配置弹层（B1）的时区编辑器与设置页同样需要这份名单。抽出为独立模块，
+ * 世界时钟的常用时区表与全量 IANA 枚举此前内联在 ClockWidget 里，
+ * 就地配置弹层的时区编辑器与设置页同样需要这份名单。抽出为独立模块，
  * 避免 ClockWidget ↔ WidgetConfigPopover 相互 import 形成环。
  */
 
@@ -26,7 +26,7 @@ export const TIMEZONES: { id: string; label: string }[] = [
   { id: "Pacific/Auckland", label: "奥克兰 (UTC+12)" }
 ];
 
-/* W-006 全量时区：Intl 枚举 + 常用列表置顶去重，海外用户也能找到自己城市。 */
+/* 全量时区：Intl 枚举 + 常用列表置顶去重，海外用户也能找到自己城市。 */
 export const ALL_TIMEZONES: string[] = (() => {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,9 +1,9 @@
 /**
- * 取色器共享存储与色彩换算（W-105~109）。
+ * 取色器共享存储与色彩换算（~109）。
  *
  * 取色历史原先只是各实例私有 string[]；本模块把它结构化（固定/删除/容量），
- * 并提供跨实例聚合读取（涂鸦组件用作「最近取色」色源，W-109）与跨实例
- * 共享的命名色板（W-108）。所有写入走 persistMirrored，随本地镜像进备份。
+ * 并提供跨实例聚合读取（涂鸦组件用作「最近取色」色源）与跨实例
+ * 共享的命名色板。所有写入走 persistMirrored，随本地镜像进备份。
  */
 
 import { persistMirrored } from "../lib/local-backup";
@@ -49,7 +49,7 @@ export function rgbToHsl(r: number, g: number, b: number): [number, number, numb
   return [Math.round(h * 360), Math.round(s * 100), Math.round(l * 100)];
 }
 
-/** W-106 HSV（Photoshop/Figma 的 HSB 语义：V = max）。 */
+/** HSV（Photoshop/Figma 的 HSB 语义：V = max）。 */
 export function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   r /= 255;
   g /= 255;
@@ -74,7 +74,7 @@ export function rgbToHsv(r: number, g: number, b: number): [number, number, numb
   return [Math.round(h), Math.round(s * 100), Math.round(max * 100)];
 }
 
-/** W-106 CMYK（印刷常用近似换算，K = 1 − max(R,G,B)）。 */
+/** CMYK（印刷常用近似换算，K = 1 − max(R,G,B)）。 */
 export function rgbToCmyk(r: number, g: number, b: number): [number, number, number, number] {
   const rr = r / 255,
     gg = g / 255,
@@ -87,7 +87,7 @@ export function rgbToCmyk(r: number, g: number, b: number): [number, number, num
   return [Math.round(c * 100), Math.round(m * 100), Math.round(y * 100), Math.round(k * 100)];
 }
 
-/* ── 取色历史（结构化，W-107） ────────────────────────────── */
+/* ── 取色历史（结构化） ────────────────────────────── */
 
 export type HistoryColor = { hex: string; pinned?: boolean };
 
@@ -117,7 +117,7 @@ export function savePickerHistory(instanceId: string, list: HistoryColor[]) {
 }
 
 /**
- * W-109 跨实例聚合：按时间序合并所有取色器实例的历史（去重、固定优先），
+ * 跨实例聚合：按时间序合并所有取色器实例的历史（去重、固定优先），
  * 供涂鸦等组件作为「最近取色」色源。limit 上限避免渲染过多色块。
  */
 export function listAllPickerHistory(limit = 10): string[] {
@@ -148,7 +148,7 @@ export function listAllPickerHistory(limit = 10): string[] {
   return ranked.slice(0, limit);
 }
 
-/* ── 命名色板（跨实例共享，W-108） ────────────────────────── */
+/* ── 命名色板（跨实例共享） ────────────────────────── */
 
 export type Palette = { id: string; name: string; colors: string[] };
 
@@ -170,4 +170,9 @@ export function loadPalettes(): Palette[] {
 export function savePalettes(list: Palette[]) {
   persistMirrored(PALETTES_KEY, JSON.stringify(list));
   window.dispatchEvent(new CustomEvent(PALETTES_EVENT));
+  // 多显示器场景每屏一个 widget 窗，window 级 CustomEvent 不跨窗——
+  // 显示器 0 上改色板，显示器 1 的取色器不刷新。补一条 Tauri 全局事件作
+  // 跨窗通知（各窗收到后自行重读共享 localStorage）。失败静默：本窗事件
+  // 已保证本窗刷新，跨窗最迟在下次打开时读到新值。
+  void import("@tauri-apps/api/event").then(({ emit }) => emit(PALETTES_EVENT)).catch(() => {});
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateNormals,
+  alertTimeMs,
   archiveUrl,
   dayKey,
   hourLabel,
@@ -27,6 +28,21 @@ describe("weather-station-data 时间工具", () => {
     expect(dayKey("2026-09-15")).toBe("09-15");
     expect(dayKey("2026-02-29T00:00")).toBe("02-29");
     expect(dayKey("x")).toBe("");
+  });
+
+  it("alertTimeMs：带偏移/Z 的串直接解析；无偏移按城市本地时间换算；坏串 NaN", () => {
+    // 显式偏移（Open-Meteo alerts 常见形态）：不依赖 utcOffset 参数。
+    expect(alertTimeMs("2026-10-07T06:00+08:00", -5 * 3600)).toBe(Date.parse("2026-10-07T06:00+08:00"));
+    expect(alertTimeMs("2026-10-07T06:00Z", undefined)).toBe(Date.parse("2026-10-07T06:00:00Z"));
+    expect(alertTimeMs("2026-10-07T06:00:00-04:00", 0)).toBe(Date.parse("2026-10-07T06:00:00-04:00"));
+    // 无偏移（timezone=auto 的城市本地时间）：必须用 offset 换算，否则跨时区错位。
+    expect(alertTimeMs("2026-10-07T06:00", 8 * 3600)).toBe(Date.parse("2026-10-07T06:00:00Z") - 8 * 3600 * 1000);
+    expect(alertTimeMs("2026-10-07T06:00", -5 * 3600)).toBe(Date.parse("2026-10-07T06:00:00Z") + 5 * 3600 * 1000);
+    // 无偏移且无 offset：退回本机时区解析（与 localTimeToMs 同口径）。
+    expect(alertTimeMs("2026-10-07T06:00", undefined)).toBe(new Date("2026-10-07T06:00").getTime());
+    // 坏串 / 空串 → NaN（调用方自行兜底，宁推勿漏）。
+    expect(Number.isNaN(alertTimeMs("", 0))).toBe(true);
+    expect(Number.isNaN(alertTimeMs("not-a-date", 0))).toBe(true);
   });
 });
 

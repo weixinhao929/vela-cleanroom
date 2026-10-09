@@ -1,5 +1,5 @@
 /**
- * 专注自动化域层（借鉴 FocusTimer Automation）：
+ * 专注自动化域层：
  *  - 事件总线：app-store 在番茄钟状态流转的各关键点 emitPomodoroEvent，
  *    自动化引擎（lib/automation-engine.ts）与媒体联动（lib/pomodoro-media.ts）
  *    以订阅者身份消费——store 不反向依赖任何消费者。
@@ -88,7 +88,7 @@ export function onPomodoroEvent(handler: EventHandler): () => void {
 
 /* ---------------- 规则模型 ---------------- */
 
-/** 动作白名单（FocusTimer 的自由 shell 命令在本地应用里收敛为受控动作集）。 */
+/** 动作白名单（自由 shell 命令在本地应用里收敛为受控动作集）。 */
 export type AutomationActionKind = "open" | "notify" | "toggle-layer" | "show-desktop" | "task-view" | "lock";
 
 export const AUTOMATION_ACTION_KINDS: readonly AutomationActionKind[] = [
@@ -111,7 +111,12 @@ export interface AutomationAction {
 }
 
 export type AutomationTrigger =
-  { type: "events"; events: PomodoroEventName[]; condition?: string } | { type: "condition"; condition: string };
+  | { type: "events"; events: PomodoroEventName[]; condition?: string }
+  | { type: "condition"; condition: string }
+  /** [PROC-WATCH]：指定进程启动 / 退出触发。
+   *  name 支持通配（`*`/`?`，大小写不敏感——与 Rust 侧 wildcard_match 同语义）；
+   *  Rust 监视线程按 name 建基线，事件载荷 pattern 为本字段原文。 */
+  | { type: "process"; process: { name: string; event: "start" | "exit" } };
 
 export interface AutomationRule {
   id: string;
@@ -207,7 +212,17 @@ export function normalizeAutomationRules(v: unknown): AutomationRule[] {
         : null;
     const condition = normalizeCondition(triggerSrc?.condition);
     let trigger: AutomationTrigger;
-    if (triggerSrc?.type === "condition" && condition) {
+    if (triggerSrc?.type === "process") {
+      // [PROC-WATCH]：进程模式（name 非空 + event 白名单），非法项丢弃。
+      const procSrc =
+        typeof triggerSrc.process === "object" && triggerSrc.process !== null
+          ? (triggerSrc.process as Record<string, unknown>)
+          : null;
+      const name = cleanString(procSrc?.name, 120);
+      const event = procSrc?.event;
+      if (!name || (event !== "start" && event !== "exit")) continue;
+      trigger = { type: "process", process: { name, event } };
+    } else if (triggerSrc?.type === "condition" && condition) {
       trigger = { type: "condition", condition };
     } else if (triggerSrc?.type === "condition") {
       continue; // 条件模式必须有可解析条件

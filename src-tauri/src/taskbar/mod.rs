@@ -1,12 +1,10 @@
-//! 任务栏自定义（系统任务栏增强形态）· 契约地基（TB-CORE）。
+//! 任务栏自定义（系统任务栏增强形态）· 契约地基。
 //!
-//! 本模块是 Wave 1 四个并行会话（TB-TAP 注入 DLL / TB-STATE 状态检测 /
-//! TB-INJECT 注入与管道 / TB-UI 设置页）共享的**契约单一来源**，按区段组织：
+//! 本模块是任务栏定制各侧（注入 DLL / 状态检测 / 注入与管道 / 设置页）共享的**契约单一来源**，按区段组织：
 //!
 //! - `CONFIG`：配置线协议（serde 结构 + 容错解析），字段名与前端
 //!   `settings-store.ts` 的 `general.taskbar` 完全同构（camelCase）。
-//! - `STATE`：状态机纯函数 [`resolve_active_state`]（优先级 D8 对齐标杆
-//!   taskbarattributeworker.cpp:397-488）与规则匹配 [`rule_matches`]。
+//! - `STATE`：状态机纯函数 [`resolve_active_state`]（优先级见 STATE 区说明）与规则匹配 [`rule_matches`]。
 //! - `COMMANDS`：四个 Tauri 命令空壳（trusted_window 门控 + spawn_blocking）。
 //! - `EVENTS`：`taskbar:*` 事件名常量、emit 助手与负载类型 re-export。
 //! - [`protocol`]：与注入 DLL 的管道线协议（冻结）。
@@ -16,15 +14,15 @@
 //!
 //! 本会话只交付纯函数与空壳：**不启动线程、不做注入、不产生任何任务栏
 //! 视觉效果**。`start`/`restore_all` 由 lib.rs 挂载，运行时行为由
-//! TB-INJECT / TB-STATE 会话填充。
+//! 由注入与状态检测两侧填充。
 
 /// 任务栏类型探测与能力上报（`detect_taskbar_type` / `capabilities_for` /
 /// `probe_capabilities` / `os_build`）。
 pub mod detect;
-/// 注入与恢复引擎（TB-INJECT）：解包→注入→管道→四条恢复线→降级→
+/// 注入与恢复引擎：解包→注入→管道→四条恢复线→降级→
 /// 状态机；`mod.rs` 的命令/事件层消费本模块。
 pub mod injector;
-/// 注入管道主进程侧服务端（TB-INJECT）：`PipeListener` / `Pipe` /
+/// 注入管道主进程侧服务端：`PipeListener` / `Pipe` /
 /// `LineDecoder`、握手与带超时读写、断连判死。
 pub mod pipe;
 /// 注入 DLL 管道线协议（冻结）：`TapMessage` / `TapAccent` / `pipe_name` /
@@ -51,7 +49,7 @@ use protocol::TapAccent;
 
 /* ================================================================== *
  * CONFIG 区：配置线协议（与前端 settings-store.ts general.taskbar 同构）。
- * 字段名即线协议（需求 §4）：camelCase；改名必须两侧同步（同
+ * 字段名即线协议：camelCase；改名必须两侧同步（同
  * clipboard.rs parse_clip_config 的既有约定）。
  * ------------------------------------------------------------------ */
 
@@ -138,10 +136,10 @@ impl TaskbarAppearance {
     }
 }
 
-/// 规则匹配类型（§4）。语义对齐标杆 windowfilter.hpp:66-120：
+/// 规则匹配语义：
 /// `Class` 精确（大小写敏感）/ `Process` 可执行文件名大小写不敏感精确 /
-/// `Title` 子串包含（大小写敏感）。**空 pattern 恒不匹配**——标杆的空
-/// title pattern 会命中一切，属脚本事故面，此处收紧并两侧一致。
+/// `Title` 子串包含（大小写敏感）。**空 pattern 恒不匹配**——空
+/// title pattern 若命中一切，属脚本事故面，此处收紧并两侧一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -151,8 +149,8 @@ pub enum TaskbarMatchType {
     Process,
 }
 
-/// 一条窗口规则（§4 TaskbarRule）。`inactive_appearance` 仅在命中窗口
-/// 非前台时使用（对齐标杆 ActiveInactiveTaskbarAppearance）。
+/// 一条窗口规则。`inactive_appearance` 仅在命中窗口
+/// 非前台时使用。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -168,11 +166,11 @@ pub struct TaskbarRule {
 }
 
 /// 七态键（§4 TaskbarStateKey）。事件负载中的 `activeState` 即此类型。
-/// A-3：定义收敛于 models.rs（类型单一来源），此处 re-export 维持路径。
+/// 定义收敛于 models.rs（类型单一来源），此处 re-export 维持路径。
 pub use crate::models::TaskbarStateKey;
 
 /// 单态配置：一套外观 + 可选启用开关。`enabled: None` 仅出现在 desktop
-/// （无开关）；六可选态经容错解析后恒为 `Some(_)`，缺省值 false（D2）。
+/// （无开关）；六可选态经容错解析后恒为 `Some(_)`，缺省值 false。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -244,7 +242,7 @@ pub struct TaskbarRules {
     pub maximized_window: Vec<TaskbarRule>,
 }
 
-/// 忽略窗口三组列表（§4 ignoredWindows；IsFiltered 语义，F-5）。
+/// 忽略窗口三组列表（§4 ignoredWindows；IsFiltered 语义）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -258,7 +256,7 @@ pub struct TaskbarIgnoredWindows {
 }
 
 /// 单显示器覆盖（§4 `Partial<TaskbarSettings>`：仅顶层可选，值为整体
-/// 替换，不深合并）。P2（F-6）由 TB-UI 消费。
+/// 替换，不深合并）。由设置页消费。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
@@ -287,14 +285,14 @@ pub struct TaskbarOverride {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/types/bindings/")]
 pub struct TaskbarSettings {
-    /// 总开关（D1：默认 false，新功能默认关，F-1）。
+    /// 总开关（默认 false，新功能默认关）。
     #[serde(default)]
     pub enabled: bool,
     pub states: TaskbarStates,
     #[serde(default)]
     pub rules: TaskbarRules,
     pub ignored_windows: TaskbarIgnoredWindows,
-    /// 逐显示器独立配置（P2，F-6；默认 false）。
+    /// 逐显示器独立配置（默认 false）。
     #[serde(default)]
     pub per_monitor: bool,
     #[serde(default)]
@@ -314,8 +312,7 @@ impl Default for TaskbarSettings {
     }
 }
 
-/// D2：七态出厂默认（对齐需求 §1.1 表 / 标杆 config.hpp:40-46；taskView
-/// 按开放问题 1 的建议默认**关**；blurRadius 统一 30 而非标杆的 9，§4）。
+/// 七态出厂默认（taskView 默认**关**；blurRadius 统一取 30）。
 fn default_states() -> TaskbarStates {
     let mk = |accent, peek, line, enabled: Option<bool>| TaskbarStateAppearance {
         appearance: TaskbarAppearance {
@@ -330,21 +327,21 @@ fn default_states() -> TaskbarStates {
     TaskbarStates {
         // clear, #00000000, peek=false, line=false；恒启用。
         desktop: mk(TaskbarAccent::Clear, false, false, None),
-        // 标杆默认关 + clear + peek=true + line=false。
+        // 默认关 + clear + peek=true + line=false。
         visible_window: mk(TaskbarAccent::Clear, true, false, Some(false)),
-        // 标杆默认关 + acrylic + peek=true + line=true。
+        // 默认关 + acrylic + peek=true + line=true。
         maximized_window: mk(TaskbarAccent::Acrylic, true, true, Some(false)),
-        // Win11 对齐标杆：默认关 + normal + peek=true + line=true。
+        // Win11：默认关 + normal + peek=true + line=true。
         start_opened: mk(TaskbarAccent::Normal, true, true, Some(false)),
         search_opened: mk(TaskbarAccent::Normal, true, true, Some(false)),
-        // D2：taskView 默认关（标杆为开，按 §7 开放问题 1 建议收紧）。
+        // taskView 默认关（有意收紧）。
         task_view_opened: mk(TaskbarAccent::Normal, false, true, Some(false)),
-        // 标杆默认关 + opaque(GRADIENT) + peek=true + line=false。
+        // 默认关 + opaque(GRADIENT) + peek=true + line=false。
         battery_saver: mk(TaskbarAccent::Opaque, true, false, Some(false)),
     }
 }
 
-/// D3：出厂忽略列表含 Vela 自身（F-5，防自身窗口污染可见/最大化判定）：
+/// 出厂忽略列表含 Vela 自身（防自身窗口污染可见/最大化判定）：
 /// - `Tauri Window`：tauri-runtime-wry 在 Windows 上给所有窗口的注册类名
 ///   （tauri-runtime-wry lib.rs `window_classname("Tauri Window")`），覆盖
 ///   设置窗与全部 widget 窗；
@@ -660,7 +657,7 @@ impl TaskbarSettings {
         out
     }
 
-    /// P2（F-6）：按显示器稳定槽位求「生效配置」——`per_monitor=false` 时
+    /// 按显示器稳定槽位求「生效配置」——`per_monitor=false` 时
     /// 返回基础配置；否则用该槽位覆盖做**顶层整体替换**（不深合并）。
     pub fn effective_for_slot(&self, slot: Option<&str>) -> TaskbarSettings {
         let mut out = self.clone();
@@ -707,7 +704,7 @@ pub fn parse_taskbar_config(json: &str) -> TaskbarSettings {
     parse_taskbar_value(&v)
 }
 
-/// 同 [`parse_taskbar_config`]，但接受已解析的 JSON 值（A-4：
+/// 同 [`parse_taskbar_config`]，但接受已解析的 JSON 值（
 /// settings_mirror::read_json 已产出 Value，避免再走一遍字符串）。
 pub fn parse_taskbar_value(v: &serde_json::Value) -> TaskbarSettings {
     match v
@@ -721,10 +718,10 @@ pub fn parse_taskbar_value(v: &serde_json::Value) -> TaskbarSettings {
 }
 
 /* ================================================================== *
- * STATE 区：状态机纯函数（优先级 D8，对齐标杆 GetConfig cpp:397-488）。
+ * STATE 区：状态机纯函数（优先级见下方列表）。
  * ------------------------------------------------------------------ */
 
-/// 参与求值的窗口快照（TB-STATE 从 WinEvent 层维护并喂入）。
+/// 参与求值的窗口快照（由 WinEvent 层维护并喂入）。
 /// `hwnd` 用 `isize` 承载 Win32 HWND 句柄值（前台等值比较键）；
 /// `process` = 可执行文件名（含扩展名、不含路径，如 `Notepad.exe`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -748,11 +745,10 @@ impl WindowInfo {
 
 /// 单显示器的实时状态输入。
 ///
-/// 契约（TB-STATE 负责维护）：
+/// 契约（状态检测层负责维护）：
 /// - `maximised` / `normal` 已剔除不可见 / TOOLWINDOW / cloaked 等非用户
 ///   窗口；**`maximised` 按 Z 序自顶向下排列（index 0 = 最顶层最大化）**；
-/// - `foreground` = 前台窗口**且位于本显示器**，在其他屏时为 None
-///   （对齐标杆 `m_ForegroundWindow.monitor() == taskbar->first` 判定）；
+/// - `foreground` = 前台窗口**且位于本显示器**，在其他屏时为 None；
 /// - 忽略列表过滤在 [`resolve_active_state`] 内部进行，可传原始集合。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MonitorInputs {
@@ -801,7 +797,7 @@ fn process_eq(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
-/// 忽略列表命中判定（标杆 WindowFilter::IsFiltered 同语义：三组任一命中
+/// 忽略列表命中判定（三组任一命中
 /// 即忽略；空 pattern 不参与匹配）。命中忽略列表的窗口不计入可见/最大化
 /// 判断，也不作为前台参与规则匹配（不影响开始/搜索等非窗口状态）。
 pub fn is_ignored(ignored: &TaskbarIgnoredWindows, win: &WindowInfo) -> bool {
@@ -819,15 +815,14 @@ pub fn is_ignored(ignored: &TaskbarIgnoredWindows, win: &WindowInfo) -> bool {
             .any(|t| !t.is_empty() && win.title.contains(t.as_str()))
 }
 
-/// 在规则表里找第一条命中（Vela 契约：规则是**有序列表，先到先得**——
-/// 标杆按 class→process→title 三张无序 map 分类查找，我们让用户排序成为
-/// 真源；两侧单条匹配语义一致）。
+/// 在规则表里找第一条命中（规则是**有序列表，先到先得**——
+/// 用户排序即真源）。
 fn find_rule<'a>(rules: &'a [TaskbarRule], win: &WindowInfo) -> Option<&'a TaskbarRule> {
     rules.iter().find(|r| rule_matches(r, win))
 }
 
 /// 规则命中时取哪套外观：窗口是前台 → active；非前台且有 inactive 配置
-/// → inactive；非前台且无 inactive → active（标杆 FindRule 同语义）。
+/// → inactive；非前台且无 inactive → active。
 fn rule_appearance(rule: &TaskbarRule, active: bool) -> TaskbarAppearance {
     if !active {
         if let Some(inactive) = &rule.inactive_appearance {
@@ -839,16 +834,16 @@ fn rule_appearance(rule: &TaskbarRule, active: bool) -> TaskbarAppearance {
 
 /// 状态机主纯函数：对第 `monitor` 台显示器求当前生效状态与外观。
 ///
-/// 优先级（D8，对齐标杆 cpp:397-488）：
+/// 优先级：
 /// **省电 > 任务视图 > Peek 进行中（强制桌面态）> 开始菜单 > 搜索 >
 /// 最大化（含规则，按 Z 序只看最顶层最大化窗口）> 可见窗口（含规则，
 /// 仅当无最大化窗口时对前台窗口匹配）> 桌面**。
 ///
 /// - 各可选态需 `enabled` 且输入为真才命中；Peek 无视 enabled 直接走桌面
-///   （标杆：任务视图被 Peek 忽略，但省电/任务视图优先于 Peek）。
+///   （任务视图被 Peek 忽略，但省电/任务视图优先于 Peek）。
 /// - 搜索仅在开始菜单**未**打开时判定（Win11 开始与搜索同时上报的口径
-///   由 TB-STATE 在喂入前归一）。
-/// - 可见态的触发条件含「存在最大化窗口」（标杆 :470：即使最大化态被
+///   在喂入前归一）。
+/// - 可见态的触发条件含「存在最大化窗口」（即使最大化态被
 ///   禁用，有最大化窗口仍算「有用户窗口」）。
 /// - `monitor` 越界按空显示器处理（回落桌面态），不 panic。
 pub fn resolve_active_state(
@@ -919,7 +914,7 @@ pub fn resolve_active_state(
     }
     // 6. 最大化：Z 序最顶层最大化窗口（index 0）命中规则则用规则外观
     //    （active/inactive 按该窗口是否前台），否则用默认最大化外观。
-    //    只看最顶层一张（标杆同款：不向下继续找规则）。
+    //    只看最顶层一张（不向下继续找规则）。
     if states.maximized_window.is_enabled() && !maximised.is_empty() {
         if let Some(rule) = find_rule(&settings.rules.maximized_window, maximised[0]) {
             let active = fg.map(|(h, _)| h == maximised[0].hwnd).unwrap_or(false);
@@ -964,7 +959,7 @@ pub fn resolve_active_state(
     )
 }
 
-/* ---------------- STATE 区段 · TB-STATE 运行时（检测层接线） ---------------- */
+/* ---------------- STATE 区段 · 状态检测运行时（检测层接线） ---------------- */
 
 /// 状态检测运行时：start/search/taskview/battery 四源 + 状态机线程
 /// （150ms 合并防抖 → resolve_active_state → taskbar:state-changed）。
@@ -972,14 +967,14 @@ pub mod state;
 /// WinEvent 钩子线程：九段 SetWinEventHook + PEEK + 任务栏窗口生命周期
 /// 转发（TrayWindowEventCallback 注册表）。
 pub mod win_event;
-/// 用户窗口判定（标杆七条件）与每显示器窗口集合（纯数据表 + Z 序）。
+/// 用户窗口判定（七条件）与每显示器窗口集合（纯数据表 + Z 序）。
 pub mod window;
 
 /// 启动状态检测（幂等）：apply_taskbar_config 链路在模块开启时调用
-/// （TB-INJECT 合入后接线；当前可由手测 / 测试入口直接驱动）。
+/// （注入引擎接线后生效；当前可由手测 / 测试入口直接驱动）。
 pub use state::{start_state_detection, stop_state_detection};
 
-/* ---------------- STATE 区段 · F-6 每屏入口（TB-MONITOR） ---------------- */
+/* ---------------- STATE 区段 · 每屏入口 ---------------- */
 
 /// 覆盖表键（`monitorOverrides` 的 Record 键）：显示器**稳定槽位**的十进制
 /// 字串（monitor.rs `monitor:slots`，与 `list_monitors` 的 `id` / widget-N 同号），
@@ -1000,11 +995,11 @@ pub fn disabled_appearance() -> TaskbarAppearance {
     }
 }
 
-/// F-6 每屏求值入口：对第 `monitor` 台显示器（稳定槽位 `slot`）按其**生效
+/// 每屏求值入口：对第 `monitor` 台显示器（稳定槽位 `slot`）按其**生效
 /// 配置**求值——`per_monitor=false` 即基础配置；否则用该槽位覆盖做顶层浅合并
 /// （[`TaskbarSettings::effective_for_slot`]：states / rules / ignoredWindows
 /// 各自整体替换，未覆盖字段沿用统一配置）。该屏覆盖 `enabled=false` →
-/// 桌面态 + [`disabled_appearance`]。TB-STATE 引擎逐屏调用本函数（忽略列表
+/// 桌面态 + [`disabled_appearance`]。状态引擎逐屏调用本函数（忽略列表
 /// 过滤在 [`resolve_active_state`] 内按生效列表进行，表层不预先剔窗）。
 pub fn resolve_active_state_for_slot(
     settings: &TaskbarSettings,
@@ -1023,7 +1018,7 @@ pub fn resolve_active_state_for_slot(
     resolve_active_state(&eff, input, monitor)
 }
 
-/// F-6 每屏入口 · 外观重取：已知某屏**当前**状态键与命中规则 id，从（新）
+/// 每屏入口 · 外观重取：已知某屏**当前**状态键与命中规则 id，从（新）
 /// 生效配置取同源外观——配置变更后、引擎按新配置重求值前的即时基线
 /// （避免 apply 时先闪一帧桌面态）。规则在生效配置里不存在（覆盖删掉了）→
 /// 该态默认外观；规则窗口是否前台未知按前台取 active 外观（随后的精确
@@ -1054,7 +1049,7 @@ pub fn appearance_for_slot_state(
 /* ================================================================== *
  * COMMANDS 区：Tauri 命令（trusted_window 门控 + spawn_blocking，
  * 样板对齐 brightness.rs:872-900）。当前为空壳：模块未实现注入，
- * apply 返回可预期 Err；TB-INJECT 合入后填真实实现，命令名与参数
+ * apply 返回可预期 Err；注入引擎就绪后填真实实现，命令名与参数
  * 不再变（新增 Rust 侧注入参数不影响前端 invoke 载荷）。
  * ------------------------------------------------------------------ */
 
@@ -1068,20 +1063,20 @@ fn app_handle() -> Option<&'static tauri::AppHandle> {
 
 /// lib.rs setup 尾部挂载：缓存 AppHandle（`taskbar:*` 事件 emit 用）→
 /// 探测能力 + 升级残留检测 + 读设置镜像 `general.taskbar.enabled`（模式 C）
-/// 决定是否自动起注入（TB-INJECT [`injector::start_enabled`]）。
+/// 决定是否自动起注入（[`injector::start_enabled`]）。
 pub fn start(app: tauri::AppHandle) {
     let _ = APP.set(app.clone());
     log::info!("taskbar: module registered (injector wiring)");
     injector::start_enabled(&app);
 }
 
-/// RunEvent::Exit 挂点（F-9 恢复线 1）：正常退出时恢复全部任务栏为系统
+/// RunEvent::Exit 挂点（恢复线 1）：正常退出时恢复全部任务栏为系统
 /// 默认——管道 [`TapMessage::RestoreAll`] + 卸钩 + 停线程 + Idle（幂等）。
 pub fn restore_all() {
     injector::restore_all();
 }
 
-fn current_config() -> TaskbarSettings {
+pub(crate) fn current_config() -> TaskbarSettings {
     CURRENT_CONFIG
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -1123,13 +1118,13 @@ pub async fn get_taskbar_config(window: tauri::Window) -> Result<TaskbarSettings
 }
 
 /// 整包应用任务栏配置（模式 B，原子：停旧→起新；签名与空壳一致）。返回
-/// 非致命失败项清单（空 = 全部生效，含 D7 blur→acrylic 降级备注）；致命
+/// 非致命失败项清单（空 = 全部生效，含 blur→acrylic 降级备注）；致命
 /// 错误走 Err（注入失败 / 版本不匹配 / 系统不支持）。
 /// enabled=false：停线程 + 管道 RestoreAll + 状态 Idle；enabled=true：起/
 /// 重起（幂等：已在跑则只下发新外观表，不重复注入）→ 按当前求值结果
 /// （STATE 未合入时恒 desktop 态）下发 ApplyAppearance / SetBorderVisibility。
 /// 配置存底由 [`injector::apply_config`] 在**生效成功后**统一写入——此处若
-/// 提前写，失败后对账恒相等、设置窗永不重试（T-05）。
+/// 提前写，失败后对账恒相等、设置窗永不重试。
 #[tauri::command]
 pub async fn apply_taskbar_config(
     window: tauri::Window,
@@ -1137,7 +1132,7 @@ pub async fn apply_taskbar_config(
 ) -> Result<Vec<String>, String> {
     crate::require_trusted(&window)?;
     tauri::async_runtime::spawn_blocking(move || {
-        // 真实 apply 即预览终点（F-8：重新 apply = 取消预览）。
+        // 真实 apply 即预览终点（重新 apply = 取消预览）。
         preview_end_silently();
         injector::apply_config(&config)
     })
@@ -1145,7 +1140,7 @@ pub async fn apply_taskbar_config(
     .map_err(|e| format!("任务栏配置应用任务失败: {e}"))?
 }
 
-/// 运行状态快照（F-10 状态条）：注入状态机 phase + 失败/降级原因 + 任务栏
+/// 运行状态快照（状态条）：注入状态机 phase + 失败/降级原因 + 任务栏
 /// 类型 + 协议版本；迁移时经 `taskbar:status` 事件同型推送。
 #[tauri::command]
 pub async fn get_taskbar_status(
@@ -1158,11 +1153,11 @@ pub async fn get_taskbar_status(
 }
 
 /// 重启资源管理器（DLL 升级残留的闭环动作：已加载的 DLL 无法安全卸载，
-/// 重启 shell 是完成升级的唯一手段）。D6 边界：只在用户点按钮或开启
+/// 重启 shell 是完成升级的唯一手段）。边界：只在用户点按钮或开启
 /// 「升级后自动重启」时由前端调用，应用绝不擅自结束 shell。
 #[tauri::command]
 pub async fn restart_explorer(window: tauri::Window) -> Result<(), String> {
-    // L6：杀掉 explorer 是全桌面级影响（shell 消失数秒的钓鱼窗口期），
+    // 杀掉 explorer 是全桌面级影响（shell 消失数秒的钓鱼窗口期），
     // 调用入口只在设置页（状态条按钮 / 升级闭环），收口到 settings-only。
     crate::require_settings_window(&window)?;
     tauri::async_runtime::spawn_blocking(injector::restart_explorer)
@@ -1170,7 +1165,7 @@ pub async fn restart_explorer(window: tauri::Window) -> Result<(), String> {
         .map_err(|e| format!("资源管理器重启任务失败: {e}"))?
 }
 
-/// 能力回读（F-12）：设置窗挂载时补读——事件只在启动 / 探测时 emit 一次，
+/// 能力回读：设置窗挂载时补读——事件只在启动 / 探测时 emit 一次，
 /// 晚开的设置窗拿不到；已探测则返回缓存（与事件同值），否则现场探测。
 #[tauri::command]
 pub async fn get_taskbar_capabilities(
@@ -1196,7 +1191,7 @@ pub async fn reset_taskbar_state(window: tauri::Window) -> Result<(), String> {
     .map_err(|e| format!("任务栏状态重置任务失败: {e}"))?
 }
 
-/* ---------------- COMMANDS 区段 · F-8 实时预览（TB-PREVIEW） ---------------- *
+/* ---------------- COMMANDS 区段 · 实时预览 ---------------- *
  * 两条即时通道共用一个命令：外观编辑器拖动中按 ≤80ms 步进直接下发，状态
  * 卡「预览此状态」临时强制该状态生效；期间挂起状态机输出 60s，取消 = 同
  * 命令带 null / 60s 超时 / 真实 apply·reset。全程不改配置存底、不落盘。
@@ -1207,13 +1202,13 @@ pub async fn reset_taskbar_state(window: tauri::Window) -> Result<(), String> {
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-/// 预览步进间隔（F-8「拖动防抖 ≤80ms」）：滑动期最多每 80ms 下发一次；
+/// 预览步进间隔（「拖动防抖 ≤80ms」）：滑动期最多每 80ms 下发一次；
 /// 首笔立即放行（跟手），尾笔最迟一个步进后落定。
 pub const PREVIEW_STEP: Duration = Duration::from_millis(80);
 /// 预览挂起时长：最后一次预览提交后 60s 自动取消，回到真实求值。
 pub const PREVIEW_HOLD: Duration = Duration::from_secs(60);
 
-/// 部分外观覆盖（F-8 `overrides`）：全部可选，缺省字段沿用该状态已配置的
+/// 部分外观覆盖（`overrides`）：全部可选，缺省字段沿用该状态已配置的
 /// 外观；前端拖动时整套外观全传，状态卡预览可只传状态键。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -1265,7 +1260,7 @@ pub(crate) struct PreviewRequest {
 }
 
 /// 预览步进门：仿 brightness.rs `DebounceState` 的「纯状态机 + 注入时钟」，
-/// 但语义按 F-8 改为**步进**而非重启式——重启式会把整段拖动憋到静默才写，
+/// 但语义按 改为**步进**而非重启式——重启式会把整段拖动憋到静默才写，
 /// 预览要的是连续可感知的变化：首笔立即放行，其后每 `step` 放行一次最新
 /// 值（待决项的放行时刻在暂存时定死，不被后续提交推迟），拖动停止后最后
 /// 一笔最迟一个步进内落定。
@@ -1433,8 +1428,7 @@ impl PreviewController {
 
 /// 预览配置合成（纯函数）：七态外观全部替换为预览外观、清空规则、关闭
 /// 每屏覆盖、强制 enabled——无论注入引擎按桌面态还是实时求值下发，结果
-/// 都是预览外观（即「强制该状态生效」，对齐标杆 ApplyColorPreview 的覆盖
-/// 语义）。忽略列表等与外观无关的字段原样保留。
+/// 都是预览外观（即「强制该状态生效」）。忽略列表等与外观无关的字段原样保留。
 pub(crate) fn compose_preview_config(
     real: &TaskbarSettings,
     appearance: &TaskbarAppearance,
@@ -1463,6 +1457,12 @@ static PREVIEW: OnceLock<Arc<PreviewShared>> = OnceLock::new();
 /// 预览下发串行闸：命令路径的首笔与工作线程的步进可能并发，串行化后
 /// 「读真实配置 → 合成预览配置 → 直发」成为不可分割的序列。
 static PREVIEW_PUSH: Mutex<()> = Mutex::new(());
+
+/// 预览请求序号——`preview_taskbar_state` 每次调用独立
+/// spawn_blocking，阻塞池不保证执行序；两次快速点卡时晚到的旧请求会成为
+/// gate 的「最后提交者」（UI 钉住 B、任务栏显示 A，直到 60s/用户操作）。取号
+/// 在 spawn 之前（命令分派有序），执行时已有更新请求即让位。
+static PREVIEW_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn preview_shared() -> Arc<PreviewShared> {
     PREVIEW
@@ -1532,7 +1532,7 @@ fn run_preview_effects(shared: &PreviewShared, effects: Vec<PreviewEffect>) -> R
 /// 不存底、不触发引擎重求值）。**不走** [`injector::apply_config`]——它会先存底
 /// 再请引擎全量重求值，预览配置里规则被清空（[`compose_preview_config`]），引擎
 /// 会把 matched_rule=None 的分辨结果写进每屏求值缓存，预览结束用缓存重发就会
-/// 在下一次精确重求值前短暂错外观（T-14）。只在 Ready 时下发：未注入 / 注入中 /
+/// 在下一次精确重求值前短暂错外观。只在 Ready 时下发：未注入 / 注入中 /
 /// 故障不因预览触发注入或阻塞等待。
 fn push_preview_appearance(req: &PreviewRequest) -> Result<(), String> {
     let _serial = PREVIEW_PUSH.lock().unwrap_or_else(|p| p.into_inner());
@@ -1578,7 +1578,7 @@ fn preview_end_silently() {
     }
 }
 
-/// F-8 预览挂起中：状态机 apply 输出应被抑制。供状态机 apply 回调接线处
+/// 预览挂起中：状态机 apply 输出应被抑制。供状态机 apply 回调接线处
 /// （`state::set_apply_callback` 的生产实现，INJECT / POLISH）在下发前查询；
 /// 预览取消 / 60s 超时 / 真实 apply 后回到 false。
 pub fn preview_hold_active() -> bool {
@@ -1587,7 +1587,7 @@ pub fn preview_hold_active() -> bool {
         .is_some_and(|shared| lock_preview(shared).hold_active(Instant::now()))
 }
 
-/// F-8 实时预览：`state=Some` → 把该状态外观（合并 `overrides`）临时强制到
+/// 实时预览：`state=Some` → 把该状态外观（合并 `overrides`）临时强制到
 /// 全部任务栏并挂起状态机输出 60s；`state=None` → 取消预览，回到真实求值。
 /// 滑动期高频调用由步进门合并为 ≤80ms 一次下发；60s 无新提交自动取消；
 /// `apply_taskbar_config` / `reset_taskbar_state` 亦结束预览。不改配置、不落盘。
@@ -1598,9 +1598,17 @@ pub async fn preview_taskbar_state(
     overrides: Option<TaskbarPartialAppearance>,
 ) -> Result<(), String> {
     crate::require_trusted(&window)?;
-    tauri::async_runtime::spawn_blocking(move || preview_request(state, overrides))
-        .await
-        .map_err(|e| format!("任务栏预览任务失败: {e}"))?
+    let seq = PREVIEW_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        if PREVIEW_SEQ.load(std::sync::atomic::Ordering::SeqCst) != seq {
+            // 已有更新的预览请求（快速连点/紧跟的取消）：本条过期，照执行只会
+            // 把 gate 的「最后提交者」翻回旧状态。
+            return Ok(());
+        }
+        preview_request(state, overrides)
+    })
+    .await
+    .map_err(|e| format!("任务栏预览任务失败: {e}"))?
 }
 
 /* ================================================================== *
@@ -1610,12 +1618,12 @@ pub async fn preview_taskbar_state(
  * start 之前调用为安全 no-op。
  * ------------------------------------------------------------------ */
 
-/// 注入状态机变化（F-10 状态条驱动）。负载 [`crate::models::TaskbarStatus`]。
+/// 注入状态机变化（状态条驱动）。负载 [`crate::models::TaskbarStatus`]。
 pub const TASKBAR_STATUS_EVENT: &str = "taskbar:status";
-/// 能力探测结果（F-12，启动 / 探测完成时发一次）。负载
+/// 能力探测结果（启动 / 探测完成时发一次）。负载
 /// [`crate::models::TaskbarCapabilities`]。
 pub const TASKBAR_CAPABILITIES_EVENT: &str = "taskbar:capabilities";
-/// 当前生效状态变化（F-14 徽标；仅变化时 emit，防抖 ≤200ms）。负载
+/// 当前生效状态变化（徽标；仅变化时 emit，防抖 ≤200ms）。负载
 /// [`crate::models::TaskbarStateChanged`]。
 pub const TASKBAR_STATE_CHANGED_EVENT: &str = "taskbar:state-changed";
 
@@ -1629,7 +1637,7 @@ fn emit_payload<T: Serialize + Clone>(event: &str, payload: T) {
     }
 }
 
-/// 推送注入状态（TB-INJECT 调用）。
+/// 推送注入状态（注入引擎调用）。
 pub fn emit_status(status: TaskbarStatus) {
     emit_payload(TASKBAR_STATUS_EVENT, status);
 }
@@ -1639,7 +1647,7 @@ pub fn emit_capabilities(caps: TaskbarCapabilities) {
     emit_payload(TASKBAR_CAPABILITIES_EVENT, caps);
 }
 
-/// 推送某显示器当前生效状态（仅变化时；TB-STATE 调用）。
+/// 推送某显示器当前生效状态（仅变化时；状态引擎调用）。
 pub fn emit_state_changed(change: TaskbarStateChanged) {
     emit_payload(TASKBAR_STATE_CHANGED_EVENT, change);
 }
@@ -1670,7 +1678,7 @@ mod tests {
         }
     }
 
-    /// 全部可选态开启的设置（在 D2 默认之上），便于逐级测优先级。
+    /// 全部可选态开启的设置（在 默认之上），便于逐级测优先级。
     fn settings_all_enabled() -> TaskbarSettings {
         let mut s = TaskbarSettings::default();
         for key in TaskbarStateKey::ALL {
@@ -1765,7 +1773,7 @@ mod tests {
             assert_eq!(st.appearance.show_line, line, "{key:?}");
             assert_eq!(st.appearance.blur_radius, 30, "{key:?} §4 默认半径");
         }
-        // D3：出厂忽略列表含 Vela 自身（窗口类 + 发布/开发进程名）。
+        // 出厂忽略列表含 Vela 自身（窗口类 + 发布/开发进程名）。
         assert_eq!(s.ignored_windows.classes, ["Tauri Window"]);
         assert!(s
             .ignored_windows
@@ -1935,7 +1943,7 @@ mod tests {
             rule("r-top", TaskbarMatchType::Class, "Notepad"),
         ];
         // Z 序：Notepad 在上（index 0），Chrome 在下。顶层命中 r-top；即使
-        // r-low 也能匹配下层窗口，也不该被用（标杆：只看最顶层最大化窗口）。
+        // r-low 也能匹配下层窗口，也不该被用（只看最顶层最大化窗口）。
         let input = inputs(
             vec![
                 win(10, "Notepad", "a", "Notepad.exe"),
@@ -2049,7 +2057,7 @@ mod tests {
             vec![win(5, "Notepad", "工作备忘录", "Notepad.exe")],
             Some(win(5, "Notepad", "工作备忘录", "Notepad.exe")),
         );
-        // 有最大化窗口 → 直接最大化态（可见规则不参与，标杆同款）。
+        // 有最大化窗口 → 直接最大化态（可见规则不参与）。
         let r = resolve_active_state(&s, &input, 0);
         assert_eq!(r.state, TaskbarStateKey::MaximizedWindow);
         assert_eq!(r.matched_rule, None);
@@ -2089,7 +2097,7 @@ mod tests {
 
     #[test]
     fn visible_triggered_by_maximized_when_maximized_state_disabled() {
-        // 可见态的触发条件含「存在最大化窗口」（标杆 :470）；最大化态被
+        // 可见态的触发条件含「存在最大化窗口」；最大化态被
         // 禁用时仍应落到可见态而非桌面。
         let s = disable(settings_all_enabled(), TaskbarStateKey::MaximizedWindow);
         let input = inputs(vec![win(1, "Notepad", "x", "Notepad.exe")], vec![], None);
@@ -2215,7 +2223,7 @@ mod tests {
             &rule("r", TaskbarMatchType::Title, "记事本 "),
             &w
         ));
-        // 标杆子串匹配大小写敏感。
+        // 子串匹配大小写敏感。
         let w2 = win(1, "c", "My Report", "p.exe");
         assert!(rule_matches(
             &rule("r", TaskbarMatchType::Title, "Report"),
@@ -2381,7 +2389,7 @@ mod tests {
         );
     }
 
-    /* ---------------- F-6 覆盖合并边界（空覆盖 / 部分覆盖 / 坏 slot） ---------------- */
+    /* ---------------- 覆盖合并边界（空覆盖 / 部分覆盖 / 坏 slot） ---------------- */
 
     /// 基础配置：per_monitor 开、可选态全开、desktop 蓝色、一条最大化规则。
     fn per_monitor_base() -> TaskbarSettings {
@@ -2649,7 +2657,7 @@ mod tests {
 }
 
 /* ================================================================== *
- * 测试 · F-8 实时预览（TB-PREVIEW）：步进门假时钟 / 会话（预览→取消→
+ * 测试 · 实时预览：步进门假时钟 / 会话（预览→取消→
  * 恢复的副作用序列，mock 下发面）/ 60s 超时 / 代际复核 / overrides 合并
  * 容错 / 预览配置合成不触碰真实配置。
  * ------------------------------------------------------------------ */

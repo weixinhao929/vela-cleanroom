@@ -577,6 +577,31 @@
   background: var(--danger-soft);
 }
 
+/* 全部已读：与 .nc-clear 同款胶囊，仅在存在未读时挂载，不参与
+   margin-left:auto 的右推布局（右推仍归「清除全部」）。 */
+.nc-read {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--rad-13);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-11);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fx) var(--ease-out),
+    border-color var(--dur-fx) var(--ease-out),
+    color var(--dur-fx) var(--ease-out);
+}
+
+.nc-read:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+
 /* ---- 空状态 ---- */
 
 .nc-empty {

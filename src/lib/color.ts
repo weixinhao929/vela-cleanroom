@@ -5,6 +5,31 @@
  * 合并前须先统一各副本语义。
  */
 
+/** sRGB 通道三元组（0~255，允许浮点中间值——取整时机由输出格式的调用方决定）。 */
+export interface Rgb {
+  r: number;
+  g: number;
+  b: number;
+}
+
+/**
+ * sRGB（非线性空间）下的通道线性插值：t 为**向 b 的比例**（t=0 返回 a，
+ * t=1 返回 b），与 {@link mixHex} 同方向。不取整、不钳制——供继续参与
+ * 复合运算（如 alpha 逆混合）的浮点中间值；需要 CSS 字符串的调用方自行
+ * Math.round。
+ *
+ * 曾在 theme-engine（t 为 a 的权重，参数方向相反）与 theme-ink（内联在
+ * mixHex 里）各有一份并行实现——本函数统一为「t 向 b」一种方向，theme-engine
+ * 的调用点以交换实参适配，数值语义不变。
+ */
+export function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
+  return {
+    r: a.r + (b.r - a.r) * t,
+    g: a.g + (b.g - a.g) * t,
+    b: a.b + (b.b - a.b) * t
+  };
+}
+
 /**
  * 把 `#rrggbb` 颜色转为指定透明度的 `rgba()` 字符串。
  * 输入宽容：rgba()/rgb() 输入转走 {@link withAlpha} 覆写透明度；
@@ -94,17 +119,15 @@ export function luminance(hex: string): number {
 export function deriveAccent2(hex: string, isLight: boolean): string {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex.trim());
   if (!m) return hex;
-  const mix = (a: number, b: number, t: number) => Math.round(a + (b - a) * t);
-  const r = parseInt(m[1], 16);
-  const g = parseInt(m[2], 16);
-  const b = parseInt(m[3], 16);
   // 浅色主题向深色方向混 18%，深色主题向白色方向混 22%。
   const t = isLight ? 0.18 : 0.22;
   const target = isLight ? 0 : 255;
-  const rr = mix(r, target, t);
-  const gg = mix(g, target, t);
-  const bb = mix(b, target, t);
-  return `#${[rr, gg, bb].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+  const mixed = mixRgb(
+    { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) },
+    { r: target, g: target, b: target },
+    t
+  );
+  return `#${[mixed.r, mixed.g, mixed.b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
 }
 
 /**
@@ -121,8 +144,11 @@ export function mixHex(a: string, b: string, t: number): string {
   const ma = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(a.trim());
   const mb = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(b.trim());
   if (!ma || !mb) return a;
-  const mix = (x: number, y: number) => Math.round(x + (y - x) * t);
-  // 解构名不能用 b：与参数 b（目标色）同函数作用域冲突。
-  const [r, g, bb] = [0, 2, 4].map((i) => mix(parseInt(ma[i + 1], 16), parseInt(mb[i + 1], 16)));
-  return `#${[r, g, bb].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+  // 通道插值共用 mixRgb 内核（输出取整为 #rrggbb 的整数通道）。
+  const mixed = mixRgb(
+    { r: parseInt(ma[1], 16), g: parseInt(ma[2], 16), b: parseInt(ma[3], 16) },
+    { r: parseInt(mb[1], 16), g: parseInt(mb[2], 16), b: parseInt(mb[3], 16) },
+    t
+  );
+  return `#${[mixed.r, mixed.g, mixed.b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
 }

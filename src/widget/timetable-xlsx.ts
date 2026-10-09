@@ -255,8 +255,10 @@ function findConflictPairs(sessions: TimetableSession[]): { a: TimetableSession;
       const b = sessions[j];
       if (a.day !== b.day) continue;
       if (a.startSection > b.endSection || b.startSection > a.endSection) continue;
-      const weeks = a.weeks.filter((w) => b.weeks.includes(w));
-      if (weeks.length) out.push({ a, b, day: a.day });
+      // 空周次 = 每周都上（与 timetable.weekMatches 同口径）：任一方为空即交叠。
+      const bothNonEmpty = a.weeks.length > 0 && b.weeks.length > 0;
+      const weeks = bothNonEmpty ? a.weeks.filter((w) => b.weeks.includes(w)) : a.weeks.length ? a.weeks : b.weeks;
+      if (weeks.length || !bothNonEmpty) out.push({ a, b, day: a.day });
     }
   }
   return out;

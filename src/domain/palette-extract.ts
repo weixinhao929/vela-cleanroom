@@ -1,5 +1,5 @@
 /**
- * 任意图片 → 主题色板（借鉴 ClassSoftwareHub #12 的 median-cut 全链路）：
+ * 任意图片 → 主题色板：
  * 跳过半透明像素（alpha < 125）→ 中位切分 8 块 → 按频率 × 灰度惩罚 ×
  * 过亮过暗惩罚 × 中等饱和度加分选出种子色 → 夹进柔和区间（L 25–75，
  * S 30–85）→ 生成 7 档明暗梯度（亮 3 … 基准 … 暗 3，饱和度随亮度反向微调）。
@@ -187,6 +187,28 @@ export type ExtractedPalette = {
   seed: { hex: string; hsl: Hsl };
   shades: string[];
 };
+
+/** 梯度直接映射的自定义主题双档配色（结构兼容 store 的 CustomThemeColors，
+ *  domain 不反向依赖 store，故就地声明同形类型）。 */
+export type PaletteThemeColors = {
+  dark: { bg: string; ink: string };
+  light: { bg: string; ink: string };
+};
+
+/**
+ * 7 档梯度 → 自定义主题整套配色：暗档取最暗端作底、最亮端作文字，亮档
+ * 镜像互换；基准色留给调用方作主色（setPrimaryColor）。梯度两端亮度差
+ * 由 shadeRamp 的 ±3 档（每档 10 L）构造保证，明暗极性与可读性天然成立。
+ * 梯度不完整（<2 档）时双档同用基准色（引擎按底色亮度自判极性，不炸）。
+ */
+export function paletteToCustomColors(palette: ExtractedPalette): PaletteThemeColors {
+  const darkest = palette.shades[0] ?? palette.seed.hex;
+  const lightest = palette.shades[palette.shades.length - 1] ?? palette.seed.hex;
+  return {
+    dark: { bg: darkest, ink: lightest },
+    light: { bg: lightest, ink: darkest }
+  };
+}
 
 /** 全链路：像素 → 中位切分 → 打分选种子 → 柔和化 → 7 档梯度。 */
 export function extractPalette(img: ImageLike): ExtractedPalette | null {

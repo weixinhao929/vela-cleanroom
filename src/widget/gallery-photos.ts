@@ -1,5 +1,5 @@
 /**
- * 图库图片列表的共享存储与上限（G12）：桌面小组件（GalleryWidget）与
+ * 图库图片列表的共享存储与上限：桌面小组件（GalleryWidget）与
  * 设置页「图片管理」（settings/configs/media）此前各自解析同一份
  * localStorage 元数据，且都无上限——图片字节虽已外置磁盘，但条目数随
  * 年头无限增长：localStorage 元数据膨胀 + 网格一次性渲染全部瓦片的

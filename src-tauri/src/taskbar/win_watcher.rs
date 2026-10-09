@@ -1,16 +1,16 @@
 //! 任务栏模块系统消息窗线程骨架（完整沿用 wallpaper.rs:206-376 win_watcher
 //! 的写法：真实顶层窗口 + RegisterClassW + GetMessageW 循环）。
 //!
-//! 监听并分发三类系统事件到 [`SystemEventCallback`]（TB-INJECT / TB-STATE
+//! 监听并分发三类系统事件到 [`SystemEventCallback`]（注入与状态检测两侧
 //! 各自 `register_callback` 挂载，互不感知）：
 //! - `TaskbarCreated`（`RegisterWindowMessageW` 注册消息）：explorer 重启 →
-//!   全量重建（重找任务栏 → 重注入 → 重求值，F-9 恢复线 3）；
-//! - `WM_DISPLAYCHANGE`：显示器拓扑 / 分辨率变化 → 每屏任务栏重建（F-6）；
+//! 全量重建（重找任务栏 → 重注入 → 重求值，恢复线 3）；
+//! - `WM_DISPLAYCHANGE`：显示器拓扑 / 分辨率变化 → 每屏任务栏重建；
 //! - `WM_POWERBROADCAST`：本窗口已 `RegisterPowerSettingNotification(
 //!   GUID_POWER_SAVING_STATUS)`，省电模式切换以 `PBT_POWERSETTINGCHANGE`
-//!   到达，原始 wParam/lParam 透传给回调（TB-STATE 自解 POWERBROADCAST_SETTING）。
+//!   到达，原始 wParam/lParam 透传给回调（状态层自解 POWERBROADCAST_SETTING）。
 //!
-//! **本会话不启动该线程**（`start()` 由 TB-INJECT 在用户开启模块时调用）；
+//! **本模块不自行启动该线程**（`start()` 由注入引擎在用户开启模块时调用）；
 //! 只保证骨架可编译、回调注册可用、panic 隔离。非 Windows 平台全部 no-op。
 
 use std::sync::Arc;
@@ -45,7 +45,7 @@ pub fn stop() {
     imp::stop();
 }
 
-/// 消息窗 HWND 值（0 = 未启动）。TB-STATE 可据此挂更多窗口级通知。
+/// 消息窗 HWND 值（0 = 未启动）。状态层可据此挂更多窗口级通知。
 pub fn watcher_hwnd() -> isize {
     imp::watcher_hwnd()
 }
@@ -69,7 +69,7 @@ mod imp {
 
     use super::SystemEventCallback;
 
-    /// GUID_POWER_SAVING_STATUS {E00958C0-C213-4ACE-AC77-FECCED2EEEA5}
+    /// GUID_POWER_SAVING_STATUS {E00958C0--4ACE--FECCED2EEEA5}
     /// （windows crate 放在 Win32_System_SystemServices feature 下，此处
     /// 手写常量免拉整组 feature；值与 winnt.h 一致）。
     const GUID_POWER_SAVING_STATUS: GUID = GUID::from_u128(0xe00958c0_c213_4ace_ac77_fecced2eeea5);
@@ -165,11 +165,20 @@ mod imp {
                     ..Default::default()
                 };
                 if RegisterClassW(&wc) == 0 {
-                    log::warn!(
-                        "taskbar watcher: RegisterClassW failed; system events will not be tracked"
-                    );
-                    STARTED.store(false, Ordering::SeqCst);
-                    return;
+                    // 泵线程退出后 STARTED 复位，下次 enable 重进本函数——
+                    // 类是进程级注册且从无 UnregisterClassW，二次注册必得
+                    // ERROR_CLASS_ALREADY_EXISTS。该错误继续建窗（否则重启路径
+                    // 永远失败，TaskbarCreated/WM_DISPLAYCHANGE/省电广播永久失明）；
+                    // 其余错误才按原逻辑放弃。
+                    let err = windows::Win32::Foundation::GetLastError();
+                    if err != windows::Win32::Foundation::ERROR_CLASS_ALREADY_EXISTS {
+                        log::warn!(
+                            "taskbar watcher: RegisterClassW failed ({}); system events will not be tracked",
+                            err.0
+                        );
+                        STARTED.store(false, Ordering::SeqCst);
+                        return;
+                    }
                 }
                 // 真实顶层窗口（非 HWND_MESSAGE）才在 TaskbarCreated /
                 // WM_DISPLAYCHANGE 广播名单里；不带 WS_VISIBLE、零尺寸、不 Show，
@@ -206,7 +215,12 @@ mod imp {
                 }
                 log::info!("taskbar watcher started");
                 let mut msg = MSG::default();
-                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                // GetMessageW 出错返回 -1：as_bool() 对 -1 为真会拿旧 msg 无限
+                // 重复派发（TaskbarCreated/电源事件全丢）。0 与 -1 都退出泵。
+                while {
+                    let r = GetMessageW(&mut msg, None, 0, 0);
+                    r.0 != 0 && r.0 != -1
+                } {
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }

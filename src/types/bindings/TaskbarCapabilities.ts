@@ -2,7 +2,7 @@
 import type { TaskbarPath } from "./TaskbarPath";
 
 /**
- * `taskbar:capabilities` 负载（F-12 / D7）。前端按能力渲染：不可用能力
+ * `taskbar:capabilities` 负载。前端按能力渲染：不可用能力
  * 在 UI 中不出现而非点击报错（如 XAML 下隐藏 showPeek 开关）。
  */
 export type TaskbarCapabilities = { path: TaskbarPath, supportsBlur: boolean, supportsPeek: boolean, supportsLine: boolean, supportsBatteryState: boolean, 

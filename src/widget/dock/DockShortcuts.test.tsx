@@ -1,6 +1,6 @@
 /**
- * ISLAND-LINK 全局热键（F-10）回归：DockShortcuts 必须在 dock.enabled 门控之外
- * 存活（I-01：挂载点是 WidgetCanvas 而非 DockShell）——关岛后 Ctrl+Alt+I /
+ * ISLAND-LINK 全局热键回归：DockShortcuts 必须在 dock.enabled 门控之外
+ * 存活（挂载点是 WidgetCanvas 而非 DockShell）——关岛后 Ctrl+Alt+I /
  * `vela.exe --toggle-dock` 仍能重新开岛；开岛热键顺带收起岛上残留的展开面，
  * open-dock-panel 在岛未启用时不动作。
  *

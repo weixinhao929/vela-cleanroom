@@ -22,25 +22,30 @@ export function installLayerFade(): void {
   installed = true;
   let revealTimer = 0;
 
-  void import("@tauri-apps/api/event").then(({ listen }) => {
-    void listen("layer:fade-out", () => {
-      window.clearTimeout(revealTimer);
-      const root = document.documentElement;
-      root.classList.remove("layer-revealing");
-      root.classList.add("layer-vanishing");
-    });
-    void listen("layer:fade-in", () => {
-      const root = document.documentElement;
-      root.classList.remove("layer-vanishing");
-      root.classList.remove("layer-revealing");
-      // 强制 reflow 后重挂类，保证连续 show 也能重播淡入。
-      void root.offsetWidth;
-      root.classList.add("layer-revealing");
-      window.clearTimeout(revealTimer);
-      // P1：兜底摘类时长与淡入 keyframes 同源（--dur-fx 派生 + 40ms 余量），
-      // 对齐 Rust 侧 layer_fade_hide_after_ms 的同源派生——此前写死 400ms，
-      // 只因 --anim-dur 恰有 0.5s 封顶使 --dur-fx 最大恰为 400ms 才不掐尾。
-      revealTimer = window.setTimeout(() => root.classList.remove("layer-revealing"), animDurations().fxMs + 40);
-    });
-  });
+  /* 外层 import 链与内层每个 listen 都补 catch——
+     注册失败只损失本窗的淡入淡出编排（Rust 侧有无条件 hide 兜底，见文件头），
+     但裸 rejection 会污染控制台/崩溃上报。 */
+  void import("@tauri-apps/api/event")
+    .then(({ listen }) => {
+      void listen("layer:fade-out", () => {
+        window.clearTimeout(revealTimer);
+        const root = document.documentElement;
+        root.classList.remove("layer-revealing");
+        root.classList.add("layer-vanishing");
+      }).catch((err: unknown) => console.error("[layer-fade] fade-out listen failed", err));
+      void listen("layer:fade-in", () => {
+        const root = document.documentElement;
+        root.classList.remove("layer-vanishing");
+        root.classList.remove("layer-revealing");
+        // 强制 reflow 后重挂类，保证连续 show 也能重播淡入。
+        void root.offsetWidth;
+        root.classList.add("layer-revealing");
+        window.clearTimeout(revealTimer);
+        // 兜底摘类时长与淡入 keyframes 同源（--dur-fx 派生 + 40ms 余量），
+        // 对齐 Rust 侧 layer_fade_hide_after_ms 的同源派生——此前写死 400ms，
+        // 只因 --anim-dur 恰有 0.5s 封顶使 --dur-fx 最大恰为 400ms 才不掐尾。
+        revealTimer = window.setTimeout(() => root.classList.remove("layer-revealing"), animDurations().fxMs + 40);
+      }).catch((err: unknown) => console.error("[layer-fade] fade-in listen failed", err));
+    })
+    .catch((err: unknown) => console.error("[layer-fade] listener setup failed", err));
 }

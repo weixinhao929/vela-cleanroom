@@ -50,6 +50,12 @@ export function BrightnessWidget() {
       .then((rows) => {
         setList(rows);
         setOptimistic({});
+        // （failedRef 只增不清）：手动「重新检测」成功后清空写失败标记，
+        // 恢复的屏不再停留「不支持」态直到重挂。
+        if (failedRef.current.size > 0) {
+          failedRef.current.clear();
+          setFailedVer((v) => v + 1);
+        }
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
@@ -83,7 +89,7 @@ export function BrightnessWidget() {
 
   const onSlide = (key: string, v: number) => {
     setOptimistic((o) => ({ ...o, [key]: v }));
-    /* G10：画布内调亮度 → 灵动岛 OSD 接管（岛内 BrightnessMini 不发，防自藏）。 */
+    /* 画布内调亮度 → 灵动岛 OSD 接管（岛内 BrightnessMini 不发，防自藏）。 */
     notifyOsd("brightness", tr("亮度"), `${v}%`);
     void invoke("set_brightness", { key, value: v }).catch(() => markFailed(key));
   };

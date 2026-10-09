@@ -1,4 +1,4 @@
-//! 系统快捷动作（借鉴 ClassSoftwareHub #10 TeachingActions）：回桌面 / 任务
+//! 系统快捷动作：回桌面 / 任务
 //! 视图 / 关前台应用 / 关闭全部窗口（两段式确认）。三条铁律同 CSH：
 //!  1) 能调 API 就不模拟按键（本模块仅回桌面/任务视图无直接 API 时模拟组合键）；
 //!  2) 关窗一律优雅关闭（WM_CLOSE），绝不 TerminateProcess 硬杀；
@@ -74,7 +74,7 @@ fn send_chord(mod_vk: u16, key_vk: u16) {
     }
 }
 
-/// [SUPER-PANEL]（ZTools 借鉴 #11）注入组合键的公开入口：取词流程模拟
+/// [SUPER-PANEL]注入组合键的公开入口：取词流程模拟
 /// Ctrl+C 用（mod_vk=0x11, key_vk=0x43）。
 pub(crate) fn send_chord_pub(mod_vk: u16, key_vk: u16) {
     send_chord(mod_vk, key_vk);
@@ -274,11 +274,10 @@ pub async fn sys_close_all_execute(
 }
 
 /* ------------------------------------------------------------------ */
-/* [POWER]（ZTools 借鉴 #4）电源与会话动作：锁屏 / 睡眠 / 注销 / 关机 /    */
+/* [POWER]电源与会话动作：锁屏 / 睡眠 / 注销 / 关机 /    */
 /* 重启。破坏性分级：锁屏与睡眠即时执行（可逆 / 系统自身有恢复语义）；     */
 /* 关机与重启由前端先弹确认对话框（与 closeAllWindowsFlow 同款两段式）。   */
-/* 实现取舍：睡眠走 powrprof SetSuspendState（Win32_System_Power 直调，   */
-/* 与 ZTools 的 PowerShell 方案等价但少一次 shell）；锁屏/注销/关机/重启   */
+/* 实现取舍：睡眠走 powrprof SetSuspendState；锁屏/注销/关机/重启   */
 /* 经 shutdown.exe / rundll32（系统自带，语义清晰且不引新 feature）。      */
 /* ------------------------------------------------------------------ */
 
@@ -296,7 +295,7 @@ fn run_power_action(action: &str) -> Result<(), String> {
                 Err("进入睡眠失败".to_string())
             }
         },
-        // 锁屏：rundll32 直转 user32!LockWorkStation（ZTools 同款）。
+        // 锁屏：rundll32 直转 user32!LockWorkStation。
         "lock" => std::process::Command::new("rundll32")
             .args(["user32.dll,LockWorkStation"])
             .spawn()
@@ -349,6 +348,217 @@ fn _empty_pcwstr() -> PCWSTR {
     PCWSTR(std::ptr::null())
 }
 
+/* ------------------------------------------------------------------ */
+/* [WIN-ACTIONS]：把前台窗口移到虚拟桌面、 */
+/* 切换系统代理、切换高对比度。三条全部走「白名单 + 直调系统 API/注册表」，   */
+/* 不注入任何第三方进程。快捷键动作 vd-move-left / vd-move-right /         */
+/* sys-proxy / sys-contrast 与命令面板共用这里的实现。                     */
+/* ------------------------------------------------------------------ */
+
+const VK_CONTROL: u16 = 0x11;
+const VK_LEFT: u16 = 0x25;
+const VK_RIGHT: u16 = 0x27;
+
+/// 双修饰键组合键六事件序列（两修饰按下 → 主键按下 → 主键抬起 → 两修饰抬起；
+/// 修饰按注册逆序抬起，模拟系统组合键的自然松开顺序）。
+fn chord2_inputs(mod1_vk: u16, mod2_vk: u16, key_vk: u16) -> Vec<INPUT> {
+    let mk = |vk: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: 0,
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    vec![
+        mk(mod1_vk, false),
+        mk(mod2_vk, false),
+        mk(key_vk, false),
+        mk(key_vk, true),
+        mk(mod2_vk, true),
+        mk(mod1_vk, true),
+    ]
+}
+
+fn send_chord2(mod1_vk: u16, mod2_vk: u16, key_vk: u16) {
+    let inputs = chord2_inputs(mod1_vk, mod2_vk, key_vk);
+    unsafe {
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent != inputs.len() as u32 {
+            log::warn!(
+                "sys_actions: SendInput 只注入了 {sent}/{} 个事件",
+                inputs.len()
+            );
+        }
+    }
+}
+
+fn vd_key(direction: &str) -> Result<u16, String> {
+    match direction {
+        "left" => Ok(VK_LEFT),
+        "right" => Ok(VK_RIGHT),
+        _ => Err(format!("未知虚拟桌面方向：{direction}")),
+    }
+}
+
+/// 把前台窗口移到相邻虚拟桌面：模拟 Win+Ctrl+←/→（系统无公开 per-window
+/// 虚拟桌面 API；IVirtualDesktopManager COM 只有查询/移动到命名桌面，按键
+/// 序列是 自动化工具 同款做法）。快捷键 dispatch 与命令面共用。
+pub fn move_window_vd_blocking(direction: &str) -> Result<(), String> {
+    let key = vd_key(direction)?;
+    send_chord2(VK_LWIN, VK_CONTROL, key);
+    Ok(())
+}
+
+/// 把前台窗口移到相邻虚拟桌面（direction: "left"/"right"）。
+#[tauri::command]
+pub async fn sys_move_window_virtual_desktop(
+    window: tauri::Window,
+    direction: String,
+) -> Result<(), String> {
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || move_window_vd_blocking(&direction))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 系统代理开关的注册表位置（HKCU；ProxyServer 等其余字段原样保留，
+/// 只翻转 ProxyEnable）。
+const INET_SETTINGS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+/// 纯函数：0/1 → 翻转值（注册表 REG_DWORD 口径）。
+fn flip_dword_flag(cur: u32) -> u32 {
+    if cur == 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// 切换系统代理核心（HKCU ProxyEnable 翻转 + WinInet 广播刷新，使运行中
+/// 的浏览器/应用立即生效，无需注销）。返回切换后的开闭状态；未配置过
+/// ProxyServer 时开启只是「无效代理」，前端以返回值提示用户先填代理。
+/// 快捷键 dispatch 与命令面共用。
+pub fn toggle_system_proxy_blocking() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+        use winreg::RegKey;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu
+            .open_subkey_with_flags(INET_SETTINGS_KEY, KEY_READ | KEY_WRITE)
+            .map_err(|e| format!("打开 Internet Settings 失败: {e}"))?;
+        let cur: u32 = key.get_value("ProxyEnable").unwrap_or(0);
+        let next = flip_dword_flag(cur);
+        key.set_value("ProxyEnable", &next)
+            .map_err(|e| format!("写入 ProxyEnable 失败: {e}"))?;
+        refresh_wininet();
+        Ok(next == 1)
+    }
+    #[cfg(not(windows))]
+    Err("仅支持 Windows".to_string())
+}
+
+/// 切换系统代理（快捷键动作 sys-proxy 同核心）。
+#[tauri::command]
+pub async fn sys_toggle_system_proxy(window: tauri::Window) -> Result<bool, String> {
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
+    tauri::async_runtime::spawn_blocking(toggle_system_proxy_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// 广播 WinInet 设置变更（SETTINGS_CHANGED + REFRESH，各一次；失败仅降级为
+/// 「重启应用后生效」，不算命令失败）。
+#[cfg(windows)]
+fn refresh_wininet() {
+    use windows::Win32::Networking::WinInet::{
+        InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED,
+    };
+    unsafe {
+        let _ = InternetSetOptionW(None, INTERNET_OPTION_SETTINGS_CHANGED, None, 0);
+        let _ = InternetSetOptionW(None, INTERNET_OPTION_REFRESH, None, 0);
+    }
+}
+
+/// 高对比度标志位（winuser.h HCF_HIGHCONTRASTON）。
+const HCF_HIGHCONTRASTON_RAW: u32 = 0x0000_0001;
+
+/// 纯函数：下一个高对比度 dwFlags（开 ↔ 关）。
+fn next_high_contrast_flags(cur: u32) -> u32 {
+    cur ^ HCF_HIGHCONTRASTON_RAW
+}
+
+/// 切换系统高对比度模式核心（SPI_GET/SETHIGHCONTRAST；与「设置→辅助功能」
+/// 同一开关）。返回切换后的开闭状态。快捷键 dispatch 与命令面共用。
+pub fn toggle_high_contrast_blocking() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Accessibility::{
+            HCF_HIGHCONTRASTON, HIGHCONTRASTW, HIGHCONTRASTW_FLAGS,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETHIGHCONTRAST, SPI_SETHIGHCONTRAST,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+        let mut hc = HIGHCONTRASTW {
+            cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+            dwFlags: HIGHCONTRASTW_FLAGS(0),
+            lpszDefaultScheme: windows::core::PWSTR::null(),
+        };
+        // SAFETY: 结构体按 cbSize 约定传入/传出；SPI 动作白名单常量。
+        unsafe {
+            if !SystemParametersInfoW(
+                SPI_GETHIGHCONTRAST,
+                hc.cbSize,
+                Some(&mut hc as *mut HIGHCONTRASTW as *mut core::ffi::c_void),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .is_ok()
+            {
+                return Err("读取高对比度状态失败".to_string());
+            }
+            hc.dwFlags = HIGHCONTRASTW_FLAGS(next_high_contrast_flags(hc.dwFlags.0));
+            if !SystemParametersInfoW(
+                SPI_SETHIGHCONTRAST,
+                hc.cbSize,
+                Some(&mut hc as *mut HIGHCONTRASTW as *mut core::ffi::c_void),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .is_ok()
+            {
+                return Err("切换高对比度失败".to_string());
+            }
+        }
+        Ok(hc.dwFlags.0 & HCF_HIGHCONTRASTON.0 != 0)
+    }
+    #[cfg(not(windows))]
+    Err("仅支持 Windows".to_string())
+}
+
+/// 切换系统高对比度模式。返回切换后的开闭状态。
+#[tauri::command]
+pub async fn sys_toggle_high_contrast(window: tauri::Window) -> Result<bool, String> {
+    if !crate::trusted_window(window.label()) {
+        return Err("untrusted window".into());
+    }
+    tauri::async_runtime::spawn_blocking(toggle_high_contrast_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +596,52 @@ mod tests {
         }
         assert!(run_power_action("hibernate").unwrap_err().contains("未知"));
         assert!(run_power_action("").unwrap_err().contains("未知"));
+    }
+
+    // [WIN-ACTIONS] 双修饰键序列：按下对、抬起对、键序正确。
+    #[test]
+    fn chord2_structure_two_modifiers() {
+        let inputs = chord2_inputs(VK_LWIN, VK_CONTROL, VK_LEFT);
+        assert_eq!(inputs.len(), 6);
+        let flags: Vec<bool> = inputs
+            .iter()
+            .map(|i| unsafe { i.Anonymous.ki.dwFlags } == KEYEVENTF_KEYUP)
+            .collect();
+        assert_eq!(flags, vec![false, false, false, true, true, true]);
+        let vks: Vec<u16> = inputs
+            .iter()
+            .map(|i| unsafe { i.Anonymous.ki.wVk }.0)
+            .collect();
+        // 按下顺序 mod1 mod2 key；抬起顺序 key mod2 mod1（逆序松开）。
+        assert_eq!(
+            vks,
+            vec![VK_LWIN, VK_CONTROL, VK_LEFT, VK_LEFT, VK_CONTROL, VK_LWIN]
+        );
+    }
+
+    #[test]
+    fn vd_direction_maps_to_vk_and_rejects_unknown() {
+        assert_eq!(vd_key("left").unwrap(), VK_LEFT);
+        assert_eq!(vd_key("right").unwrap(), VK_RIGHT);
+        assert!(vd_key("up").unwrap_err().contains("未知"));
+        assert!(vd_key("").unwrap_err().contains("未知"));
+    }
+
+    #[test]
+    fn proxy_flag_flips_dword() {
+        assert_eq!(flip_dword_flag(0), 1);
+        assert_eq!(flip_dword_flag(1), 0);
+    }
+
+    #[test]
+    fn high_contrast_flag_toggles_only_on_bit() {
+        // 仅翻转 ON 位，其余标志位（HCF_AVAILABLE 等）原样保留。
+        assert_eq!(next_high_contrast_flags(0), HCF_HIGHCONTRASTON_RAW);
+        assert_eq!(next_high_contrast_flags(HCF_HIGHCONTRASTON_RAW), 0);
+        let other_bits = 0x0000_0002 | 0x0000_0004;
+        assert_eq!(
+            next_high_contrast_flags(other_bits | HCF_HIGHCONTRASTON_RAW),
+            other_bits
+        );
     }
 }

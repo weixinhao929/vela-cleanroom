@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default desktop capability",
-  "windows": ["settings", "widget-*", "quick-note", "taskbar-net", "snip", "fullscreen", "super-panel"],
+  "description": "Default desktop capability。N-28（2026-10-07 审查第二轮）：本组仅保留真正消费两个插件面的窗口——settings / widget-*（notify handlers 与提醒链走 plugin-notification；file-dialog 被设置页与小组件面板消费）。snip 拆到 snip.json（只要 dialog），taskbar-net / fullscreen / super-panel 拆到 satellite-min.json（都不要）。",
+  "windows": ["settings", "widget-*"],
   "permissions": [
     "core:default",
     "notification:default",

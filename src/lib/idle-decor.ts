@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * G-9 空闲装饰降级：presence Idle ≥阈值期间为真的模块级事实源。
+ * 空闲装饰降级：presence Idle ≥阈值期间为真的模块级事实源。
  *
  * 空闲是桌面常驻应用 99% 的时间占比——此前空闲只降载了采样（presence
  * 侧 sampling pause / 内存修剪），画布上的装饰动画（呼吸晕/封面旋转/

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-/** B3 贝塞尔曲线编辑器：合法性判定（非法曲线拒绝提交）与求值回归。 */
+/** 贝塞尔曲线编辑器：合法性判定（非法曲线拒绝提交）与求值回归。 */
 import {
   BEZIER_PRESETS,
   bezierEase,

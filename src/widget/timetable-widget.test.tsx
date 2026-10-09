@@ -7,7 +7,7 @@
  * 点导入 → 选文件 → read_excel_sheet → 预览出现 → 确认 → 周视图渲染。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const invokeMock = vi.fn();
@@ -26,6 +26,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { TimetableWidget } from "./widgets/TimetableWidget";
 import { loadWidgetConfig } from "./widget-config";
+import { mondayOf, toISODate } from "./timetable";
 
 /** 极简网格式课表：1 门课（周一第 1-2 节，1-16 周）。 */
 const GRID_ROWS: string[][] = [
@@ -93,5 +94,33 @@ describe("TimetableWidget 导入链路（空态）", () => {
     await user.click(screen.getByRole("button", { name: /导入课表/ }));
 
     expect(await screen.findByText(/未识别到课程/)).toBeInTheDocument();
+  });
+
+  it("周次徽标即学期设置入口：改总周数 / 以本周为第 1 周写入 profiles 与镜像", async () => {
+    const user = userEvent.setup();
+    render(<TimetableWidget instanceId="tt-ut" />);
+
+    // 走完整导入拿到课表数据（学期默认本周为第 1 周）。
+    await user.click(screen.getByRole("button", { name: /导入课表/ }));
+    await user.click(await screen.findByRole("button", { name: "确认导入" }));
+    await screen.findByText(/高等数学/);
+
+    // 周次徽标是按钮，点开学期设置弹层。
+    const badge = await screen.findByRole("button", { name: /学期设置：第一周周一 \/ 总周数/ });
+    await user.click(badge);
+    const weeks = screen.getByRole("spinbutton", { name: "总周数" });
+    expect((weeks as HTMLInputElement).value).toBe("16");
+
+    // 受控数字输入逐键写库，一次性赋终值。
+    fireEvent.change(weeks, { target: { value: "20" } });
+    let saved = loadWidgetConfig("tt-ut");
+    expect((saved.data as { totalWeeks: number }).totalWeeks).toBe(20);
+    const prof = (saved.profiles as { id: string; data: { totalWeeks: number } }[])[0];
+    expect(prof.data.totalWeeks).toBe(20);
+
+    // 快捷项：把第一周周一对齐到本周一。
+    await user.click(screen.getByRole("button", { name: "以本周为第 1 周" }));
+    saved = loadWidgetConfig("tt-ut");
+    expect((saved.data as { semesterStart: string }).semesterStart).toBe(toISODate(mondayOf(new Date())));
   });
 });

@@ -1,8 +1,8 @@
 /* ══════════════════════════════════════════════════════════════════
-   POLISH 打磨包：贝塞尔曲线编辑器（B3）/ 滑条 v2（D 表）/ 快捷键速查表（D 表）
+   POLISH 打磨包：贝塞尔曲线编辑器/ 滑条 v2（D 表）/ 快捷键速查表（D 表）
    ──────────────────────────────────────────────────────────────────
    两个窗口共用（main.tsx 静态加载）：滑条经 shared.tsx 出现在设置窗与桌面
-   层就地配置弹层，速查表两窗均可 Ctrl+? 呼出。全部消费 A1–A3 统一 token，
+   层就地配置弹层，速查表两窗均可 Ctrl+? 呼出。全部消费 –统一 token，
    不在此重定义任何 --ease-* 契约值；交互态过渡只动 transform/opacity/颜色。
    ══════════════════════════════════════════════════════════════════ */
 
@@ -20,6 +20,15 @@
   width: 230px;
   flex-shrink: 0;
 }
+/* 双击恢复默认的包裹层（M3Slider defaultValue）：接管设置行内的宽度约束，
+   内层滑条改 100% 适配，布局与未包裹时一致。 */
+.tm-slider-reset-wrap {
+  width: 230px;
+  flex-shrink: 0;
+}
+.tm-slider-reset-wrap .wake-slider.tm-slider-row {
+  width: 100%;
+}
 .wcfg-popover .wake-slider.tm-slider-row {
   gap: 8px;
   width: 150px;
@@ -33,7 +42,7 @@
   touch-action: none;
 }
 
-/* ── A4 / touch target：Toggle 命中 wrap（docs/ui-guidelines.md §2）──
+/* ── / touch target：Toggle 命中 wrap（docs/ui-guidelines.md §2）──
    48×48 透明按钮承载点击 / 键盘 / aria，44×24 轨道 .tm-toggle 作为子元素居中；
    两窗共用（就地弹层也渲染 Toggle）。transform 过渡同时是 check-transitions
    对 .tm-toggle-wrap:active 涨径规则的基线。 */
@@ -61,7 +70,7 @@
   transform: translateX(var(--toggle-travel-narrow)) scale(var(--toggle-press-scale));
 }
 
-/* ── B3 贝塞尔曲线编辑器 ── */
+/* ── 贝塞尔曲线编辑器 ── */
 .tm-bezier {
   display: flex;
   gap: 18px;

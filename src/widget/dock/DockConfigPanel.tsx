@@ -1,5 +1,5 @@
 /**
- * 灵动岛配置面板（编辑模式浮层，ISLAND-CFG · F-6 快捷项 + F-2 入口 c）。
+ * 灵动岛配置面板（编辑模式浮层，ISLAND-CFG · 快捷项 + 入口 c）。
  * 由编辑工具栏「灵动岛」按钮弹出，落点与布局模板面板一致（工具栏上方居中）；
  * 全量项在设置窗口「灵动岛」页（features/settings/pages/DockPage.tsx），
  * 两处读写同一份 widget-store.dock，所有改动经 CORE 动作即时按屏落盘。
@@ -15,7 +15,7 @@
  * settings.css，不能借用 .tm-toggle / .tm-segmented）；滑条用 M3Slider——它的
  * 样式在两窗共用的 feature-polish.css 里。
  */
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, ChevronUp, Plus, X, type LucideIcon } from "lucide-react";
 import { useT } from "../../i18n-lite";
 import { animDurations } from "../../lib/durations";
@@ -113,7 +113,7 @@ function Seg<T extends string>({
   );
 }
 
-export function DockConfigPanel({ closing }: { closing?: boolean }) {
+export function DockConfigPanel({ closing, style }: { closing?: boolean; style?: CSSProperties }) {
   const tr = useT();
   const dock = useWidgetStore((s) => s.dock);
   const setDock = useWidgetStore((s) => s.setDock);
@@ -126,24 +126,57 @@ export function DockConfigPanel({ closing }: { closing?: boolean }) {
      pickSpatialEase」成文规范）；× 移除先播收缩退场再提交 store。 */
   const tilesRef = useRef<HTMLDivElement>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  /* 偏移滑条拖动期只进草稿、松手（onCommitEnd）一次 setDockPlacement——
+     此前逐 input 事件全量落盘（localStorage + SQLite 镜像 + 窗口对账）。
+     草稿经 ref 保鲜：键盘步进是 onChange + onCommitEnd 同拍触发，闭包里的
+     state 是步进前的旧值，直接读会永远提交不出。 */
+  const offsetDraftRef = useRef<number | null>(null);
+  const [offsetDraft, setOffsetDraft] = useState<number | null>(null);
+  const slideOffset = (v: number) => {
+    offsetDraftRef.current = v;
+    setOffsetDraft(v);
+  };
+  const commitOffset = () => {
+    const v = offsetDraftRef.current;
+    offsetDraftRef.current = null;
+    setOffsetDraft(null);
+    if (v !== null) setDockPlacement({ snap: "free", offset: v / 100 });
+  };
   const bumpTile = (id: string, to: number) => {
     if (!tilesRef.current) return;
     flipReorder(tilesRef.current, ".dock-cfg-tile-chip", () => moveDockTile(id, to));
   };
+  /* 在途移除定时器记账——面板退场卸载时取消（「卸载后仍提交」）；锁只挡
+     同一枚磁贴重复触发，不同磁贴的退场不再互相阻塞（原单飞锁会静默吞掉
+     快速连点第二枚的移除）。 */
+  const removeTimers = useRef<Set<number>>(new Set());
+  useEffect(
+    () => () => {
+      for (const t of removeTimers.current) window.clearTimeout(t);
+      removeTimers.current.clear();
+    },
+    []
+  );
   const removeTile = (id: string) => {
-    if (removingId) return;
+    if (removingId === id) return;
     setRemovingId(id);
-    window.setTimeout(
+    const t = window.setTimeout(
       () => {
+        removeTimers.current.delete(t);
         removeDockTile(id);
         setRemovingId((cur) => (cur === id ? null : cur));
       },
       prefersReducedMotion() ? 0 : animDurations().fxFastMs
     );
+    removeTimers.current.add(t);
   };
 
-  const setMouse = (patch: Partial<DockMouseActions>) => setDock({ mouse: { ...dock.mouse, ...patch } });
-  const setTakeover = (patch: Partial<DockTakeoverConfig>) => setDock({ takeover: { ...dock.takeover, ...patch } });
+  /* 与 DockPage 同款——子对象补丁取 getState() 当前值，渲染闭包在
+     跨窗同步 / 连续回调后会陈旧，展开陈旧兄弟字段会整包回滚对端刚写的字段。 */
+  const setMouse = (patch: Partial<DockMouseActions>) =>
+    setDock({ mouse: { ...useWidgetStore.getState().dock.mouse, ...patch } });
+  const setTakeover = (patch: Partial<DockTakeoverConfig>) =>
+    setDock({ takeover: { ...useWidgetStore.getState().dock.takeover, ...patch } });
   const setSnap = (snap: DockSnap) =>
     snap === "free" ? setDockPlacement({ snap }) : setDockPlacement({ snap, offset: SNAP_OFFSET[snap] });
 
@@ -160,7 +193,7 @@ export function DockConfigPanel({ closing }: { closing?: boolean }) {
   ];
 
   /* 「+」类型菜单：简单下拉（DockTypePicker 合入后替换）。Esc / 外点关闭
-     （统一骨架）；关闭走 useDelayedUnmount 播 .is-closing 退场（F-9 弹层退场档）。 */
+     （统一骨架）；关闭走 useDelayedUnmount 播 .is-closing 退场（弹层退场档）。 */
   const [addOpen, setAddOpen] = useState(false);
   const addKeep = useDelayedUnmount(addOpen, animDurations().fxXfastMs);
   const addRef = useRef<HTMLDivElement>(null);
@@ -172,7 +205,19 @@ export function DockConfigPanel({ closing }: { closing?: boolean }) {
   };
 
   return (
-    <div className={`dock-cfg${closing ? " is-closing" : ""}`} data-interactive onClick={(e) => e.stopPropagation()}>
+    /* 浮层补对话语义——无 role/无障碍名时读屏只报一坨控件；触发钮的
+       aria-expanded / aria-haspopup 在编辑工具栏「灵动岛」按钮上（WidgetCanvas）。
+       aria-modal 不标：面板非模态（背景仍可交互、外点关闭），标 true 会让
+       读屏把背景全部静音。锚点 style 由 WidgetCanvas 按工具栏位置计算传入。 */
+    <div
+      id="edit-panel-dock"
+      className={`dock-cfg${closing ? " is-closing" : ""}`}
+      role="dialog"
+      aria-label={tr("灵动岛")}
+      style={style}
+      data-interactive
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="dock-cfg-head">
         <span className="dock-cfg-title">{tr("灵动岛")}</span>
         <span className="dock-cfg-desc">{tr("贴边的常驻小组件聚合条")}</span>
@@ -193,12 +238,13 @@ export function DockConfigPanel({ closing }: { closing?: boolean }) {
         <span className="dock-cfg-label">{tr("偏移")}</span>
         <M3Slider
           label="偏移"
-          value={Math.round(dock.offset * 100)}
+          value={offsetDraft ?? Math.round(dock.offset * 100)}
           min={0}
           max={100}
           step={1}
           suffix="%"
-          onChange={(v) => setDockPlacement({ snap: "free", offset: v / 100 })}
+          onChange={slideOffset}
+          onCommitEnd={commitOffset}
         />
       </fieldset>
 

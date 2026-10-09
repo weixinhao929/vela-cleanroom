@@ -1,9 +1,9 @@
 /**
  * 快捷方式文件夹弹层（类手机桌面文件夹）：快捷方式组件里的文件夹磁贴展开
  * 后的就地条目网格——点条目直接打开，右键条目就地操作，与真实文件系统的
- * FolderPopup（DeskOrder 借鉴 #13）互不相干。
+ * FolderPopup互不相干。
  *
- * 开合（BentoDesk Zone 胶囊↔网格同表面语义的 webview 等价物）：WAAPI FLIP
+ * 开合：WAAPI FLIP
  * 从磁贴矩形连续变形到弹层矩形（240ms cubic-bezier(0,0,0.58,1)，无过冲——
  * 面板先到位而内容未至会像两块分离的板子）；关闭反向收回磁贴，从当前
  * 计算值续跑（展开中途反向不跳层）。打开后 260ms 展开锁内忽略外点关闭，
@@ -20,24 +20,28 @@
  * 目标修改时间倒序（paths_mtimes 批量拉取）。非自由态网格内拖拽不重排
  * （拖出弹层仍可用）。
  *
- * 内联搜索（BentoDesk InlineSearch）：contains 就地过滤，Enter 打开第一个
+ * 内联搜索：contains 就地过滤，Enter 打开第一个
  * 匹配并收起；空查询闲置 3s 自动收起、非空查询永不闲置关闭；无结果居中
  * muted 文案；每次输入重置滚动。
  *
- * 弹层内拖拽（BentoDesk 内部拖拽语义）：>4px 视为拖动；被拖条目 fixed 定身
- * + transform 跟手，网格内实时重排（reorderChildIds 纯函数），拖出弹层边界
- * 切换为画布/其它文件夹落点预览，松手提交。
+ * 弹层内拖拽：>4px 视为拖动；被拖条目收拢占位，
+ * 幽灵以指针为中心跟随（同系统桌面拖图标的手感），网格内实时重排
+ * （reorderChildIds 纯函数），拖出弹层边界切换为画布/其它文件夹落点预览，
+ * 松手提交。
  *
  * 定位复用 placeFolderPopup（靠锚点一侧生长、翻侧、贴边钳制）；Portal 到
  * body + 整体 data-interactive。条目错峰进场：stagger 10ms、前 5 张、Y 偏移 6px。
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpDown, FileText, FolderClosed, Link2, Search, X } from "lucide-react";
+import { ArrowUpDown, FileText, FolderClosed, FolderOpen, Link2, Search, Trash2, X } from "lucide-react";
 import { invoke, isTauri } from "../../lib/tauri";
 import { useT } from "../../i18n-lite";
 import { animDurations } from "../../lib/durations";
+import { armPopupClickShield } from "../../lib/click-shield";
+import { uiZoom } from "../../lib/ui-zoom";
+import { openContextMenu, isContextMenuOpen } from "../../components/ContextMenu";
 import type { PopoverAnchor } from "../WidgetConfigPopover";
 import { placeFolderPopup } from "./FolderPopup";
 import {
@@ -53,11 +57,11 @@ import {
   type SfSortMode
 } from "../shortcuts-shared";
 
-/** 展开锁（BentoDesk EXPAND_LOCK_MS = 240 动画 + 20 余量）：锁窗内的外点不关闭。 */
+/** 展开锁：锁窗内的外点不关闭。 */
 const EXPAND_LOCK_MS = 260;
 /** 搜索条空查询闲置自动收起（非空查询永不闲置关闭——不丢用户输入）。 */
 const SEARCH_IDLE_DISMISS_MS = 3000;
-/** FLIP 时长与缓动：曲线消费 A3 契约 token（--ease-out / --ease-in，运行时
+/** FLIP 时长与缓动：曲线消费 契约 token（--ease-out / --ease-in，运行时
    读取根内联值，WAAPI 需要字符串；读不到时回退 token 的 CSS 原值），
    时长用 --dur-fx / --dur-fx-fast 同源毫秒——私有 cubic-bezier 游离契约外的
    状态就此收敛，速度三档设置对开合动画同样生效。 */
@@ -141,13 +145,29 @@ function motionOk(): boolean {
   return !osReduce && document.documentElement.getAttribute("data-reduce-motion") !== "1";
 }
 
+/** 拖拽幽灵定位：left/top 以「除回缩放的指针坐标 − 半尺寸」落位，使渲染后
+    （left 会再乘 zoom）的中心恰好是指针——任意界面缩放下图标中心都在鼠标上。
+    z 阶梯令牌（--z-drag-ghost = 弹层 +1）：压过弹层本体，仍低于右键菜单。 */
+function ghostCenteredStyle(drag: PopupDrag): CSSProperties {
+  const z = uiZoom();
+  return {
+    position: "fixed",
+    left: drag.x / z - drag.frozen.width / 2,
+    top: drag.y / z - drag.frozen.height / 2,
+    width: drag.frozen.width,
+    height: drag.frozen.height,
+    zIndex: "var(--z-drag-ghost, 10111)"
+  };
+}
+
 type PopupDrag = {
   id: string;
-  dx: number;
-  dy: number;
+  /** 当前指针视口坐标：幽灵中心对齐此点（同系统拖图标手感）。 */
+  x: number;
+  y: number;
   mode: "inside" | "outside";
-  /** 拖动开始时的视口矩形：幽灵按此定身，重排回流不再移动 ghost。 */
-  frozen: { left: number; top: number; width: number };
+  /** 按下瞬间的条目布局尺寸（offset 尺寸不含 transform）：幽灵据此居中。 */
+  frozen: { width: number; height: number };
 };
 
 export function ShortcutFolderPopup({
@@ -180,7 +200,10 @@ export function ShortcutFolderPopup({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const requestClose = useCallback(() => {
-    if (!closing) setClosing(true);
+    if (closing) return;
+    // [CLICK-SHIELD]：退场开始屏蔽连点穿透（默认关）。
+    armPopupClickShield();
+    setClosing(true);
   }, [closing]);
   useEffect(() => {
     if (!closing) return;
@@ -249,10 +272,17 @@ export function ShortcutFolderPopup({
     const onDown = (e: PointerEvent) => {
       if (openMode === "pin") return;
       if (performance.now() - openedAtRef.current < EXPAND_LOCK_MS) return;
+      // 条目右键菜单（ctx-menu，app 级 Host 渲染）内的按下不是「弹层外点」：
+      // 菜单开着时点它的菜单项不应连坐收弹层（菜单本体自己管理关闭）。
+      if ((e.target as HTMLElement | null)?.closest?.(".ctx-menu")) return;
       if (ref.current && !ref.current.contains(e.target as Node)) requestClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // 分层关闭：右键菜单开着时第一下 Esc 只关菜单（ContextMenuHost 的
+      // document 捕获监听随后接手）。这里不能 stopPropagation——window 捕获
+      // 先于 document 捕获，拦了菜单自己就收不掉了。
+      if (isContextMenuOpen()) return;
       e.stopPropagation();
       e.preventDefault();
       if (searchOpen) closeSearch();
@@ -328,22 +358,31 @@ export function ShortcutFolderPopup({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sort, mtimeSig]);
 
-  /* ---- 排序 + 搜索过滤后的展示列表（浏览态 = 分页，搜索态 = 滚动）。 ---- */
-  const baseIds = items.map((i) => i.id);
+  /* ---- 排序 + 搜索过滤后的展示列表（浏览态 = 分页，搜索态 = 滚动）。
+          （重渲纪律，同 ShortcutsWidget/GroupCard）：派生集全部 memo——
+          弹层内拖拽逐帧 setDrag，不 memo 的话 byId/排序/过滤每帧重建。 ---- */
+  const baseIds = useMemo(() => items.map((i) => i.id), [items]);
   const [orderOverride, setOrderOverrideState] = useState<string[] | null>(null);
   const orderOverrideRef = useRef<string[] | null>(null);
   const applyOverride = useCallback((next: string[] | null) => {
     orderOverrideRef.current = next;
     setOrderOverrideState(next);
   }, []);
-  const overrideApplied = orderOverride
-    ? orderOverride.map((id) => items.find((i) => i.id === id)).filter((i): i is CustomShortcut => !!i)
-    : items;
-  const sorted = sortFolderItems(overrideApplied, sort, (it) => mtimes[it.path] ?? 0);
+  const overrideApplied = useMemo(
+    () =>
+      orderOverride
+        ? orderOverride.map((id) => items.find((i) => i.id === id)).filter((i): i is CustomShortcut => !!i)
+        : items,
+    [orderOverride, items]
+  );
+  const sorted = useMemo(
+    () => sortFolderItems(overrideApplied, sort, (it) => mtimes[it.path] ?? 0),
+    [overrideApplied, sort, mtimes]
+  );
   const q = query.trim().toLowerCase();
   const searchBrowsing = q.length > 0;
-  const visible = q ? sorted.filter((i) => i.label.toLowerCase().includes(q)) : sorted;
-  const byId = new Map(items.map((i) => [i.id, i]));
+  const visible = useMemo(() => (q ? sorted.filter((i) => i.label.toLowerCase().includes(q)) : sorted), [sorted, q]);
+  const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
 
   /* ---- 分页：固定高度页区，行列测量自适应；
           非当前页懒挂载（±1 页）——分页即虚拟化；锚点保页跟随交互条目。 ---- */
@@ -415,7 +454,7 @@ export function ShortcutFolderPopup({
     startY: number;
     moved: boolean;
     mode: "inside" | "outside";
-    frozen: { left: number; top: number; width: number };
+    frozen: { width: number; height: number };
     beforeId: string | null;
     lastHit: SfDropTarget | null;
   } | null>(null);
@@ -472,8 +511,8 @@ export function ShortcutFolderPopup({
     e.stopPropagation();
     const el = e.currentTarget;
     anchorIdRef.current = item.id; // 锚点保页：跟随正在交互的条目
-    // 冻结矩形在按下瞬间采集（此刻条目必然有布局）。
-    const fr = el.getBoundingClientRect();
+    // 冻结尺寸在按下瞬间采集（此刻条目必然有布局）；用 offset 尺寸，
+    // 不含进场动画的 transform 偏移。
     dragRef.current = {
       id: item.id,
       pointerId: e.pointerId,
@@ -481,7 +520,7 @@ export function ShortcutFolderPopup({
       startY: e.clientY,
       moved: false,
       mode: "inside",
-      frozen: { left: fr.left, top: fr.top, width: el.offsetWidth },
+      frozen: { width: el.offsetWidth, height: el.offsetHeight },
       beforeId: item.id,
       lastHit: null
     };
@@ -568,7 +607,7 @@ export function ShortcutFolderPopup({
         moveTarget.current(hit);
       }
     }
-    setDrag({ id: d.id, dx, dy, mode: d.mode, frozen: d.frozen });
+    setDrag({ id: d.id, x: e.clientX, y: e.clientY, mode: d.mode, frozen: d.frozen });
   };
 
   const winUp = (e: PointerEvent) => {
@@ -611,23 +650,8 @@ export function ShortcutFolderPopup({
   winUpRef.current = winUp;
   winCancelRef.current = winCancel;
 
-  /* ---- 条目右键：就地菜单（Portal 到 body，同 widget-context-menu 语义）。 ---- */
-  const [menu, setMenu] = useState<{ x: number; y: number; item: CustomShortcut } | null>(null);
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    window.addEventListener("click", close);
-    window.addEventListener("blur", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("blur", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [menu]);
+  /* ---- 条目右键：统一 openContextMenu（见 renderItemNode），本组件不再
+          自持菜单状态——关闭/钳制/键盘导航/退场全由 ContextMenuHost 承担。 ---- */
 
   const style: CSSProperties = pos ? { left: pos.left, top: pos.top } : { left: -9999, top: -9999 };
 
@@ -673,7 +697,25 @@ export function ShortcutFolderPopup({
         onContextMenu={(ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          setMenu({ x: ev.clientX, y: ev.clientY, item });
+          // 统一右键菜单（ContextMenuHost）：视口钳制 + 键盘导航 + 统一退场，
+          // 取代此前的私有 .widget-context-menu。项与回调一一保留。
+          openContextMenu(ev, [
+            { label: tr("打开"), onSelect: () => onOpenItem(item) },
+            ...(item.kind !== "url" && !item.missing
+              ? [
+                  {
+                    label: tr("在资源管理器中显示"),
+                    icon: <FolderOpen size={15} />,
+                    onSelect: () => onRevealItem(item)
+                  }
+                ]
+              : []),
+            { label: tr("复制路径"), onSelect: () => onCopyItemPath(item) },
+            { label: tr("重命名"), onSelect: () => onRenameItem(item) },
+            ...(item.missing ? [{ label: tr("重新定位…"), onSelect: () => onRelocateItem(item) }] : []),
+            { label: tr("移出文件夹"), onSelect: () => onMoveOut(item) },
+            { label: tr("移除"), icon: <Trash2 size={15} />, danger: true, onSelect: () => onRemoveItem(item) }
+          ]);
         }}
       >
         <span className="sfolder-popup-icon">{childIcon(item, icons)}</span>
@@ -687,12 +729,15 @@ export function ShortcutFolderPopup({
   }${drag ? " is-dragging" : ""}`;
 
   // 浏览态分页切片（搜索态走滚动网格，不分页）。
-  const pageSlices: CustomShortcut[][] = [];
-  if (!searchBrowsing && visible.length > 0) {
-    for (let i = 0; i < visible.length; i += perPage) {
-      pageSlices.push(visible.slice(i, i + perPage));
+  const pageSlices = useMemo(() => {
+    const slices: CustomShortcut[][] = [];
+    if (!searchBrowsing && visible.length > 0) {
+      for (let i = 0; i < visible.length; i += perPage) {
+        slices.push(visible.slice(i, i + perPage));
+      }
     }
-  }
+    return slices;
+  }, [visible, searchBrowsing, perPage]);
 
   return (
     <>
@@ -754,7 +799,9 @@ export function ShortcutFolderPopup({
               aria-label={tr("搜索快捷方式…")}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key !== "Enter") return;
+                /* IME 组合期（回车选词）直接 return——
+                   不打开第一条搜索结果并关闭搜索。 */
+                if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
                 e.preventDefault();
                 const first = visible[0];
                 if (first) {
@@ -829,105 +876,16 @@ export function ShortcutFolderPopup({
         document.body
       )}
 
-      {/* 拖拽幽灵：Portal 到 body，fixed 相对视口定身（视口冻结坐标 + 全量
-          transform 跟手）。z-index 压过弹层本体（10110）；pointer-events:none
-          由 .is-dragging 提供，不挡 elementFromPoint 的插入位判定。 */}
+      {/* 拖拽幽灵：Portal 到 body，fixed 定位、中心对齐当前指针（同系统拖
+          图标手感，含界面缩放换算，见 ghostCenteredStyle）。z-index 压过弹层
+          本体（10110）；pointer-events:none 由 .is-dragging 提供，不挡
+          elementFromPoint 的插入位判定。 */}
       {drag &&
         byId.get(drag.id) &&
         createPortal(
-          <div
-            className="sfolder-popup-item is-dragging"
-            style={{
-              position: "fixed",
-              left: drag.frozen.left,
-              top: drag.frozen.top,
-              width: drag.frozen.width,
-              transform: `translate(${drag.dx}px, ${drag.dy}px)`,
-              zIndex: 10111
-            }}
-          >
+          <div className="sfolder-popup-item is-dragging" style={ghostCenteredStyle(drag)}>
             <span className="sfolder-popup-icon">{childIcon(byId.get(drag.id)!, icons)}</span>
             <span className="sfolder-popup-name">{byId.get(drag.id)!.label}</span>
-          </div>,
-          document.body
-        )}
-
-      {menu &&
-        createPortal(
-          <div
-            className="widget-context-menu"
-            style={{ left: menu.x, top: menu.y }}
-            onClick={(e) => e.stopPropagation()}
-            role="menu"
-          >
-            <button
-              role="menuitem"
-              onClick={() => {
-                onOpenItem(menu.item);
-                setMenu(null);
-              }}
-            >
-              {tr("打开")}
-            </button>
-            {menu.item.kind !== "url" && !menu.item.missing && (
-              <button
-                role="menuitem"
-                onClick={() => {
-                  onRevealItem(menu.item);
-                  setMenu(null);
-                }}
-              >
-                {tr("在资源管理器中显示")}
-              </button>
-            )}
-            <button
-              role="menuitem"
-              onClick={() => {
-                onCopyItemPath(menu.item);
-                setMenu(null);
-              }}
-            >
-              {tr("复制路径")}
-            </button>
-            <button
-              role="menuitem"
-              onClick={() => {
-                onRenameItem(menu.item);
-                setMenu(null);
-              }}
-            >
-              {tr("重命名")}
-            </button>
-            {menu.item.missing && (
-              <button
-                role="menuitem"
-                onClick={() => {
-                  onRelocateItem(menu.item);
-                  setMenu(null);
-                }}
-              >
-                {tr("重新定位…")}
-              </button>
-            )}
-            <button
-              role="menuitem"
-              onClick={() => {
-                onMoveOut(menu.item);
-                setMenu(null);
-              }}
-            >
-              {tr("移出文件夹")}
-            </button>
-            <button
-              role="menuitem"
-              className="danger"
-              onClick={() => {
-                onRemoveItem(menu.item);
-                setMenu(null);
-              }}
-            >
-              {tr("移除")}
-            </button>
           </div>,
           document.body
         )}

@@ -1,4 +1,4 @@
-//! inject_demo —— TB-INJECT 注入器开发期的 mock 依赖方 + DLL 手测工具。
+//! inject_demo —— 注入器开发期的 mock 依赖方 + DLL 手测工具。
 //!
 //! 扮演主进程（protocol.rs 冻结角色：**管道服务端**）：
 //! 1. 找主任务栏窗口（Shell_TrayWnd）→ explorer PID + UI 线程 ID；
@@ -15,7 +15,7 @@
 //! ```
 //! 默认交互 REPL：`opaque|r|g|b|a`、`clear|r|g|b|a`、`acrylic|...`、
 //! `blur|r|g|b|a|radius`、`normal`、`border on|off`、`ping`、`restore`、`quit`。
-//! Ctrl+C / taskkill 直接杀本进程 = 验证 F-9 线 2（DLL 自动恢复任务栏）。
+//! Ctrl+C / taskkill 直接杀本进程 = 验证 线 2（DLL 自动恢复任务栏）。
 
 use std::io::{BufRead, Write};
 

@@ -28,6 +28,6 @@
 .task-row:hover {
   background: var(--surface-soft);
 }
-/* #104 删除退场（fade + collapse）：唯一定义地在 widget-anim.css（静态加载、
+/* 删除退场（fade + collapse）：唯一定义地在 widget-anim.css（静态加载、
    含 max-height 收拢）。此处原有一份缺收拢参数的重复定义，已收敛删除，
    避免两处时长/参数漂移。 */

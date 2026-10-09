@@ -12,21 +12,23 @@ import { useWidgetStore } from "../widget-store";
 import { useSettingsStore } from "../../store/settings-store";
 import { emptyTrash, listAllNotesTrash, purgeTrash, restoreFromTrash, type TrashNoteRef } from "../notes-store";
 
-/** E3（i18n）：相对时间此前硬编码中文，英文界面下仍是「X 分钟前」。 */
-function timeAgo(iso: string, tr: (s: string) => string): string {
+/** （i18n）：相对时间此前硬编码中文，英文界面下仍是「X 分钟前」。 */
+function timeAgo(iso: string, tr: (s: string, params?: Record<string, string | number>) => string): string {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return "";
   const diff = Date.now() - then;
   const min = Math.floor(diff / 60000);
   if (min < 1) return tr("刚刚");
-  if (min < 60) return tr(`${min} 分钟前`);
+  // 相对时间必须走「{n} …」整句模板键：插值后再查词典（旧写法 tr(`${min} 分钟前`)）
+  // 永远匹配不到词典里的 "{n} 分钟前"，英文界面整段回退中文。
+  if (min < 60) return tr("{n} 分钟前", { n: min });
   const h = Math.floor(min / 60);
-  if (h < 24) return tr(`${h} 小时前`);
+  if (h < 24) return tr("{n} 小时前", { n: h });
   const d = Math.floor(h / 24);
-  return tr(`${d} 天前`);
+  return tr("{n} 天前", { n: d });
 }
 
-/** W-092/W-093：距自动清除还剩几天（0 = 今天到期）。 */
+/** 距自动清除还剩几天（0 = 今天到期）。 */
 function daysLeft(iso: string, retentionDays: number): number {
   const then = new Date(iso).getTime();
   if (!Number.isFinite(then)) return retentionDays;
@@ -35,10 +37,10 @@ function daysLeft(iso: string, retentionDays: number): number {
 }
 
 /**
- * F1 回收站：展示已删除（移入回收站）的小组件，支持单条/批量恢复、彻底
+ * 回收站：展示已删除（移入回收站）的小组件，支持单条/批量恢复、彻底
  * 删除与一键清空（两段式确认）。读取 widget-store 的 trash（保留期可配）。
- * W-092 显示原尺寸与所在视图；W-095 搜索与类型筛选；W-096 聚合便签回收站；
- * W-097 一键打开系统回收站。
+ * 显示原尺寸与所在视图；搜索与类型筛选；聚合便签回收站；
+ * 一键打开系统回收站。
  */
 export function RecycleWidget() {
   const tr = useT();
@@ -51,19 +53,28 @@ export function RecycleWidget() {
   const retentionDays = useSettingsStore((s) => s.extra.recycleRetentionDays) || 30;
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [confirmEmpty, setConfirmEmpty] = useState(false);
-  /* W-095 搜索 + 类型筛选。 */
+  /* 搜索 + 类型筛选。 */
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
-  /* W-094 批量恢复：多选集合。 */
+  /* 批量恢复：多选集合。 */
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  /* W-096 便签回收站聚合（低频轮询：便签组件在其它窗口删除时保持同步）。 */
-  const [noteTrash, setNoteTrash] = useState<TrashNoteRef[]>(() => listAllNotesTrash());
+  /* 便签回收站聚合（低频轮询：便签组件在其它窗口删除时保持同步）。
+     只列**存活实例**的便签——实例被彻底删除后其数据键不再被清理
+     （purge 缺口），但「恢复」会写进死实例键，UI 提示成功却无处可看。 */
+  const liveNotesTrash = (): TrashNoteRef[] => {
+    const st = useWidgetStore.getState();
+    const live = new Set(st.instances.map((i) => i.id));
+    // 回收站里的实例（可恢复）也算存活：恢复组件 → 便签重见天日。
+    for (const t of st.trash) live.add(t.id);
+    return listAllNotesTrash().filter((r) => live.has(r.instanceId));
+  };
+  const [noteTrash, setNoteTrash] = useState<TrashNoteRef[]>(() => liveNotesTrash());
   useEffect(() => {
     /* P-perf：隐藏页跳过扫描；结果未变时保持旧引用，避免每 8s 一次
        无意义重渲（listAllNotesTrash 每次全量扫 localStorage + JSON.parse）。 */
     const t = window.setInterval(() => {
       if (document.hidden) return;
-      const next = listAllNotesTrash();
+      const next = liveNotesTrash();
       setNoteTrash((prev) =>
         prev.length === next.length &&
         prev.every((p, i) => p.instanceId === next[i].instanceId && p.note.id === next[i].note.id)
@@ -107,7 +118,7 @@ export function RecycleWidget() {
 
   const viewName = (id: string) => views.find((v) => v.id === id)?.name ?? id;
 
-  /** W-095 可选类型 chips：回收站里实际出现过的组件类型。 */
+  /** 可选类型 chips：回收站里实际出现过的组件类型。 */
   const typeChips = useMemo(() => {
     const metas = trash.map((t) => ({ type: t.type, name: getWidgetMeta(t.type)?.name ?? t.type }));
     const uniq = new Map(metas.map((m) => [m.type, m.name]));
@@ -172,7 +183,7 @@ export function RecycleWidget() {
             <ExternalLink size={12} />
           </button>
         )}
-        {/* #71 同一按钮切换内容：色彩过渡 morph + 图标/文案淡切，不再双按钮瞬时变形 */}
+        {/* 同一按钮切换内容：色彩过渡 morph + 图标/文案淡切，不再双按钮瞬时变形 */}
         <button
           className={`recycle-empty-btn${confirmEmpty ? " danger" : ""}`}
           onClick={() => {
@@ -202,7 +213,7 @@ export function RecycleWidget() {
         </button>
       </div>
 
-      {/* W-095 搜索 + 类型筛选；W-094 批量恢复。 */}
+      {/* 搜索 + 类型筛选；批量恢复。 */}
       {(trash.length > 4 || typeChips.length > 1 || checked.size > 0) && (
         <div className="recycle-tools">
           <div className="recycle-filter">
@@ -272,7 +283,7 @@ export function RecycleWidget() {
               <span className="recycle-row-icon">{meta ? <meta.icon size={15} /> : <Trash2 size={15} />}</span>
               <div className="recycle-row-main">
                 <span className="recycle-row-name">{name}</span>
-                {/* W-092 删除信息增强：原尺寸 · 所在视图 · 剩余保留天数。 */}
+                {/* 删除信息增强：原尺寸 · 所在视图 · 剩余保留天数。 */}
                 <span className="recycle-row-time">
                   {t.w}×{t.h} · {viewName(t.view)} · {timeAgo(t.deletedAt, tr)} · {daysLeft(t.deletedAt, retentionDays)}
                   {tr(" 天后清除")}
@@ -287,7 +298,7 @@ export function RecycleWidget() {
               >
                 <RotateCcw size={14} />
               </button>
-              {/* #71 彻底删除两段式确认：同一按钮 morph（图标淡切 + danger 底色过渡） */}
+              {/* 彻底删除两段式确认：同一按钮 morph（图标淡切 + danger 底色过渡） */}
               <button
                 className={`recycle-row-btn danger${confirmId === t.id ? " confirming" : ""}`}
                 onClick={() => {
@@ -314,7 +325,7 @@ export function RecycleWidget() {
         {visible.length === 0 && <div className="recycle-row-empty">{tr("无匹配项")}</div>}
       </div>
 
-      {/* W-096 便签回收站聚合分区。 */}
+      {/* 便签回收站聚合分区。 */}
       {noteTrash.length > 0 && (
         <div className="recycle-notes">
           <div className="recycle-notes-head">
@@ -344,7 +355,7 @@ export function RecycleWidget() {
                     className="recycle-row-btn"
                     onClick={() => {
                       restoreFromTrash(instanceId, note.id);
-                      setNoteTrash(listAllNotesTrash());
+                      setNoteTrash(liveNotesTrash());
                     }}
                     title={tr("恢复")}
                     aria-label={tr("恢复")}
@@ -359,7 +370,7 @@ export function RecycleWidget() {
                       if (confirmId === nKey) {
                         removeRow(note.id, () => {
                           purgeTrash(instanceId, note.id);
-                          setNoteTrash(listAllNotesTrash());
+                          setNoteTrash(liveNotesTrash());
                         });
                         setConfirmId(null);
                       } else {

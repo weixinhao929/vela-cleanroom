@@ -23,14 +23,10 @@ export const ZH_TO_EN: Record<string, string> = {
   "隐藏或显示 Windows 桌面上的图标": "Show or hide icons on the Windows desktop",
   桌面图标切换失败: "Couldn't toggle desktop icons",
   游戏时暂停: "Pause while gaming",
-  检测到全屏游戏或演示时隐藏小组件并暂停后台工作:
-    "Hide widgets and pause background work when fullscreen games or presentations are detected",
   减少特效: "Reduce effects",
   关闭小组件和菜单背后的毛玻璃模糊效果: "Turn off frosted-glass blur behind widgets and menus",
   导出设置: "Export settings",
-  "将所有视图、布局和设计保存到文件": "Save all views, layouts, and design to a file",
   导入设置: "Import settings",
-  从先前导出的文件恢复设置: "Restore settings from a previously exported file",
   导出: "Export",
   导入: "Import",
   诊断: "Diagnostics",
@@ -44,9 +40,8 @@ export const ZH_TO_EN: Record<string, string> = {
   选择文件恢复: "Pick a file to restore",
   选择备份文件: "Choose a backup file",
   "恢复失败：文件格式不正确": "Restore failed: invalid file format",
-  "切换到 Home 视图": "Switch to Home view",
-  "切换到 Work 视图": "Switch to Work view",
-  "切换到 Focus 视图": "Switch to Focus view",
+  "备份已导入数据库，但本地数据镜像写回失败，即将自动刷新以同步":
+    "Backup was imported into the database, but writing back the local data mirror failed — the app will refresh shortly to re-sync",
   切换编辑模式: "Toggle edit mode",
   布局模板: "Layout templates",
   "保存当前布局，一键套用": "Save the current layout and apply with one click",
@@ -57,7 +52,6 @@ export const ZH_TO_EN: Record<string, string> = {
   请输入模板名称: "Please enter a template name",
   已存在同名模板: "A template with this name already exists",
   命令面板: "Command palette",
-  "输入命令或搜索设置…": "Type a command or search settings…",
   没有匹配的命令: "No matching commands",
   应用设置: "App settings",
   连接: "Connection",
@@ -71,7 +65,8 @@ export const ZH_TO_EN: Record<string, string> = {
   支付宝: "Alipay",
   更新: "Update",
   显示器: "Display",
-  "显示器 1（主显示器）": "Display 1 (primary)",
+  "显示器 {n}": "Display {n}",
+  "显示器 #{n}（未连接）": "Display #{n} (disconnected)",
   主显示器: "Primary display",
   数据管理: "Data management",
   "完整备份（JSON）": "Full backup (JSON)",
@@ -98,8 +93,8 @@ export const ZH_TO_EN: Record<string, string> = {
   重置: "Reset",
   "重置 Vela": "Reset Vela",
   "清除所有视图、小组件、布局和设置": "Clear all views, widgets, layouts and settings",
-  "确定要重置 Vela 吗？此操作将清除所有视图、小组件、布局和设置。":
-    "Reset Vela? This will clear all views, widgets, layouts and settings.",
+  "确定要重置 Vela 吗？此操作将清除所有视图、小组件、布局和设置。运行日志与崩溃记录会保留，用于问题诊断。":
+    "Reset Vela? This will clear all views, widgets, layouts and settings. Runtime logs and crash records are kept for diagnostics.",
   样式: "Style",
   动画: "Animation",
   位置: "Location",
@@ -111,6 +106,9 @@ export const ZH_TO_EN: Record<string, string> = {
   深色: "Dark",
   浅色: "Light",
   主色: "Primary color",
+  主题切换动效: "Theme-switch animation",
+  "切换主题 / 明暗 / 主色时水墨晕开的时长（越小越快）":
+    "How long the ink-spread transition takes when switching theme / mode / accent (smaller = faster)",
   缩放: "Zoom",
   字体: "Font",
   字号: "Font size",
@@ -123,8 +121,10 @@ export const ZH_TO_EN: Record<string, string> = {
   动画速度: "Animation speed",
   空闲时淡化卡片: "Dim widgets when idle",
   空闲时降级玻璃: "Disable glass effects when idle",
-  "无键鼠输入约一分钟后关闭桌面毛玻璃效果以省电，动一下即恢复":
-    "Turn off frosted-glass effects after about a minute idle to save power; restores on activity",
+  "无键鼠输入约一分钟后降低桌面卡片透明度，动一下即恢复（仅桌面模式）":
+    "Dim desktop widgets after about a minute idle; restores on activity (desktop mode only)",
+  "无键鼠输入约一分钟后关闭桌面毛玻璃效果以省电，动一下即恢复（仅桌面模式）":
+    "Turn off frosted-glass effects after about a minute idle to save power; restores on activity (desktop mode only)",
   路径: "Path",
   批量选择: "Multi-select",
   切换到预览视图: "Switch to preview view",
@@ -142,14 +142,20 @@ export const ZH_TO_EN: Record<string, string> = {
   正在删除: "Deleting",
   已取消删除: "Batch delete cancelled",
   删除完成: "Deletion complete",
+  删除失败: "Delete failed",
+  没有文件被删除: "No files were deleted",
   新文件已自动整理: "New file auto-organized",
   整理时通知: "Notify on organize",
   命中规则的新文件入列时发系统通知: "Send a system notification when a matching new file is collected",
   已删除到回收站: "Moved to recycle bin",
   已恢复: "Restored",
+  已剪切: "Cut",
+  已移动: "Moved",
+  移动失败: "Move failed",
+  预览不可用: "Preview unavailable",
+  锁定在根目录内: "Lock inside root folder",
+  向上与快捷目录不得跳出本组件根目录: "Up and quick folders cannot leave this widget's root",
   恢复失败: "Restore failed",
-  "无键鼠输入约一分钟后降低桌面卡片透明度，动一下即恢复":
-    "Dim desktop widget cards after ~1 minute without input; any movement restores",
   "返回 { version, notes, url } 的 JSON 链接，或直接填 GitHub 仓库地址":
     "JSON link returning { version, notes, url }, or a GitHub repository address",
   慢: "Slow",
@@ -180,8 +186,6 @@ export const ZH_TO_EN: Record<string, string> = {
   背景: "Background",
   小组件卡片背景色: "Widget card background color",
   不透明度: "Opacity",
-  "调整小组件背景透明度（0 为纯磨砂透视，100 为完全不透明）":
-    "Adjust widget background opacity (0 = pure frosted see-through, 100 = fully opaque)",
   漂移墙: "Drift wall",
   "Drift Wall：图片以多列错速漂移的 3D 墙呈现（悬停暂停，点击查看大图）":
     "Drift Wall: photos drift in a 3D wall of multi-column speeds (pause on hover, click to view)",
@@ -192,28 +196,43 @@ export const ZH_TO_EN: Record<string, string> = {
   "粘贴图片 URL…": "Paste an image URL…",
   添加图片链接: "Add image link",
   删除图片: "Delete photo",
-  滚动展示: "Marquee",
-  "Logo Loop：快捷方式以无限横向滚动带展示，悬停暂停；关闭则用网格排布":
-    "Logo Loop: shortcuts scroll in an infinite strip, pausing on hover; off uses a grid",
-  "快捷方式图标的网格列数（滚动展示时不生效）": "Grid columns of shortcut icons (not used in marquee mode)",
-  "添加文件夹、文件（含 .lnk 快捷方式）或网络链接，图标自动取自目标本体":
-    "Add folders, files (incl. .lnk shortcuts) or URLs — icons are taken from the target",
   编辑布局: "Edit layout",
   剪切: "Cut",
   全选: "Select all",
   课程表: "Timetable",
-  "该时段有 {n} 门课程": "This slot has {n} courses",
+  /* 课表小组件设置（widget-configs）：补齐 i18n-attrs 既有欠账。 */
+  仅显示周一至周五: "Weekdays only",
+  "隐藏周六/周日列，窄尺寸小组件可腾出空间": "Hides the Sat/Sun columns to give narrow widgets more room",
+  节假日弱化显示课程: "Dim lessons on holidays",
+  法定节假日当天的课程以弱化样式提示可能停课:
+    "Lessons on public holidays are dimmed as a hint that they may be cancelled",
   "第 {n} 节": "Period {n}",
+  "第 {n} 节开始": "Period {n} start",
+  "第 {n} 节结束": "Period {n} end",
   "第 {a}-{b} 节": "Periods {a}-{b}",
+  /* 今日概览日期标题（此前直接拼接落在 i18n 门禁盲区）。 */
+  "{m} 月 {d} 日": "{m}/{d}",
+  /* 日历标题（月标题 / 周界）整句模板——此前 tr 后
+     逐片段拼接，英文模式语序不成立（"2026year 10month"）。 */
+  "{y} 年 {m} 月": "{y}/{m}",
+  "{m1} 月 {d1} 日 – {m2} 月 {d2} 日": "{m1}/{d1} – {m2}/{d2}",
   同步课程到日历: "Sync courses to calendar",
   "在日历小组件中按实际上课时间显示每天课程；关闭即取消同步":
     "Show each day's courses in calendar widgets at their real class times; turn off to stop syncing",
-  "当天课程 · 同步自课程表": "Courses · synced from timetable",
   "导入教务导出的 Excel 课表": "Import the Excel timetable exported by your academic system",
   导入课表: "Import timetable",
   导入需要桌面版: "Importing requires the desktop app",
   "请选择 Excel 或 CSV 文件": "Please choose an Excel or CSV file",
   鼠标穿透: "Mouse click-through",
+  显示中: "Showing",
+  成员: "Members",
+  移出编组: "Remove from group",
+  设为显示: "Show",
+  "{n} 个成员": "{n} members",
+  "作用于编组容器背景，与成员自身透明度逐级相乘":
+    "Applies to the group container background; multiplied with each member's own opacity",
+  "解散后成员回到编组前的原位（不删除小组件）。确定继续？":
+    "Members return to their pre-group positions (widgets are kept). Continue?",
   "开启后点击直接穿透到桌面，此小组件不再响应鼠标":
     "Clicks pass straight through to the desktop; this widget no longer responds to the mouse",
   "鼠标穿透：开": "Mouse click-through: on",
@@ -233,17 +252,27 @@ export const ZH_TO_EN: Record<string, string> = {
   超出范围的周次将被钳制: "Weeks outside the range are clamped",
   上一周: "Previous week",
   下一周: "Next week",
-  滚轮或左右滑动切换周次: "Scroll or swipe left/right to change week",
   回到本周: "Back to current week",
   重新导入: "Re-import",
   清空课表: "Clear timetable",
   再次点击确认清空: "Click again to confirm clearing",
   今日无课: "No classes today",
   "查看历史 / 未来周次": "Browsing other weeks",
+  未开学: "Semester not started yet",
+  学期已结束: "Semester ended",
+  "法定节假日，课程可能停课": "Public holiday — class may be cancelled",
+  每周都上: "Every week",
+  学期设置: "Semester settings",
+  "学期设置：第一周周一 / 总周数": "Semester settings: week-1 Monday / total weeks",
+  "以本周为第 1 周": "Make this week week 1",
+  开学日期决定当前是第几周: "The start date determines the current week number",
   解析结果: "Parsed result",
   网格式: "Grid layout",
   清单式: "List layout",
   条上课记录: " class records",
+  "存在 {n} 处时间冲突": "{n} time conflicts found",
+  冲突课程: "Conflicting courses",
+  "还有 {n} 条未展示": "{n} more not shown",
   第一周周一: "Week 1 Monday",
   总周数: "Total weeks",
   课程: "Course",
@@ -252,7 +281,6 @@ export const ZH_TO_EN: Record<string, string> = {
   周次: "Weeks",
   地点: "Room",
   全程: "All weeks",
-  条未展示: " more not shown",
   取消: "Cancel",
   确定: "OK",
   确认导入: "Confirm import",
@@ -265,7 +293,8 @@ export const ZH_TO_EN: Record<string, string> = {
   开始节次: "Start section",
   结束节次: "End section",
   结束节次不能小于开始节次: "End section cannot be earlier than start section",
-  "周次（如 1-16周 或 1-8,10-16周）": "Weeks (e.g. 1-16 or 1-8,10-16)",
+  "周次无法识别，将按每周显示": "Weeks not recognized; will show every week",
+  "将生效于 {w}": "Applies to {w}",
   教师: "Teacher",
   保存课程: "Save course",
   删除课程: "Delete course",
@@ -277,8 +306,6 @@ export const ZH_TO_EN: Record<string, string> = {
   调整界面动画的快慢: "Adjust how fast interface animations play",
   动效模式: "Motion mode",
   增强: "Enhanced",
-  "增强档包含流光边框、扫光标题、磁性按钮等全套特效":
-    "Enhanced adds the full effect suite: star borders, shiny titles, magnet buttons and more",
   减少动态: "Reduced motion",
   动画时长微调: "Animation duration fine-tune",
   "在所选速度基础上整体增减动画时长（%）": "Scale animation duration on top of the chosen speed (%):",
@@ -298,8 +325,7 @@ export const ZH_TO_EN: Record<string, string> = {
   错落入场: "Staggered entrance",
   设置行与侧栏项依次滑入: "Setting rows and sidebar items slide in one by one",
   常驻动效: "Ambient motion",
-  "画廊漂移墙、快捷方式滚动带与岛内音乐跑马的循环位移":
-    "Looping drift of the gallery wall, shortcut ticker and dock music marquee",
+  画廊漂移墙与岛内音乐跑马的循环位移: "Looping drift of the gallery wall and dock music marquee",
   指针跟随: "Pointer follow",
   "聚光光斑、磁吸平移与磁性按钮": "Spotlight glow, magnet shift and magnetic buttons",
   常驻氛围: "Ambient glow",
@@ -326,10 +352,27 @@ export const ZH_TO_EN: Record<string, string> = {
   "更改设置将自动重播；也可手动播放": "Changes replay automatically; you can also play manually",
   播放预览: "Play preview",
   动画已关闭: "Animations off",
+  "增强档：卡片边缘演示流光边框（特效管理可逐项关闭）":
+    "Enhanced mode: card edges demo the star border (toggle per effect in Effect manager)",
+  "增强档已开启（流光边框已在特效管理中关闭）": "Enhanced mode on (star border is off in Effect manager)",
   "视图切换 · 当前：": "View transition · current: ",
   "小组件入场 · 当前：": "Widget entrance · current: ",
   未选择过渡效果: "No transition selected",
   "无法测速，请检查网络连接。": "Speed test failed. Check your network connection.",
+  测下行: "Test download",
+  测上行: "Test upload",
+  上传测速: "Upload speed test",
+  "上传中…": "Testing…",
+  "无法测上传，请检查网络连接。": "Upload test failed. Check your network connection.",
+  "最多添加 8 个城市": "Up to 8 cities can be added",
+  流量统计开关切换失败: "Couldn't toggle traffic tracking",
+  流量统计记录: "Traffic tracking",
+  "常驻线程按天记录收发流量；关闭后停止后台采样与落库":
+    "A background thread records daily traffic; turning it off stops sampling and persistence",
+  "开启后记录今日 / 本月 / 近 7 天流量，并解锁网速与日流量告警；不开启则无后台采样":
+    "Records today / this month / last 7 days of traffic and unlocks speed and daily-traffic alerts; no background sampling when off",
+  公网出口: "Public egress",
+  " …等 {n} 条": " …and {n} more",
   "已定位：": "Located: ",
   "未找到该城市，请检查名称后重试。": "City not found. Check the name and try again.",
   当前位置: "Current location",
@@ -342,11 +385,11 @@ export const ZH_TO_EN: Record<string, string> = {
   测速: "Speed test",
   "测试中…": "Testing…",
   测试连接: "Test connection",
+  连接成功: "Connected",
   网速测试: "Network speed test",
   "测速中…": "Measuring…",
   测网速: "Measure speed",
   "无法访问外网，请检查网络或代理设置": "Cannot reach the internet. Check network or proxy settings.",
-  "下载速度 ": "Download speed ",
   " Mbps（": " Mbps (",
   "ms）": "ms)",
   峰值: "Peak",
@@ -364,8 +407,8 @@ export const ZH_TO_EN: Record<string, string> = {
   "纬度 / 经度（天气小组件据此请求）": "Latitude / longitude (used by the weather widget)",
   番茄钟: "Pomodoro",
   启用: "Enabled",
+  "启用 {name}": "Enable {name}",
   声音: "Sound",
-  "Toast 提示": "Toast",
   待办: "Todo",
   番茄钟通知: "Pomodoro notifications",
   启用番茄钟通知: "Enable pomodoro notifications",
@@ -375,7 +418,6 @@ export const ZH_TO_EN: Record<string, string> = {
   在系统托盘显示完成提示: "Show a completion toast in the system tray",
   自动切换模式: "Auto-switch mode",
   结束当前阶段后自动进入下一阶段: "Automatically enter the next phase after the current one ends",
-  待办事项通知: "Todo notifications",
   启用待办提醒: "Enable todo reminders",
   在截止日期临近时提醒: "Remind when a deadline is approaching",
   提醒提示音: "Reminder sound",
@@ -402,7 +444,6 @@ export const ZH_TO_EN: Record<string, string> = {
   最新在前: "Newest first",
   最旧在前: "Oldest first",
   显示天数: "Days",
-  显示月份热力图: "Show month heatmap",
   显示专注热力图: "Show focus heatmap",
   "显示本月/本年的专注热力图": "Show this month / this year focus heatmap",
   旋转外圈刻度: "Spin outer ring",
@@ -416,7 +457,6 @@ export const ZH_TO_EN: Record<string, string> = {
   时区: "Timezone",
   本地时区: "Local timezone",
   "12 小时制": "12-hour clock",
-  "显示星期/日期": "Show weekday/date",
   透明度: "Opacity",
   "此小组件的独立透明度（按总透明度比例叠加）": "Per-widget opacity (multiplied with the global opacity)",
   "确定删除此小组件？": "Delete this widget?",
@@ -424,6 +464,8 @@ export const ZH_TO_EN: Record<string, string> = {
   配置: "Configure",
   收起: "Collapse",
   展开: "Expand",
+  前端异常: "Frontend error",
+  "显示全部（{n}）": "Show all ({n})",
   应用: "Apply",
   分钟: "min",
   小时: "h",
@@ -450,10 +492,10 @@ export const ZH_TO_EN: Record<string, string> = {
   专注与通知: "Focus and notifications",
   "桌面效率工作台：小组件常驻桌面，专注、待办、日程一屏可见，所有数据都保存在本地。":
     "A desktop productivity workspace: widgets live on your desktop so focus, tasks and schedules stay visible at a glance — all data is stored locally.",
+  "{settings} 打开设置、{note} 全局速记、{palette} 呼出命令面板、{layer} 显示 / 隐藏小组件。完整列表可在快捷键速查表（{cheat}）查看。":
+    "{settings} opens settings, {note} the global quick note, {palette} the command palette, {layer} shows / hides widgets. The full list lives in the shortcut cheatsheet ({cheat}).",
   "在桌面空白处右键选择「添加小组件」进入图库，双击卡片即可添加。组件可拖动、缩放，右键能编辑与配置；顶部灵动岛随时收纳常用功能。":
     "Right-click an empty spot on the desktop and choose “Add widget” to open the gallery, then double-click a card to add it. Widgets can be dragged and resized; right-click one to edit or configure it. The dock at the top keeps favorites within reach.",
-  "Ctrl+Alt+S 打开设置、Ctrl+Alt+Q 全局速记、Ctrl+Alt+K 呼出命令面板、Ctrl+Alt+D 显示 / 隐藏小组件。完整列表可在快捷键速查表（Ctrl+?）查看。":
-    "Ctrl+Alt+S opens settings, Ctrl+Alt+Q the quick note, Ctrl+Alt+K the command palette, and Ctrl+Alt+D toggles the widget layer. See the full list in the shortcut cheatsheet (Ctrl+?).",
   "番茄钟计时、截止与待办提醒都会进入通知中心；点击系统通知可直达对应组件。需要安静时，打开勿打扰即可静音全部提醒。":
     "Pomodoro timers, deadlines and task reminders all land in the notification center; clicking a system notification jumps straight to the widget. Need quiet time? Turn on Do Not Disturb to silence everything.",
   新手引导: "Getting started",
@@ -474,7 +516,6 @@ export const ZH_TO_EN: Record<string, string> = {
   已暂停: "Paused",
   休息待命: "Break ready",
   专注待命: "Focus ready",
-  "正在计时中，应用配置会重置当前计时。确定继续？": "A timer is running. Applying settings will reset it. Continue?",
   计时方式: "Timer mode",
   计时中无法切换: "Cannot switch while running",
   阶段: "Phase",
@@ -489,7 +530,6 @@ export const ZH_TO_EN: Record<string, string> = {
   记录中断: "Log interruption",
   记录中断原因: "Log the reason for this interruption",
   "这次为什么中断？": "Why did you interrupt?",
-  "专注进行中，无法切换事件": "Cannot switch events while focusing",
   选择专注事件: "Select focus event",
   必选: "Required",
   "搜索或新建事件…": "Search or create an event…",
@@ -515,10 +555,8 @@ export const ZH_TO_EN: Record<string, string> = {
   今日次数: "Today sessions",
   放弃: "Give-ups",
   专注时长分布: "Focus duration distribution",
-  "暂无数据，完成一次专注后自动生成。": "No data yet. Complete a focus session to generate stats.",
   暂无数据: "No data yet",
   "完成一次专注后自动生成。": "Complete a focus session to generate stats.",
-  "本月专注时段分布 · ": "This month · ",
   专注时段分布: "Focus distribution",
   本月: "This month",
   本年: "This year",
@@ -527,17 +565,16 @@ export const ZH_TO_EN: Record<string, string> = {
   多: "More",
   记录: "record",
   "本月暂无中断记录，保持专注！": "No interruptions this month. Stay focused!",
-  "年度专注趋势 · ": "Yearly trend · ",
   "完成一个专注阶段后，数据会自动记录。": "Completing a focus session records the data automatically.",
   总时长: "Total",
   未关联: "Unlinked",
-  "日均 ": "avg ",
   日均: "Daily avg",
   总计: "Total",
   " 分": " min",
   自动备份: "Auto backup",
   "每日自动滚动备份，保留最近 7 份。": "Automatic daily rolling backups; the latest 7 are kept.",
   "最近：": "Latest: ",
+  "最近：{name}": "Latest: {name}",
   暂无备份: "No backup yet",
   "备份中…": "Backing up…",
   累计专注时长: "Total focus time",
@@ -557,7 +594,6 @@ export const ZH_TO_EN: Record<string, string> = {
   添加: "Add",
   截止事项: "Milestone",
   截止时间: "Due time",
-  "课程作业 / 项目节点": "Coursework / milestones",
   "DDL 即将到期": "Deadline approaching",
   已到期: "due",
   "不足 ": "less than ",
@@ -590,6 +626,8 @@ export const ZH_TO_EN: Record<string, string> = {
   切换完成状态: "Toggle completion",
   复制待办: "Copy task",
   已复制: "Copied",
+  复制哈希: "Copy hash",
+  可用操作: "Available actions",
   复制文本: "Copy text",
   删除待办: "Delete task",
   已删除: "Deleted",
@@ -600,9 +638,10 @@ export const ZH_TO_EN: Record<string, string> = {
   定位来源组件: "Locate source widget",
   今天没有日程: "No events today",
   已删除小组件: "Widget deleted",
+  /* 删除 toast 的整句模板（复数分支；单数分支用上方「已删除小组件」）。 */
+  "已删除 {n} 个小组件": "Deleted {n} widgets",
   已进入回收站可撤销或稍后恢复: "Moved to trash — undo now or restore later",
   再次点击确认删除: "Click again to confirm delete",
-  再次点击确认移除: "Click again to confirm remove",
   "设置 {时长} 倒计时": "Set {时长} countdown",
   自定义倒计时时长: "Custom countdown duration",
   暂停倒计时: "Pause countdown",
@@ -630,6 +669,7 @@ export const ZH_TO_EN: Record<string, string> = {
   复制: "Copy",
   编辑: "Edit",
   删除: "Delete",
+  "删除{name}": "Delete {name}",
   "复制失败，请手动复制": "Copy failed, copy manually",
   刚刚: "just now",
   " 分钟前": " min ago",
@@ -650,15 +690,13 @@ export const ZH_TO_EN: Record<string, string> = {
   恢复: "Restore",
   "自动备份（新→旧）": "Automatic backups (newest first)",
   复制布局到此屏: "Copy layout to this display",
-  "将把主屏的全部视图与小组件布局复制到「{name}」，该屏现有布局会被整体替换（不可用 Ctrl+Z 撤销）。两屏实例共用同一份组件数据，复制后各自编辑互不影响。":
-    'Copy all views and widget layout from the primary display to "{name}". The current layout there will be replaced (Ctrl+Z cannot undo this). Both displays share the same widget data; after copying they are edited independently.',
+  "将把「{src}」的全部视图与小组件布局复制到「{name}」，该屏现有布局会被整体替换（不可用 Ctrl+Z 撤销）。两屏实例共用同一份组件数据，复制后各自编辑互不影响。":
+    'Copy all views and widget layout from "{src}" to "{name}". The current layout there will be replaced (Ctrl+Z cannot undo this). Both displays share the same widget data; after copying they are edited independently.',
   "已复制 {v} 个视图、{n} 个小组件到 {name}": "Copied {v} views / {n} widgets to {name}",
-  主屏还没有可复制的布局: "The primary display has no layout to copy yet",
-  复制主屏布局: "Copy primary layout",
-  把主屏的视图与小组件布局整体复制到此屏: "Copy all views and widget layout from the primary display to this one",
   清空回收站: "Empty recycle bin",
   彻底删除: "Delete permanently",
   删除于: "Deleted on",
+  "删除于 {date} · {view}": "Deleted on {date} · {view}",
   "删除的小组件可在 30 天内恢复": "Deleted widgets can be restored within 30 days",
   "确定清空回收站？": "Empty the recycle bin?",
   "确定清空？": "Empty?",
@@ -678,6 +716,8 @@ export const ZH_TO_EN: Record<string, string> = {
   垂直等距分布: "Distribute vertically",
   删除选中: "Delete selected",
   刷新: "Refresh",
+  双击恢复默认: "Double-click to reset to default",
+  十六进制色值: "Hex color value",
   已刷新: "Refreshed",
   电量未知: "Battery unknown",
   无法读取蓝牙设备: "Cannot read Bluetooth devices",
@@ -686,13 +726,12 @@ export const ZH_TO_EN: Record<string, string> = {
   "搜索设置…": "Search settings…",
   没有匹配的设置: "No matching settings",
   显示器信息: "Display info",
-  "全局快捷键（任何应用在前台时都有效）": "Global shortcuts (work while any app is focused)",
   "开始 / 暂停专注": "Start / pause focus",
   "显示 / 隐藏小组件": "Show / hide widgets",
   新建任务: "New task",
   应用内快捷键: "In-app shortcuts",
   切换视图: "Switch view",
-  /* 设置精简化第二轮：日期选择器 / 全屏按钮 / 图库改版 / 说明瘦身 */
+  /* 设置精简化批次：日期选择器 / 全屏按钮 / 图库改版 / 说明瘦身 */
   选择日期: "Pick a date",
   全屏: "Maximize",
   还原: "Restore",
@@ -700,9 +739,11 @@ export const ZH_TO_EN: Record<string, string> = {
   全部: "All",
   "0 为不设目标": "0 disables the goal",
   仅应用窗口内生效: "Active inside app windows only",
-  从备份文件恢复: "Restore from a backup file",
+  "从 vela-settings.json 恢复；完整数据请用「数据」区的备份":
+    "Restore from vela-settings.json; for full data use a backup in the Data section",
   任何应用在前台时都有效: "Works even when another app is focused",
-  保存到文件: "Save to a file",
+  "导出设置与布局（轻量）；完整备份请用「数据」区":
+    "Export settings & layouts (lightweight); use the Data section for a full backup",
   "只保存在本机，不上传；最多保留 500 条、30 天": "Local only; up to 500 entries for 30 days",
   "命中任一项的窗口不参与动态外观判定。": "Matching windows are excluded from dynamic appearance.",
   "按桌面状态自动切换外观，越靠下优先级越高。": "Switches appearance by desktop state; lower entries win.",
@@ -717,7 +758,6 @@ export const ZH_TO_EN: Record<string, string> = {
   "岛中心的位置（仅自由位可调）": "Island center position (free mode only)",
   "胶囊 / 贴边刘海": "Pill or flush bangs",
   "点击切换上一个 / 下一个视图": "Click to switch to the previous / next view",
-  "平时收进上缘，靠近弹出": "Tucked into the edge; pops out as you approach",
   磁贴高度档位: "Tile height preset",
   轮播或网格: "Carousel or grid",
   岛与屏幕上缘的间距: "Gap between the island and the screen top",
@@ -727,6 +767,8 @@ export const ZH_TO_EN: Record<string, string> = {
   响铃时临时接管提示: "Take over the island when the timer rings",
   切歌时显示正在播放: "Show the playing track on change",
   新通知到达时显示摘要: "Show a summary when a notification arrives",
+  调整音量时显示百分比: "Show a percentage while adjusting volume",
+  调整亮度时显示临时提示: "Show a brief hint while adjusting brightness",
   "默认 / 不透明 / 透明 / 模糊 / 亚克力": "Default / opaque / clear / blur / acrylic",
   任务栏着色: "Taskbar tint",
   "0% 透明 · 100% 不透明": "0% clear · 100% opaque",
@@ -738,28 +780,11 @@ export const ZH_TO_EN: Record<string, string> = {
   "0 磨砂透视 · 100 不透明": "0 frosted · 100 opaque",
   "流光边框、扫光标题等全套特效": "Light-trace borders, sweep titles and more",
   /* 设置侧栏 M3 双行列表 + 快捷键全面可配置（本轮新增） */
-  "语言、启动与诊断": "Language, startup & diagnostics",
-  "主题、字体与圆角": "Theme, font & corner radius",
-  "过渡、弹簧与入场": "Transitions, springs & entrances",
-  网络与天气服务: "Network & weather services",
   屏幕顶部的聚合条: "The aggregate bar atop your screen",
-  底部任务栏外观: "Taskbar appearance",
-  版本与支持作者: "Version & support the author",
-  检查与安装更新: "Check & install updates",
-  分辨率与多屏管理: "Resolution & multi-monitor management",
   "{n} 个小组件": "{n} widgets",
-  "{n} 个磁贴": "{n} tiles",
-  暂无小组件: "No widgets yet",
   未添加磁贴: "No tiles yet",
-  新建一个桌面布局: "Create a new desktop layout",
-  浏览全部可用组件: "Browse all available widgets",
-  进入桌面编辑模式: "Enter desktop edit mode",
-  此组件没有可配置项: "This component has no options",
-  在桌面上右键磁贴可移除或调整它在岛内的顺序: "Right-click the tile on the island to remove it or reorder it",
-  "磁贴从岛上消失，画布实例不受影响": "The tile leaves the island; canvas instances are unaffected",
   快捷键开关: "shortcut",
   已停用: "Disabled",
-  "应用内快捷键（仅在应用窗口内生效）": "In-app shortcuts (only active inside app windows)",
   "「{a}」与「{b}」键位相同，后者不生效": "「{a}」 and 「{b}」 share the same keys; the latter is ignored",
   "切换到视图 1": "Switch to view 1",
   "切换到视图 2": "Switch to view 2",
@@ -768,7 +793,6 @@ export const ZH_TO_EN: Record<string, string> = {
   主窗口内切到第一个视图: "Switch to the first view in the main window",
   主窗口内切到第二个视图: "Switch to the second view in the main window",
   主窗口内切到第三个视图: "Switch to the third view in the main window",
-  "主窗口内呼出 / 收起命令面板": "Toggle the command palette in the main window",
   设置窗口内聚焦搜索框: "Focus the search box in the settings window",
   "桌面小组件层呼出 / 收起命令面板；设置窗口内同一按键改为聚焦设置搜索":
     "Toggle the command palette on the desktop layer; in the settings window the same key focuses settings search",
@@ -785,10 +809,27 @@ export const ZH_TO_EN: Record<string, string> = {
   复制结果: "Copy result",
   输入新的视图名称: "Enter a new view name",
   "至少需要保留一个视图。": "At least one view must remain.",
+  "确定删除视图「{name}」吗？其中 {n} 个小组件将移入回收站，30 天内可恢复。":
+    'Delete view "{name}"? Its {n} widgets will move to the recycle bin (recoverable within 30 days).',
+  "清空「{name}」视图的全部小组件？它们将移入回收站，30 天内可恢复。":
+    'Clear all widgets of view "{name}"? They will move to the recycle bin (recoverable within 30 days).',
+  "该视图不存在或已被删除。": "This view no longer exists or has been deleted.",
+  无法使用该名称: "Cannot use that name",
+  "已存在同名视图「{name}」。": 'A view named "{name}" already exists.',
+  已重命名视图: "View renamed",
+  副本: "copy",
+  复制视图: "Duplicate view",
+  "作用于：{name}": "Applies to: {name}",
+  视图管理: "View management",
+  "上次管理的显示器已断开，已切换回主屏": "The previously managed display is gone; switched back to the primary",
+  "切换失败：{err}": "Switch failed: {err}",
+  刷新显示器列表: "Refresh display list",
+  选择来源显示器: "Choose the source display",
+  "把哪块显示器上的视图与小组件布局复制到「{name}」？": 'Copy views and widget layout from which display to "{name}"?',
+  该显示器还没有可复制的布局: "That display has no layout to copy yet",
+  把其它显示器的视图与小组件布局整体复制到此屏: "Copy another display's views and widget layout to this one",
   "确定删除视图「": 'Delete view "',
-  "」吗？其布局将被清除。": '"? Its layout will be cleared.',
   "清空「": 'Clear all widgets in "',
-  "」视图的全部小组件？…": '"?…',
   " 个小组件": " widgets",
   " · 当前": " · current",
   已启用: "Enabled",
@@ -796,21 +837,18 @@ export const ZH_TO_EN: Record<string, string> = {
   重命名: "Rename",
   清空本视图: "Clear this view",
   删除视图: "Delete view",
-  管理此视图: "Manage this view",
+  "删除视图 {name}": "Delete view {name}",
   "当前视图小组件（": "Widgets in current view (",
   "）": ")",
+  "当前视图小组件（{name}）": "Widgets in current view ({name})",
   "当前视图还没有小组件。": "No widgets in the current view yet.",
   添加小组件: "Add widget",
   关闭: "Close",
   返回: "Back",
   "搜索小组件…": "Search widgets…",
   没有匹配的小组件: "No matching widgets",
-  选择一个小组件以预览: "Select a widget to preview",
   无小组件: "No widgets",
   输入新视图名称: "Enter a new view name",
-  正在添加到通知区域: "Adding to the notification area",
-  分组方式: "Group by",
-  类别: "Category",
   "更新检查仅在桌面应用（Tauri）中可用。当前可通过浏览器模式预览界面。":
     "Update checks are only available in the desktop app (Tauri). You can preview the UI in browser mode.",
   当前版本: "Current version",
@@ -826,6 +864,8 @@ export const ZH_TO_EN: Record<string, string> = {
   正在管理: "Managing",
   正在管理此屏的小组件: "Now managing widgets on this display",
   "（主显示器）": " (primary)",
+  "{name} · #{n}（主显示器）": "{name} · #{n} (primary)",
+  "{name} · #{n}": "{name} · #{n}",
   "视图与小组件的添加、配置作用于：": "Views & widget changes apply to: ",
   当前管理的显示器: "the managed display",
   Vela: "Vela",
@@ -854,6 +894,18 @@ export const ZH_TO_EN: Record<string, string> = {
   在时钟下方显示日期: "Show the date below the clock",
   在日期前显示星期: "Show the weekday before the date",
   "透明（无底板）": "Transparent (no backing)",
+  "去掉小组件背景，只显示监控文字": "Remove the widget background, showing only the monitor text",
+  告警阈值: "Alert threshold",
+  "高于此值进度条与数值变红（%）": "Bar and value turn red above this level (%)",
+  "CPU/内存高于此值数值变红（%）": "CPU/memory value turns red above this level (%)",
+  电池低电阈值: "Low-battery threshold",
+  "电池低于此值数值变红（%）": "Battery value turns red below this level (%)",
+  "桌面层自身渲染帧率（反映合成负载），非游戏帧率":
+    "Frame rate of the desktop layer's own rendering (compositing load), not in-game FPS",
+  "显存为已提交口径（独占+共享，与任务管理器一致；iGPU 上数值偏大属正常）":
+    "VRAM is committed memory (dedicated + shared, matching Task Manager); larger on iGPUs is expected",
+  "显存为已提交口径（独占+共享，与任务管理器一致）":
+    "VRAM is committed memory (dedicated + shared, matching Task Manager)",
   "显示的时区（默认跟随系统）": "Displayed timezone (defaults to system)",
   显示星期的样式: "Weekday style",
   "缩写（Mon/Tue）或完整（Monday/Tuesday）": "Abbreviated (Mon/Tue) or full (Monday/Tuesday)",
@@ -907,17 +959,14 @@ export const ZH_TO_EN: Record<string, string> = {
   磁盘: "Disk",
   显示磁盘详情: "Show disk details",
   电池: "Battery",
+  "剩余约 {t}": "About {t} left",
   显示电池状态: "Show battery status",
   显示趋势图: "Show trend charts",
   "显示 CPU / 内存 / GPU 的迷你趋势图": "Show mini trend charts for CPU / memory / GPU",
   " 核": " cores",
   充电中: "Charging",
   使用中: "In use",
-  "温度需本机运行 LibreHardwareMonitor / OpenHardwareMonitor":
-    "Temperature requires LibreHardwareMonitor / OpenHardwareMonitor running on this machine",
   重试: "Retry",
-  "系统数据加载中…": "Loading system data…",
-  "延迟 N/A": "Latency N/A",
   显示农历: "Show lunar calendar",
   在日历中显示农历日期: "Show lunar dates in the calendar",
   显示节气: "Show solar terms",
@@ -942,7 +991,8 @@ export const ZH_TO_EN: Record<string, string> = {
   下个月: "Next month",
   上一年: "Previous year",
   下一年: "Next year",
-  暂无事件: "No events",
+  今年: "This year",
+  "其余 {n} 项": "{n} more",
   删除事件: "Delete event",
   "添加事件…": "Add event…",
   星期日: "Sunday",
@@ -969,11 +1019,11 @@ export const ZH_TO_EN: Record<string, string> = {
   书签的展示方式: "How bookmarks are displayed",
   书签的排序方式: "Bookmark sort order",
   名称: "Name",
+  名称不能包含这些字符: "Names can't contain these characters",
   请填写名称和网址: "Enter both a name and a URL",
   名称和网址不能为空: "Name and URL cannot be empty",
   添加书签: "Add bookmark",
   网址: "URL",
-  "暂无书签，点击上方添加": "No bookmarks yet. Add one above.",
   暂无书签: "No bookmarks yet",
   点击上方添加: "Add one above",
   编辑书签: "Edit bookmark",
@@ -1000,7 +1050,6 @@ export const ZH_TO_EN: Record<string, string> = {
   "还没有习惯，添加一个开始打卡吧": "No habits yet. Add one to start checking in.",
   打卡: "Check in",
   今日习惯: "Today's habits",
-  当天习惯打卡: "Habit check-ins",
   "还有 {n} 项未显示": "{n} more not shown",
   未开始: "Not started",
   "最近 7 天打卡": "Last 7 days",
@@ -1034,14 +1083,12 @@ export const ZH_TO_EN: Record<string, string> = {
   全部标为已读: "Mark all read",
   全部已读: "All read",
   刷新邮件: "Refresh mail",
-  "IMAP 账户配置": "IMAP account configuration",
   服务器: "Server",
   端口: "Port",
   邮箱: "Email",
   密码: "Password",
   应用专用密码: "App password",
   "IMAP 账户": "IMAP account",
-  "已配置账户：": "Configured account: ",
   "TLS 加密": "TLS encryption",
   "保存中…": "Saving…",
   "获取邮件失败：": "Failed to fetch mail: ",
@@ -1050,7 +1097,6 @@ export const ZH_TO_EN: Record<string, string> = {
   用于登录的邮箱地址: "Email address used to sign in",
   "应用专用密码（App Password）": "App password",
   "使用 SSL/TLS 加密连接": "Use SSL/TLS encrypted connection",
-  "使用应用专用密码（App Password）…": "Use an app password (App Password)…",
   "真实 IMAP 连接仅在桌面应用（Tauri）中可用。当前显示演示数据。":
     "Real IMAP connections are only available in the desktop app (Tauri). Showing demo data.",
   暂无邮件: "No emails",
@@ -1083,26 +1129,9 @@ export const ZH_TO_EN: Record<string, string> = {
   网易云音乐: "NetEase Music",
   计算器: "Calculator",
   文件资源管理器: "File Explorer",
-  输入应用名称: "Enter app name",
   可执行文件: "Executable",
-  输入应用路径: "Enter app path",
-  "搜索应用…": "Search apps…",
-  添加自定义应用: "Add custom app",
-  "正在扫描已安装应用…": "Scanning installed apps…",
-  "（自定义 · 右键删除）": " (custom · right-click to delete)",
-  未找到可用的应用: "No apps available",
-  未找到匹配的应用: "No matching apps",
   列数: "Columns",
-  应用图标的网格列数: "Number of columns in the app icon grid",
-  显示应用名称: "Show app names",
-  在图标下方显示应用名称: "Show app names below the icons",
-  图标大小: "Icon size",
-  应用图标的显示尺寸: "Display size of app icons",
   系统媒体: "System media",
-  "系统媒体 · 全局媒体控制": "System media · global media control",
-  "显示上一首 / 播放 / 下一首按钮": "Show previous / play / next buttons",
-  "纯音频监听：实时捕获系统声音并生成频谱动画，无专辑/控制界面。":
-    "Pure audio listening: captures system audio in real time and renders a spectrum animation — no album art or controls.",
   检测源: "Source",
   "采集播放音频、麦克风或两者（麦克风需系统授权并可正常采集）":
     "Capture playback audio, microphone, or both (microphone needs system permission and a working input)",
@@ -1161,6 +1190,55 @@ export const ZH_TO_EN: Record<string, string> = {
   "英里/小时": "mph",
   节: "kn",
   时间: "Time",
+  压强: "Pressure",
+  帕斯卡: "Pa",
+  千帕: "kPa",
+  巴: "bar",
+  标准大气压: "atm",
+  毫米汞柱: "mmHg",
+  "磅/平方英寸": "psi",
+  能量: "Energy",
+  焦耳: "J",
+  千焦: "kJ",
+  卡路里: "cal",
+  千卡: "kcal",
+  瓦时: "Wh",
+  千瓦时: "kWh",
+  功率: "Power",
+  瓦特: "W",
+  千瓦: "kW",
+  公制马力: "PS",
+  英制马力: "hp",
+  "BTU/时": "BTU/h",
+  角度: "Angle",
+  度: "°",
+  弧度: "rad",
+  梯度: "gon",
+  角分: "′",
+  角秒: "″",
+  圆周: "turn",
+  鞋码: "Shoe size",
+  脚长毫米: "Foot length (mm)",
+  脚长厘米: "Foot length (cm)",
+  中国码: "CN",
+  "欧码 EU": "EU",
+  "美码 US": "US",
+  "英码 UK": "UK",
+  货币: "Currency",
+  人民币: "CNY",
+  美元: "USD",
+  欧元: "EUR",
+  日元: "JPY",
+  港币: "HKD",
+  新台币: "TWD",
+  英镑: "GBP",
+  韩元: "KRW",
+  澳元: "AUD",
+  加元: "CAD",
+  新加坡元: "SGD",
+  瑞士法郎: "CHF",
+  卢布: "RUB",
+  泰铢: "THB",
   选择时间: "Pick date & time",
   目标日期: "Target date",
   毫秒: "ms",
@@ -1188,15 +1266,17 @@ export const ZH_TO_EN: Record<string, string> = {
   圆形: "Circle",
   显示标签: "Show labels",
   在图片上显示标签: "Show labels on the images",
-  "显示 FPS": "Show FPS",
-  "显示 CPU 核心数量": "Show the CPU core count",
   "数据刷新间隔（秒）": "Data refresh interval (seconds)",
   此电脑: "This PC",
   文档: "Documents",
   下载: "Downloads",
   打开: "Open",
   打开所在文件夹: "Open containing folder",
+  打开失败: "Failed to open",
+  添加快捷方式: "Add shortcut",
+  调整位置: "Reposition",
   移除: "Remove",
+  "移除 {name}": "Remove {name}",
   显示标题: "Show title",
   "在快捷方式上方显示 SHORTCUTS 标题": "Show the SHORTCUTS title above the shortcuts",
   自定义快捷方式: "Custom shortcuts",
@@ -1237,7 +1317,6 @@ export const ZH_TO_EN: Record<string, string> = {
   显示历史颜色: "Show history",
   在下方显示最近选过的颜色: "Show recently picked colors below",
   趋势图显示的天数范围: "Number of days shown in the trend chart",
-  显示每月的专注热力图: "Show the monthly focus heatmap",
   办公: "Productivity",
   时钟: "Clock",
   超大数字时钟与日期: "Large digital clock with date",
@@ -1261,17 +1340,14 @@ export const ZH_TO_EN: Record<string, string> = {
   系统监控栏: "System bar",
   "FPS / GPU / CPU / 延迟": "FPS / GPU / CPU / latency",
   快捷方式: "Shortcuts",
-  "固定链接、文件与文件夹": "Pin links, files and folders",
   桌面文件: "Desktop files",
   直接浏览桌面文件夹: "Browse desktop folders directly",
-  快速计算: "Quick calculations",
   单位换算: "Unit converter",
   源单位: "From unit",
   目标单位: "To unit",
   "长度 / 重量 / 温度 / 数据": "Length / weight / temperature / data",
   取色器: "Color picker",
   拾取颜色并复制: "Pick colors and copy them",
-  启动已安装应用: "Launch installed apps",
   书签: "Bookmarks",
   收藏常用网址: "Save frequently used URLs",
   音乐: "Music",
@@ -1285,13 +1361,19 @@ export const ZH_TO_EN: Record<string, string> = {
   "休息一下，再继续前进。": "Take a break, then keep going.",
   "休息结束，开始下一轮专注。": "Break over. Start the next focus round.",
   专注提醒: "Focus reminder",
-  /* E2（i18n）：拼接式模板改为占位符整句，杜绝空格/语序漂移。 */
+  /* （i18n）：拼接式模板改为占位符整句，杜绝空格/语序漂移。 */
   "已专注 {n} 分钟，继续保持。": "Focused for {n} minutes. Keep going.",
   "已达目标 {n} 分钟，继续保持。": "Goal reached: {n} min focused. Keep going.",
   应用遇到问题: "Something went wrong",
   打开设置: "Open settings",
   添加视图: "Add view",
   网格显示: "Grid",
+  显示网格: "Show grid",
+  隐藏网格: "Hide grid",
+  编辑工具栏: "Edit toolbar",
+  批量操作工具栏: "Batch actions toolbar",
+  模板名称: "Template name",
+  "暂无模板：保存当前布局后会显示在这里": "No templates yet — save your current layout and it will appear here",
   退出编辑: "Exit edit",
   "拖动调整位置（双击复位）": "Drag to reposition (double-click to reset)",
   世界时钟: "World clock",
@@ -1325,14 +1407,26 @@ export const ZH_TO_EN: Record<string, string> = {
   周四: "Thu",
   周五: "Fri",
   周六: "Sat",
-  "≤5分": "≤5 min",
-  "6-15分": "6-15 min",
-  "16-25分": "16-25 min",
-  "26-45分": "26-45 min",
-  ">45分": ">45 min",
   "导入内容不是有效的 JSON": "The imported content is not valid JSON",
   导入内容与数据结构不匹配: "The imported content does not match the data structure",
   发生未知错误: "An unknown error occurred",
+  /* ── 番茄钟补充键 ── */
+  "本段专注已完成，随时开始下一段。": "Focus session complete — start the next one whenever you're ready.",
+  "专注结束，确认后进入休息。": "Focus ended — confirm to start the break.",
+  "进入休息；休息结束后等你回座再继续。": "Taking a break; the next focus starts when you're back.",
+  正计时目标: "Count-up goal",
+  正计时每达到该分钟数的整数倍提醒一次: "Remind at every multiple of this many minutes while counting up",
+  "正计时目标设为 0 表示跟随专注时长": "Set 0 to follow the focus duration",
+  放弃本次专注并记录原因: "Give up this focus and record the reason",
+  表盘配色: "Dial theme",
+  专注表盘进度弧的配色皮肤: "Color skin for the focus dial progress arc",
+  自动循环休息: "Auto-cycle breaks",
+  "专注结束自动进入长短休、休息结束回到专注；关闭则专注结束回到新专注段":
+    "Focus ends slide into a short/long break and breaks return to focus; off, a finished focus starts a new focus block",
+  薄荷: "Mint",
+  海洋: "Ocean",
+  紫罗兰: "Violet",
+  请先在番茄钟中选择或创建一个专注事件: "Pick or create a focus event in the Pomodoro first",
   电话: "Phone",
   消息: "Messages",
   网页: "Web",
@@ -1341,6 +1435,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "保存失败，请重试": "Save failed, please try again",
   备份完成: "Backup complete",
   备份失败: "Backup failed",
+  "备份失败：{err}": "Backup failed: {err}",
   "本次专注已记录。": "This focus session has been recorded.",
   即将完成: "Almost done",
   "距离本次专注结束还有 30 秒，准备收尾。": "30 seconds left in this focus session — time to wrap up.",
@@ -1404,13 +1499,11 @@ export const ZH_TO_EN: Record<string, string> = {
   快捷方式图标的网格列数: "Number of columns in the shortcut icon grid",
   "在小组件内通过「阶段」切换可进入短休/长休，休息采用倒计时；专注结束后保持单段模式，不自动进入休息。":
     "Use the Phase switch inside the widget to enter short/long breaks; breaks use a countdown; after focus ends it stays in single-segment mode without auto break.",
-  "本应用为 Vela 界面的独立复刻实现，用于学习和个人使用。所有小组件与数据均保存在本地。":
-    "This app is an independent re-implementation of the Vela interface for learning and personal use. All widgets and data are stored locally.",
   视图操作: "View actions",
   "设置窗口自身的透明度（降低可看到桌面背景）":
     "Set the settings window's own opacity (lower to see the desktop background)",
 
-  // 补充（最终审计遗漏键）
+  // 补充键（早期遗漏）
   减少: "Decrease",
   增加: "Increase",
   专注进行中: "Focusing",
@@ -1424,11 +1517,9 @@ export const ZH_TO_EN: Record<string, string> = {
   无法开始专注: "Cannot start focus",
   "请先在番茄钟小组件中选择一个专注事件。": "Select a focus event in the pomodoro widget first.",
   累计专注起始日期: "Focus start date",
-  "累计专注统计从该日期开始计算，留空则从最早记录起。":
-    "Cumulative focus is counted from this date; leave empty to count from the earliest record.",
   清除: "Clear",
   从最早记录起: "From the earliest record",
-  /* ── 涂鸦 / 取色器 / 计算器增强（W-098~117） ── */
+  /* ── 涂鸦 / 取色器 / 计算器增强（~117） ── */
   直线: "Line",
   矩形: "Rectangle",
   椭圆: "Ellipse",
@@ -1470,7 +1561,7 @@ export const ZH_TO_EN: Record<string, string> = {
   数值或简单表达式: "Number or simple expression",
   插入: "Insert",
 
-  /* === 音频监控增强（W-118~129） === */
+  /* === 音频监控增强（~129） === */
   系统媒体信息需在应用内查看: "System media info is available in the app",
   暂无播放信息: "No playback info",
   未知曲目: "Unknown track",
@@ -1481,6 +1572,11 @@ export const ZH_TO_EN: Record<string, string> = {
   播放进度: "Playback progress",
   打开播放器: "Open player",
   独占播放: "Exclusive playback",
+  媒体行为: "Media behavior",
+  "被隐藏的应用不参与会话选择，也不被媒体功能打扰":
+    "Hidden apps are excluded from session picking and left alone by media features",
+  "这些是全局媒体行为，对所有正在播放/音频监控小组件生效。":
+    "These are global media behaviors that apply to all Now Playing / audio monitor widgets.",
   某播放源开播时自动暂停其余在播播放源: "Pause other playing sources when a new one starts",
   标题与歌手居中: "Center title and artist",
   关闭时标题与歌手左对齐: "Off keeps title and artist left-aligned",
@@ -1490,6 +1586,12 @@ export const ZH_TO_EN: Record<string, string> = {
     "Shown on the card when the player reports the capability, same as the music immersive view",
   滚轮调节应用音量: "Scroll wheel adjusts app volume",
   在卡片上滚动滚轮步进当前播放源的应用音量: "Scroll on the card to step the current source's app volume",
+  应用音量: "App volume",
+  麦克风不可用: "Microphone unavailable",
+  "默认麦克风不可用（被占用/隐私设置），仅显示其余来源":
+    "Default microphone unavailable (in use or blocked by privacy settings); showing remaining sources only",
+  "其它小组件配置了不同的检测源/分布，频谱已跟随全局口径":
+    "Another widget uses a different source/distribution; the spectrum follows the global setting",
   "提示：右键卡片或点卡片上的齿轮可锁定播放源、维护已隐藏播放源；不支持的控件会按播放器上报的能力自动置灰。":
     "Tip: right-click the card or use its gear button to lock a source or manage hidden ones; unsupported controls are disabled based on the player's reported capabilities.",
   显示名称标签: "Show name labels",
@@ -1501,6 +1603,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "每枚图标下方的名称；隐藏后仅显示图标，悬停仍可见全名":
     "Name under each icon; when hidden only icons show, hover for the full name",
   "隐藏播放源…": "Hide a source…",
+  隐藏播放源: "Hidden playback sources",
   已隐藏: "Hidden",
   随机播放: "Shuffle",
   循环模式: "Repeat mode",
@@ -1546,7 +1649,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "提示：点击频谱区域可快速切换系统静音；「正在播放」卡片右键可选择播放源。":
     "Tip: click the spectrum to toggle mute; right-click the now-playing card to pick a media source.",
 
-  /* === 邮件增强（W-130~135） === */
+  /* === 邮件增强（~135） === */
   新邮件: "New email",
   标为已读: "Mark as read",
   标为未读: "Mark as unread",
@@ -1571,7 +1674,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "请填写服务器、邮箱与密码": "Please fill in server, email, and password",
   "尚未配置账户，添加后即可收取真实邮件。": "No account yet. Add one to fetch real mail.",
 
-  /* === 蓝牙增强（W-136~141） === */
+  /* === 蓝牙增强（~141） === */
   打开蓝牙设置: "Open Bluetooth settings",
   "单击连接/断开，右键更多操作": "Click to connect/disconnect; right-click for more",
   点击打开蓝牙设置: "Click to open Bluetooth settings",
@@ -1597,7 +1700,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "提示：单击设备圆环可快速连接/断开（经典蓝牙）；右键圆环或空白处有更多操作。":
     "Tip: click a ring to connect/disconnect (classic Bluetooth); right-click for more actions.",
 
-  /* === 系统监控增强（W-142~159） === */
+  /* === 系统监控增强（~159） === */
   每核占用率: "Per-core usage",
   点击展开明细: "Click to expand details",
   "未知 CPU": "Unknown CPU",
@@ -1617,9 +1720,8 @@ export const ZH_TO_EN: Record<string, string> = {
   全部磁盘: "All disks",
   "显示全部磁盘（默认只显示第一块）": "Show every disk (first one only by default)",
   阈值告警: "Threshold alert",
-  "CPU/内存 >80% 时进度条与数值变红": "Bars and values turn red above eighty percent",
+  高于阈值时进度条与数值变红: "Bars and values turn red above the threshold",
   网卡显示: "NIC display",
-  "第一块 / 全部网卡 / 聚合速率": "First / all adapters / aggregate rate",
   第一块: "First",
   聚合: "Aggregate",
   每核小格子: "Per-core grid",
@@ -1673,6 +1775,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "下节课 {time} {name}": "Next: {name} at {time}",
   "下载完成，正在安装…": "Download complete, installing…",
   下载并安装: "Download & install",
+  "下载并安装 v{version}": "Download & install v{version}",
   "不足 1 小时": "Under 1 hour",
   不重复: "No repeat",
   "与以下课程在部分周次重叠：": "Overlaps these courses in some weeks:",
@@ -1688,21 +1791,26 @@ export const ZH_TO_EN: Record<string, string> = {
   今天没有课: "No classes today",
   今天还没打卡: "not checked in yet today",
   今日专注目标进度: "Today's focus goal progress",
-  今日暂无日志记录: "No log entries for today",
+  暂无日志记录: "No log records yet",
+  开机启动设置失败: "Couldn't change launch-on-startup",
+  "已生效 {n} 项": "{n} item(s) in effect",
+  "最多保留 64 项，超出的部分已被忽略": "Keeps at most 64 entries; extras were ignored",
+  panic: "panic",
+  跟随系统: "Follow system",
   今日番茄轮数与专注时长: "Today's pomodoro rounds and focus time",
   今日目标: "Today's goal",
   今日目标已达成: "Today's goal reached",
   今日课程: "Today's classes",
   "今日高 / 低温": "Today's high / low",
   仍要保存: "Save anyway",
-  任务用时排行: "Top time consumers",
   休: "Off",
   优先级: "Priority",
   低: "Low",
   便签回收站: "Notes trash",
   便签颜色: "Note color",
-  /* DeskOrder 借鉴 #8：便签提醒 */
+  /* 便签提醒 */
   便签提醒: "Note reminder",
+  便签设置的提醒时间到点时提醒: "Remind when a note's reminder time is reached",
   设置提醒: "Set reminder",
   取消提醒: "Cancel reminder",
   "提醒时间：": "Reminder time: ",
@@ -1711,12 +1819,43 @@ export const ZH_TO_EN: Record<string, string> = {
   "试试「明天9点」「周五 14:30」「2小时后」这类写法": "Try phrases like 9am tomorrow, Fri 14:30, or in 2 hours",
   "明天9点 / 周五 14:30 / 20:00": "9am tomorrow / Fri 14:30 / 20:00",
   "（无内容）": "(empty)",
-  /* DeskOrder 借鉴 #12：编组 */
+  /* 编组 */
   编组: "Group selection",
   解散编组: "Ungroup",
-  "移除成员：": "Remove member: ",
+  已解散编组: "Group disbanded",
+  编组配置: "Group settings",
+  编组调整: "Group members changed",
+  展开成员设置: "Expand member settings",
+  /* 拼接式（"移除成员：" + 名）改为整句模板，英文语序经 {name} 重排。 */
+  "移除成员：{name}": "Remove member: {name}",
   删除整组: "Delete group",
-  /* DeskOrder 借鉴 #1/#2：自动整理 */
+  已编组: "Grouped",
+  已移出编组: "Removed from group",
+  "将删除组内全部小组件并移入回收站（可撤销）。确定继续？":
+    "This deletes all widgets in the group to the recycle bin (undoable). Continue?",
+  编组成员: "Group members",
+  重命名标签: "Rename tab",
+  留空恢复默认名称: "Leave empty to restore the default name",
+  /* 编组重命名补全 */
+  已重命名: "Renamed",
+  已恢复默认名称: "Default name restored",
+  双击重命名: "Double-click to rename",
+  重命名编组: "Rename group",
+  复制编组: "Duplicate group",
+  已重命名编组: "Group renamed",
+  组名: "Group name",
+  "用于设置侧栏与无障碍标签；留空显示「编组」":
+    "Shown in the settings sidebar and accessibility labels; empty falls back to “Group”",
+  "自定义名称用于卡片标题与编组标签；留空恢复默认":
+    "Custom name shown on card titles and group tabs; empty restores the default",
+  添加成员: "Add member",
+  把当前视图未编组的小组件加入本编组: "Add an ungrouped widget from this view to the group",
+  没有未编组的小组件可添加: "No ungrouped widgets to add",
+  /* S 批：编组弹层对等 + 搜索可达性 */
+  查看编组: "View group",
+  编组管理: "Group management",
+  重命名小组件: "Rename widget",
+  /* /#2：自动整理 */
   自动整理: "Auto-organize",
   "监视目录里的新文件命中规则后自动收进本组件（只加引用，不移动文件）":
     "New files matching the rules in the watched folder are collected here automatically (references only — files never move)",
@@ -1736,12 +1875,12 @@ export const ZH_TO_EN: Record<string, string> = {
   添加关键字: "Add keyword",
   关键字规则启用: "Keyword rules enabled",
   扫描存量文件: "Scan existing files",
-  按当前规则把监视目录里已有的文件一键整理进来: "Bring files already in the watched folder here per the current rules",
   "扫描中…": "Scanning…",
   立即扫描: "Scan now",
   已整理: "Organized",
+  "已整理 {n} 项": "Organized {n} items",
+  "已整理 {n} 项（{m} 项已存在）": "Organized {n} items ({m} already present)",
   项已存在: "already present",
-  已清理失效快捷方式: "Removed stale shortcuts",
   /* 快捷方式文件夹（类手机桌面）：可展开磁贴 + 条目网格弹层 */
   移入文件夹: "Move to folder",
   移出文件夹: "Move out of folder",
@@ -1751,7 +1890,7 @@ export const ZH_TO_EN: Record<string, string> = {
   文件夹是空的: "This folder is empty",
   "把图标拖到文件夹磁贴上，或右键快捷方式选「移入文件夹」":
     'Drag icons onto the folder tile, or right-click a shortcut and choose "Move to folder"',
-  /* DeskOrder 借鉴 #3：新建 */
+  /* 新建 */
   新建文件夹: "New folder",
   新建文本文件: "New text file",
   无法确定当前目录: "Cannot determine the current folder",
@@ -1776,7 +1915,6 @@ export const ZH_TO_EN: Record<string, string> = {
   刷新日历订阅: "Refresh calendar subscription",
   刷新汇率: "Refresh rates",
   前进: "Forward",
-  "勾选要显示的系统位置，回收站带真实角标": "Pick system locations to show; recycle bin gets a real badge",
   升序: "Ascending",
   升序或降序: "Ascending or descending",
   即将到来: "Upcoming",
@@ -1789,7 +1927,6 @@ export const ZH_TO_EN: Record<string, string> = {
   右键编辑预设: "Right-click to edit preset",
   "名称，如：生日": "Name, e.g. Birthday",
   后退: "Back",
-  "启动参数（可空）": "Launch arguments (optional)",
   启动耗时: "Startup time",
   启用多档提醒: "Multi-tier reminders",
   回到根目录: "Back to root",
@@ -1814,7 +1951,6 @@ export const ZH_TO_EN: Record<string, string> = {
   "导出全部打卡记录为 CSV": "Export all check-ins as CSV",
   导出此条: "Export this entry",
   将保存到: "Will be saved to",
-  "将删除「{name}」的全部课程，不可恢复。": "This deletes ALL courses in “{name}”. Irreversible.",
   "将导入：": "Will import: ",
   "尚未检查，点击下方「检查更新」": "Not checked yet — click “Check for updates” below",
   就是一段随手粘贴的文本: "just any text you paste in",
@@ -1827,12 +1963,13 @@ export const ZH_TO_EN: Record<string, string> = {
   "已达目标 ": "Goal reached: ",
   "已过去 {n} 天": "{n} days ago",
   "布局保存失败，请检查磁盘空间": "Layout save failed — check disk space",
-  应用显示名称: "App display name",
   开始恢复: "Start restore",
   "当前的任务、专注记录和小组件数据将被备份文件中的内容替换，此操作不可撤销。":
     "Current tasks, focus history and widget data will be REPLACED by the backup. This cannot be undone.",
   "当前离线，联网后自动更新": "Offline — will refresh once online",
   当前视图还没有小组件: "No widgets on this view yet",
+  显示空视图引导: "Show the empty-view hint",
+  隐藏空视图引导: "Hide the empty-view hint",
   待办条数上限: "Todo row limit",
   "快速添加待办…": "Quick add todo…",
   总打卡: "Total check-ins",
@@ -1848,6 +1985,7 @@ export const ZH_TO_EN: Record<string, string> = {
   打开目录: "Open folder",
   打开系统回收站: "Open system recycle bin",
   打开链接: "Open link",
+  "打开失败，请检查链接": "Open failed, please check the link",
   打开页面时自动检查: "Check automatically when opening the page",
   扫描失败: "Scan failed",
   拖动任务行可调整顺序: "Drag task rows to reorder",
@@ -1862,7 +2000,6 @@ export const ZH_TO_EN: Record<string, string> = {
   排序方向: "Sort direction",
   提醒: "Reminder",
   "搜索书签…": "Search bookmarks…",
-  "搜索别名（可空，支持拼音缩写）": "Search alias (optional, pinyin supported)",
   "搜索已删组件…": "Search deleted widgets…",
   "搜索类别或单位…": "Search category or unit…",
   操作失败: "Operation failed",
@@ -1879,9 +2016,18 @@ export const ZH_TO_EN: Record<string, string> = {
   日历提醒: "Calendar reminder",
   日期: "Date",
   早上好: "Good morning",
+  /* greetingByHour 的动态键（tr(fn()) 不在门禁的字面量扫描范围）——
+     英文模式 11 点后问候语曾永远显示中文。 */
+  中午好: "Good noon",
+  下午好: "Good afternoon",
+  晚上好: "Good evening",
+  夜深了: "It's late",
+  "剩余 {n} 项": "{n} remaining",
+  /* Dock 番茄钟在 wait-activity 等待期的状态标签（主面板有长句
+     「休息结束——检测到你回到座位后自动开始」，Dock 需要短标签）。 */
+  等你回来: "Waiting for you",
   "时间（可选）": "Time (optional)",
   星期列宽: "Weekday column width",
-  星期样式: "Weekday header style",
   是: "Yes",
   显示今日专注: "Show today's focus",
   显示今日待办: "Show today's todos",
@@ -1899,9 +2045,11 @@ export const ZH_TO_EN: Record<string, string> = {
   暂无蓝牙设备: "No Bluetooth devices",
   更多选项: "More options",
   "更新失败：": "Update failed: ",
+  "更新失败：{err}": "Update failed: {err}",
   更新源地址: "Update source URL",
   更新源版本: "Source version",
   "更新源请求失败：": "Update source request failed: ",
+  "更新源请求失败：{err}": "Update source request failed: {err}",
   最小化: "Minimize",
   最长连胜: "Longest streak",
   "月网格 / 单周清单 / 双月并排": "Month grid / single-week list / two months side-by-side",
@@ -1916,6 +2064,7 @@ export const ZH_TO_EN: Record<string, string> = {
   本周轮数: "This week's rounds",
   本地图片: "Local image",
   本次启动首帧用时: "First-frame time of this launch",
+  "本次启动首帧用时 {n}ms": "First-frame time of this launch: {n}ms",
   本组件根目录: "Root folder for this widget",
   构建时间: "Build time",
   查看: "View",
@@ -1960,13 +2109,12 @@ export const ZH_TO_EN: Record<string, string> = {
   留空则按时段自动问候: "Leave empty for automatic greeting",
   留空跟随全局默认文件夹: "Leave empty to follow the global default folder",
   目录始终排在文件前面: "Folders always before files",
+  "完整、去扩展名或仅图标": "Full, no extension, or icons only",
+  "列表或内容预览（缩略图与文本摘要）": "List or content preview (thumbnails and text snippets)",
   "目标进度会显示在统计区，0 为不设目标": "Progress shows in stats; 0 disables the goal",
   目标方式: "Goal type",
   每日目标方式: "Daily goal type",
-  今日目标按专注轮数还是按时长计: "Count the daily goal in focus rounds or duration",
   每日专注目标: "Daily focus goal",
-  "完成该数量的专注轮数即达成今日目标，0 为不设目标": "Complete this many focus rounds to meet the goal; 0 disables it",
-  "达到该专注时长即达成今日目标，0 为不设目标": "Reach this focus duration to meet the goal; 0 disables it",
   "按今日专注时长计，0 为不设目标": "Based on today's focus duration; 0 disables the goal",
   轮数: "Rounds",
   时长: "Duration",
@@ -1984,7 +2132,6 @@ export const ZH_TO_EN: Record<string, string> = {
   "继续滚动加载剩余 {n} 组": "Keep scrolling for {n} more groups",
   "编辑 / 补卡 / 提醒": "Edit / backfill / remind",
   编辑习惯: "Edit habit",
-  编辑事件: "Edit event",
   编辑预设时长: "Edit preset duration",
   "网格固定显示 1–N 节（4–30）；悬浮窗中滚轮上下翻看":
     "Grid shows fixed periods 1–N (4–30); scroll to browse in floating windows",
@@ -1995,7 +2142,30 @@ export const ZH_TO_EN: Record<string, string> = {
   视图粒度: "View granularity",
   计时: "Timer",
   "订阅拉取失败，点击重试": "Subscription fetch failed — click to retry",
-  "订阅日历 · ICS": "Subscribed calendar · ICS",
+  "订阅拉取失败，显示上次数据，点击重试": "Subscription fetch failed — showing last data, click to retry",
+  "结束时间（可选）": "End time (optional)",
+  "开始时间（可选）": "Start time (optional)",
+  直到: "Until",
+  每: "Every",
+  "地点（可选）": "Location (optional)",
+  备注: "Note",
+  "备注（可选）": "Note (optional)",
+  搜索事件: "Search events",
+  "搜索事件 / 地点 / 备注…": "Search events / locations / notes…",
+  无匹配事件: "No matching events",
+  年份: "Year",
+  当天无定时安排: "No timed events this day",
+  暂无安排: "Nothing scheduled",
+  "暂无安排 · 在下方添加事件": "Nothing scheduled — add an event below",
+  删除重复事件: "Delete repeating event",
+  仅此日: "Only this day",
+  此日及以后: "This day and after",
+  整个系列: "Entire series",
+  修改范围: "Apply to",
+  "已导入 {n} 条，跳过 {m} 条重复": "Imported {n} events, skipped {m} duplicates",
+  "导入 .ics 文件": "Import .ics file",
+  "导出为 .ics": "Export as .ics",
+  "已导入 {n} 条事件": "Imported {n} events",
   记住浏览位置: "Remember browsing location",
   "设为 0 表示不设目标、隐藏进度条": "0 means no goal and hides the progress bar",
   设置导入成功: "Settings imported",
@@ -2006,6 +2176,7 @@ export const ZH_TO_EN: Record<string, string> = {
   请先填写更新源地址: "Enter an update source URL first",
   "读取中…": "Loading…",
   "读取日志失败：": "Failed to read logs: ",
+  "读取日志失败：{err}": "Failed to read logs: {err}",
   读取课程表小组件的今日课程: "Reads today's classes from the timetable widget",
   课程冲突: "Course conflict",
   课程时间冲突: "Course time conflict",
@@ -2045,7 +2216,6 @@ export const ZH_TO_EN: Record<string, string> = {
   还没有会发通知的小组件: "No widgets that can notify yet",
   "先在视图或灵动岛添加待办、习惯、日历等小组件，再回到这里逐个开关通知":
     "Add widgets like Todo, Habit or Calendar first, then toggle their notifications here",
-  待办清单提醒: "Todo alerts",
   截止日期提醒: "Deadline alerts",
   "待办清单 / 截止日期提醒": "Todo / deadline alerts",
   "任务或截止日期临近时提醒（两者共用一个开关）": "Remind when tasks or deadlines are near (one shared switch)",
@@ -2059,7 +2229,6 @@ export const ZH_TO_EN: Record<string, string> = {
   重命名快捷方式: "Rename shortcut",
   重命名方案: "Rename profile",
   重复: "Repeat",
-  重新扫描应用: "Rescan apps",
   "重置中…": "Resetting…",
   重置应用: "Reset app",
   重置计时: "Reset timer",
@@ -2069,7 +2238,6 @@ export const ZH_TO_EN: Record<string, string> = {
   "鞋码为近似换算，以实物为准": "Shoe sizes are approximate; go by the actual item",
   "顶部一键直达下载/文档/图片等": "One-click shortcuts to Downloads/Documents/Pictures etc.",
   频率: "Frequency",
-  频谱动画区域的高度: "Height of the spectrum animation area",
   "频谱占卡片内容区高度的比例，放大卡片时频谱跟着变大":
     "Spectrum height as a share of the card content area; it grows with the card",
   高: "High",
@@ -2081,9 +2249,7 @@ export const ZH_TO_EN: Record<string, string> = {
     "ae22652013-Electronic Measurement [01] weeks 4-8, Tue, periods 1-2, Chaoyang-Lab-200",
   "大学物理 1-8周,星期1,第1节-第2节 教1-101, 9-16周,星期1,第1节-第2节 教1-202":
     "College Physics weeks 1-8, Mon, periods 1-2, Teach1-101; weeks 9-16, Mon, periods 1-2, Teach1-202",
-  "（右键菜单）": "(right-click menu)",
   "（空便签）": "(empty note)",
-  "（自定义 · 右键菜单）": "(custom · right-click menu)",
   /* === 2026-09-14 i18n 守护脚本修复后补齐（此前假阳性淹没了真实缺失） === */
   今日概览: "Today overview",
   "今日课程、待办与截止日期一屏掌握": "Today's classes, to-dos and deadlines at a glance",
@@ -2092,8 +2258,10 @@ export const ZH_TO_EN: Record<string, string> = {
   系统媒体控制卡片: "System media control card",
   "导入 Excel 课表，周视图展示": "Import an Excel timetable, shown as a week view",
   搜索小组件: "Search widgets",
-  正在添加到桌面小组件层: "Adding to the desktop widget layer",
   "正在获取当前版本…": "Fetching current version…",
+  "当前版本获取失败，点击重试": "Couldn't fetch the current version — click to retry",
+  当前版本获取失败: "Couldn't fetch the current version",
+  获取失败: "Fetch failed",
   已达上限: "Maximum reached",
   已达下限: "Minimum reached",
   "IMAP 端口": "IMAP port",
@@ -2106,6 +2274,8 @@ export const ZH_TO_EN: Record<string, string> = {
   "该小组件将从回收站永久移除，无法恢复。确定继续？":
     "This widget will be permanently removed from the recycle bin and cannot be recovered. Continue?",
   "读取文件失败：": "Failed to read file: ",
+  "读取文件失败：{err}": "Failed to read file: {err}",
+  "{fail}：{err}": "{fail}: {err}",
   "双击编辑 · Alt+↑↓ 调整顺序": "Double-click to edit · Alt+↑↓ to reorder",
   "周次（如 1-16 或 1-8,10-16周）": "Weeks (e.g. 1-16 or 1-8,10-16)",
   "该时段有 {n} 门课": "This slot has {n} courses",
@@ -2117,10 +2287,10 @@ export const ZH_TO_EN: Record<string, string> = {
   "未来日期，无法补卡": "Future date; check-ins can't be back-filled",
   选择播放源: "Choose playback source",
   保留所有权利: "All rights reserved",
-  // 导出副本（scripts/export-github.mjs）把关于页许可行替换为本键
+  // 关于页许可行（开源分发使用本键）
   "MIT 开源许可": "MIT open-source license",
   作者: "Author",
-  /* ── C1 沉浸展开态（EXP 会话）── */
+  /* ── 沉浸展开态（EXP 会话）── */
   播放源: "Playback source",
   歌词: "Lyrics",
   暂未启用: "Not enabled yet",
@@ -2145,6 +2315,9 @@ export const ZH_TO_EN: Record<string, string> = {
   已展开磁贴: "Tile expanded",
   /* ── 一.1 / 一.3 系统通知镜像 + HTTP 推送（设置页）── */
   系统与外部: "System & external",
+  /* 通知中心分组头来源名（SOURCE_META；补漏词条） */
+  系统通知: "System notifications",
+  外部推送: "External push",
   "来自 Windows 与外部工具的消息：留档进通知历史并触发灵动岛提示。":
     "Messages from Windows and external tools, archived and surfaced on the dock.",
   "尚未获得通知访问权限：设置 → 隐私和安全性 → 通知，允许桌面应用访问通知":
@@ -2162,7 +2335,7 @@ export const ZH_TO_EN: Record<string, string> = {
   链接快开: "Link quick-open",
   复制链接后在岛上显示快捷打开条: "Show a quick-open bar on the dock after copying a link",
   "关闭 / 常驻收起 / 仅播放时显示": "Off / always tucked / visible while playing",
-  /* ── C1 天气站 + minutely_15（EXP 会话）── */
+  /* ── 天气站 + minutely_15（EXP 会话）── */
   未来一小时降雨: "Rainfall next hour",
   未来一小时无降雨: "No rain in the next hour",
   正在下雨: "Raining now",
@@ -2184,7 +2357,7 @@ export const ZH_TO_EN: Record<string, string> = {
   常模数据加载失败: "Failed to load climate normals",
   暂无常模数据: "No climate normals yet",
   数据缺失: "Data unavailable",
-  /* ── B1 就地配置弹层（CFG 会话）：QUICK_CONFIG_FIELDS 标签经弹层内动态 tr() 查找，
+  /* ── 就地配置弹层（CFG 会话）：QUICK_CONFIG_FIELDS 标签经弹层内动态 tr() 查找，
      静态 lint 抓不到，这里集中补齐（含 Segmented 选项文案/单位后缀）── */
   更多设置: "More settings",
   "yyyy/MM/dd": "yyyy/MM/dd",
@@ -2217,8 +2390,6 @@ export const ZH_TO_EN: Record<string, string> = {
   "搜索应用、命令或设置…": "Search apps, commands or settings…",
   /* ── [SYS] §4.6 presence 空闲打断 ── */
   空闲时暂停: "Pause when idle",
-  "无键鼠输入超过 5 分钟自动暂停专注，回到电脑自动恢复":
-    "Auto-pause focus after 5 minutes without keyboard/mouse input; resumes when you're back",
   /* ── [DOCK] 通知中心（通知历史/免打扰/滑动删除）── */
   通知中心: "Notification Center",
   "自发通知历史回看（分组/滑动删除/免打扰）": "Review self-issued notifications (grouped, swipe to dismiss, DND)",
@@ -2242,6 +2413,7 @@ export const ZH_TO_EN: Record<string, string> = {
   展开全部: "Expand all",
   前天: "Two days ago",
   "{n} 小时前": "{n} h ago",
+  "{n} 天前": "{n} d ago",
   待办与截止: "Todos & deadlines",
   蓝牙: "Bluetooth",
   邮件: "Email",
@@ -2249,10 +2421,8 @@ export const ZH_TO_EN: Record<string, string> = {
   灵动岛: "Dynamic Island",
   贴边的常驻小组件聚合条: "Edge-docked widget strip",
   启用灵动岛: "Enable Dynamic Island",
-  灵动岛位置: "Dynamic Island position",
   灵动岛磁贴: "Dynamic Island tiles",
   灵动岛面板: "Dynamic Island panel",
-  全岛面板建设中: "Island panel coming soon",
   顶部: "Top",
   底部: "Bottom",
   正在专注: "Focusing",
@@ -2267,7 +2437,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "与「{a}」的快捷键冲突": "Conflicts with the shortcut for “{a}”",
   // [HOTKEY] 第 7 个可配置动作：全局呼出命令面板（设置页快捷键行 / 速查表全局段标签）
   呼出命令面板: "Summon command palette",
-  // ── [POLISH] B3 贝塞尔曲线编辑器 ──
+  // ── [POLISH] 贝塞尔曲线编辑器 ──
   自定义曲线: "Custom curve",
   使用自定义曲线: "Use custom curve",
   用下方贝塞尔曲线替换小组件入场与预览的缓动:
@@ -2291,10 +2461,6 @@ export const ZH_TO_EN: Record<string, string> = {
   弹性: "Spring",
   // §4.4 THEME · 跟随壁纸
   跟随壁纸: "Follow wallpaper",
-  "从当前桌面壁纸派生强调色与背景，换壁纸自动跟随":
-    "Derives accent and background from your desktop wallpaper and follows changes automatically",
-  壁纸取色不可用: "Wallpaper colors unavailable",
-  跟随壁纸时由壁纸自动派生: "Derived from the wallpaper while following",
   次色: "Secondary color",
   基调: "Base tone",
   // ── [POLISH] D 表 快捷键速查表（Ctrl+?） ──
@@ -2352,32 +2518,26 @@ export const ZH_TO_EN: Record<string, string> = {
   // ── [SYSX] §4.9 崩溃计数（诊断区） ──
   崩溃统计: "Crash statistics",
   "读取崩溃统计失败：": "Couldn't read crash statistics: ",
+  "读取崩溃统计失败：{err}": "Couldn't read crash statistics: {err}",
   "近 7 天无崩溃记录": "No crashes in the last 7 days",
   "近 7 天崩溃 {n} 次": "{n} crash(es) in the last 7 days",
-  "累计 {n} 次": "{n} total",
-  "最近 panic": "Latest panic",
-  最近前端异常: "Latest frontend error",
+  "近 7 天崩溃 {n} 次 · 累计 {m} 次": "{n} crash(es) in the last 7 days · {m} total",
   // ── [CLIP] §4.10 剪贴板历史（小组件 + 设置页隐私区） ──
   隐私: "Privacy",
   剪贴板历史: "Clipboard history",
   "回看复制过的文本与图片，点击即再次复制": "Browse copied text and images; click to copy again",
-  "记录复制的文本与图片，供「剪贴板历史」小组件回看与重新复制":
-    "Record copied text and images for the Clipboard history widget to browse and re-copy",
   记录图片: "Record images",
-  "截图等图片条目转存到本地 clip 目录；关闭后只记录文本":
-    "Save screenshots and other images to the local clip folder; off = text only",
   记录来源进程: "Record source app",
   "同时记下复制时所在应用的进程名（默认关闭）":
     "Also note the process name of the app you copied from (off by default)",
   剪贴板数据目录: "Clipboard data folder",
-  "纯本地存储：历史只保存在本机数据库与 clip 目录，不上传、不同步。密码管理器标记为敏感的内容不会被记录；最多保留 500 条，30 天后自动清理。":
-    "Local only: history lives solely in this device's database and clip folder — never uploaded or synced. Content flagged sensitive by password managers is never recorded; up to 500 entries, auto-cleared after 30 days.",
   "清空中…": "Clearing…",
   清空剪贴板历史: "Clear clipboard history",
   "将删除全部已记录的文本与图片条目（含置顶），不可恢复。":
     "Deletes every recorded text and image entry (including pinned ones). This cannot be undone.",
   剪贴板历史已清空: "Clipboard history cleared",
   "清空失败：": "Clear failed: ",
+  "清空失败：{err}": "Clear failed: {err}",
   "搜索剪贴板…": "Search clipboard…",
   "记录已在设置中关闭，仅显示已有历史": "Recording is turned off in Settings; showing existing history only",
   点击复制到剪贴板: "Click to copy to clipboard",
@@ -2386,17 +2546,24 @@ export const ZH_TO_EN: Record<string, string> = {
   "{n} 行": "{n} lines",
   "{n} 条置顶": "{n} pinned",
   剪贴板历史仅在桌面端可用: "Clipboard history is only available on desktop",
+  剪贴板被占用: "Clipboard is in use",
   没有匹配的记录: "No matching entries",
   暂无剪贴板记录: "No clipboard entries yet",
   "复制的文本与图片会出现在这里，点击即可再次复制": "Copied text and images will show up here; click any to copy again",
   "纯本地存储 · 最多 500 条 · 30 天": "Local only · up to 500 · 30 days",
+  // —— 剪贴板审计批次：全文浮层 / 撤销 / 键盘导航 / 部分失效提示 ——
+  查看全文: "View full text",
+  全文: "Full text",
+  "按 / 快速聚焦": "Press / to focus search",
+  "部分文件已不存在，已复制其余 {n} 个": "{n} file(s) no longer exist; the rest were copied",
+  已删除剪贴板条目: "Clipboard entry deleted",
+  图片条目删除后无法撤销: "Image entries can't be restored once deleted",
+  "将删除全部条目（含置顶），再次点击确认": "Deletes every entry (pinned included) — click again to confirm",
   // §4.7 天气 IP 自动定位（GEO）
   "自动定位（IP）": "Auto-locate (IP)",
-  "向 ipwho.is 发送一次请求获取城市级大致位置并回填；缓存 24 小时，失败沿用手动城市":
-    "Sends one request to ipwho.is for an approximate city-level location and fills it in; cached for 24 hours, falls back to the manual city on failure",
   重新定位: "Locate again",
   "自动定位失败，沿用手动城市": "Auto-locate failed; keeping the manual city",
-  // [KANBAN] C1 任务全览（看板沉浸页）
+  // [KANBAN] 任务全览（看板沉浸页）
   任务全览: "Task board",
   之后: "Later",
   无期限: "No due date",
@@ -2415,18 +2582,17 @@ export const ZH_TO_EN: Record<string, string> = {
   // ISLAND-MINI 灵动岛迷你形态（src/widget/widgets/mini/）
   "今日剩余 {n}": "{n} left today",
   全部完成: "All done",
-  // ISLAND-MOVE 灵动岛位置拖动（F-4 拖动柄）
+  // ISLAND-MOVE 灵动岛位置拖动（拖动柄）
   拖动灵动岛: "Drag Dynamic Island",
-  // ISLAND-SORT 岛内排序 / 拖出移除 / 「+」类型选择器（F-3 / F-2 入口 b / F-12）
+  // ISLAND-SORT 岛内排序 / 拖出移除 / 「+」类型选择器（入口 b / ）
   添加磁贴: "Add tile",
   添加到灵动岛: "Add to Dynamic Island",
   搜索小组件类型: "Search widget types",
   没有匹配的类型: "No matching types",
   迷你形态: "Mini form",
   已从灵动岛移除: "Removed from Dynamic Island",
-  // ISLAND-CFG 岛级设置（F-6 编辑模式浮层 + 设置窗口「灵动岛」页）/ 逐磁贴右键菜单（F-7）
+  // ISLAND-CFG 岛级设置（编辑模式浮层 + 设置窗口「灵动岛」页）/ 逐磁贴右键菜单
   贴边: "Edge",
-  贴边与位置: "Edge & position",
   位置吸附: "Snap position",
   左: "Left",
   居中: "Center",
@@ -2447,20 +2613,11 @@ export const ZH_TO_EN: Record<string, string> = {
   已入岛磁贴: "Tiles on the island",
   已绑定画布实例: "Bound to a canvas widget",
   "暂无磁贴，点「+」添加": "No tiles yet — tap “+” to add",
-  在屏幕边缘常驻一条聚合小组件的胶囊条: "A pill-shaped strip of widgets pinned to a screen edge",
-  灵动岛贴在屏幕的顶边还是底边: "Which screen edge the island sits on",
-  "沿边吸附到左 / 中 / 右，或自由放置后用偏移微调":
-    "Snap to left / center / right along the edge, or place freely and fine-tune with offset",
-  "自由放置时岛中心相对屏幕宽度的位置（仅自由位可调）": "Island center across the screen width (free placement only)",
   外形: "Appearance",
   胶囊: "Pill",
   贴边刘海: "Edge bangs",
-  "胶囊为悬浮圆角条；贴边刘海与屏幕上边缘融合（仅贴顶边时生效）":
-    "Pill floats with rounded ends; edge bangs merge into the top screen edge (top edge only)",
   鼠标动作: "Mouse actions",
-  鼠标悬停在灵动岛上时的反应: "What happens when the mouse hovers over the island",
   点击空白: "Click blank area",
-  "点击磁贴之外的空白区域；点击磁贴始终为展开": "Clicking beside the tiles; clicking a tile always expands it",
   全岛面板: "Island panel",
   中键: "Middle click",
   鼠标中键点击灵动岛: "Middle-click the island",
@@ -2468,52 +2625,46 @@ export const ZH_TO_EN: Record<string, string> = {
   滚轮: "Scroll wheel",
   在灵动岛上滚动鼠标滚轮: "Scroll the wheel over the island",
   切换展开磁贴: "Cycle expanded tile",
-  番茄钟响铃时临时接管灵动岛提示: "A ringing timer briefly takes over the island",
-  切歌时临时显示正在播放的曲目: "Track changes briefly show what's playing",
-  新通知到达时临时显示一行摘要: "New notifications briefly show a one-line summary",
   展示时长: "Takeover duration",
-  接管提示停留多久后回到常规磁贴: "How long a takeover stays before the tiles return",
   自动隐藏: "Auto-hide",
-  "何时自动淡出灵动岛，鼠标靠近边缘时回来": "When the island fades out; it returns when the mouse nears the edge",
   从不: "Never",
   全屏时: "Fullscreen",
-  空闲后: "When idle",
   空闲时长: "Idle delay",
-  空闲多少分钟后淡出灵动岛: "Minutes of idleness before the island fades out",
   密度与面板: "Density & panel",
   密度: "Density",
-  "磁贴高度档位（像素）": "Tile height tier in pixels",
   面板形态: "Panel layout",
-  全岛面板以轮播还是网格展示入岛小组件: "Show island widgets as a carousel or a grid in the panel",
   轮播: "Carousel",
   顶部内边距: "Top inset",
-  "灵动岛与屏幕上边缘的间距（贴边刘海外形贴屏，不生效）":
-    "Gap between the island and the top screen edge (ignored by the edge-bangs shape)",
   在画布中定位: "Locate on canvas",
   从灵动岛移除: "Remove from Dynamic Island",
   // 磁贴绑定实例失效降级（需求 §7 风险表；widget-store.reconcileDockTiles → DockShell toast）
   灵动岛磁贴已降级: "Dynamic Island tiles downgraded",
   "绑定的画布小组件已删除，磁贴改为通用形态": "The bound canvas widget was deleted; the tile now uses its generic form",
-  // ISLAND-DROP 画布卡片拖入灵动岛（F-2 入口 a，D1 默认复制 / Alt 移动）+ 图库入口
+  // ISLAND-DROP 画布卡片拖入灵动岛（入口 a，松手入岛绑定实例 / Alt 移动）+ 图库入口
   已移入灵动岛: "Moved to Dynamic Island",
   已在灵动岛: "Already on Dynamic Island",
-  "松手复制 · Alt 移动": "Release to copy · Alt to move",
-  // GROUP-MERGE 拖 A 放到 B 上合并编组（BentoDesk 借鉴 #2；toast 可撤销）
+  /* 默认语义是「磁贴绑定该实例」（配置两边同步），不是数据复制——
+     原文案「松手复制」会让用户预期产生独立副本。 */
+  "松手添加 · Alt 移动": "Release to add · Alt to move",
+  /* undo 恢复被入岛去重拦截（同身份磁贴已在岛上）时的显式反馈。 */
+  无法恢复: "Cannot restore",
+  同类型小组件已在灵动岛上: "A widget of this type is already on the Dynamic Island",
+  // GROUP-MERGE 拖 A 放到 B 上合并编组
   已合并编组: "Merged into group",
-  // LIVE-FOLDER files 组件实时同步（BentoDesk 借鉴 #4；完整编辑器开关）
+  // LIVE-FOLDER files 组件实时同步
   实时同步目录: "Live-sync directory",
   "目录内容变化即时刷新（不可用时自动回退 20 秒轮询）":
     "Refresh instantly when the folder changes (falls back to 20s polling when binding fails)",
-  // LAYOUT-TIMELINE 布局时间线（BentoDesk 借鉴 #1；Ctrl+Z / Ctrl+Shift+Z）
+  // LAYOUT-TIMELINE 布局时间线
   已撤销布局更改: "Layout change undone",
   已重做布局更改: "Layout change redone",
   已套用布局模板: "Layout template applied",
   原布局已存入时间线: "Previous layout saved to timeline",
-  // ARRANGE 批量自动排布（BentoDesk 借鉴 #8；多选工具栏）
+  // ARRANGE 批量自动排布
   网格排布: "Arrange as grid",
   横排排布: "Arrange in a row",
   纵列排布: "Arrange in a column",
-  // AUTO-ORG-LEAF 自动整理附加条件（BentoDesk 借鉴 #6）
+  // AUTO-ORG-LEAF 自动整理附加条件
   文件年龄下限: "Minimum file age",
   "只整理指定天数前创建或修改的文件（0 = 不限），与上面的规则同时满足":
     "Only organize files created or modified at least this many days ago (0 = no limit); combined with the rules above",
@@ -2521,7 +2672,7 @@ export const ZH_TO_EN: Record<string, string> = {
   按创建时间: "By created time",
   最小体积: "Minimum size",
   "只整理不小于该体积的文件（0 = 不限）": "Only organize files at least this large (0 = no limit)",
-  // SUGGEST 智能分组建议（BentoDesk 借鉴 #5；AutoOrganizeEditor 建议面板）
+  // SUGGEST 智能分组建议
   "按当前规则扫描监视目录，生成可勾选的分组建议，确认后才入列":
     "Scan the watched folder with the current rules, review suggested groups, then apply",
   没有扫描到符合条件的文件: "No files matched the current rules",
@@ -2532,10 +2683,10 @@ export const ZH_TO_EN: Record<string, string> = {
   整理所选: "Organize selection",
   "整理中…": "Organizing…",
   置信度: "Confidence",
-  // FILE-CMDS 命令面板收录快捷方式组件文件条目（BentoDesk 借鉴 #9）
+  // FILE-CMDS 命令面板收录快捷方式组件文件条目
   "筛选文件…": "Filter files…",
   没有匹配的文件: "No matching files",
-  // LAYOUT-TIMELINE v2 布局历史面板（BentoDesk 借鉴 #1；编辑工具栏入口）
+  // LAYOUT-TIMELINE v2 布局历史面板
   布局历史: "Layout history",
   "结构变更自动快照，点击恢复到任一时点（Ctrl+Z 撤销）":
     "Automatic snapshots of structural changes; restore to any point (Ctrl+Z to undo)",
@@ -2550,9 +2701,9 @@ export const ZH_TO_EN: Record<string, string> = {
   组件: "widgets",
   组: "groups",
   无结构变化: "No structural change",
-  // GROUP-BLOOM 编组花瓣预览（BentoDesk 借鉴 #3）
+  // GROUP-BLOOM 编组花瓣预览
   编组成员预览: "Group members",
-  // PRESET-PKG 样式预设包导入导出（BentoDesk 借鉴 #12）
+  // PRESET-PKG 样式预设包导入导出
   导出包: "Export pack",
   导入包: "Import pack",
   暂无可导出的预设: "No presets to export",
@@ -2562,11 +2713,12 @@ export const ZH_TO_EN: Record<string, string> = {
   项跳过: "skipped",
   导出失败: "Export failed",
   导入失败: "Import failed",
-  // UPD-SCHED 更新器调度/跳版（BentoDesk 借鉴 #10；调度器 toast + 更新页）
+  // UPD-SCHED 更新器调度/跳版
   "发现新版本 v{v}": "New version v{v} available",
   跳过此版本: "Skip this version",
   "本版本不再提示，直到更高版本发布": "Stop notifying about this version until a newer one is released",
   "已跳过 v": "Skipped v",
+  "已跳过 v{version}": "Skipped v{version}",
   撤销跳过: "Unskip",
   定时检查频率: "Scheduled check frequency",
   "应用启动后按此周期在后台检查更新（发现新版本弹提醒）":
@@ -2575,15 +2727,13 @@ export const ZH_TO_EN: Record<string, string> = {
   // ISLAND-LINK 灵动岛全局热键（shortcuts.rs 第 8/9 个可配置动作：设置页快捷键行 / 速查表全局段标签）
   显隐灵动岛: "Toggle Dynamic Island",
   打开灵动岛面板: "Open Dynamic Island panel",
-  // ISLAND-PANEL 全岛面板（F-5：轮播 / 网格视图切换 + 空态提示）
+  // ISLAND-PANEL 全岛面板（轮播 / 网格视图切换 + 空态提示）
   切换到网格视图: "Switch to grid view",
   切换到轮播视图: "Switch to carousel view",
   "拖一张卡片到灵动岛，或按 + 添加": "Drag a card onto the Dynamic Island, or press + to add one",
   // TB-UI 任务栏设置页（TaskbarPage / TaskbarConfigSync / 侧栏项 / 搜索索引）
   任务栏: "Taskbar",
   自定义任务栏外观: "Customize taskbar appearance",
-  "按下方状态改变 Windows 任务栏的透明 / 模糊 / 亚克力外观；关闭立即恢复系统默认":
-    "Make the Windows taskbar transparent / blurred / acrylic per the states below; turning off restores the system default immediately",
   模块未就绪: "Module not ready",
   "已开启，等待任务栏模块响应": "Enabled, waiting for the taskbar module to respond",
   未启用: "Not enabled",
@@ -2597,6 +2747,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "正在重启资源管理器…": "Restarting Explorer…",
   "资源管理器已重启，任务栏升级完成": "Explorer restarted — taskbar upgrade complete",
   重启资源管理器失败: "Failed to restart Explorer",
+  "重启资源管理器失败：{err}": "Failed to restart Explorer: {err}",
   升级后自动重启: "Auto-restart after upgrades",
   "DLL 升级后自动重启资源管理器": "Restart Explorer automatically after DLL upgrades",
   开: "On",
@@ -2606,18 +2757,18 @@ export const ZH_TO_EN: Record<string, string> = {
   实现路径: "Backend",
   此系统版本暂不支持: "Not supported on this Windows build",
   协议: "Protocol",
+  "协议 v{n}": "Protocol v{n}",
   能力摘要: "Capability summary",
   重新应用: "Reapply",
   该操作仅在桌面端可用: "This action is only available in the desktop app",
   已重新应用任务栏外观: "Taskbar appearance reapplied",
   重新应用失败: "Reapply failed",
+  "重新应用失败：{err}": "Reapply failed: {err}",
   已恢复任务栏默认配置: "Taskbar settings restored to defaults",
   复制诊断信息: "Copy diagnostics",
   诊断信息已复制到剪贴板: "Diagnostics copied to clipboard",
   "复制失败，请检查剪贴板权限": "Copy failed — check clipboard permission",
   动态外观: "Dynamic appearance",
-  "按桌面状态自动切换外观：越靠下的状态优先级越高，命中时覆盖上方状态；桌面为基础外观不可关闭。":
-    "Appearance follows the desktop state: lower cards have higher priority and override the ones above; Desktop is the base and cannot be turned off.",
   可见窗口: "Visible window",
   "桌面可见、没有用户窗口时的基础外观（始终启用）":
     "Base appearance when the desktop is visible with no user windows (always on)",
@@ -2639,24 +2790,20 @@ export const ZH_TO_EN: Record<string, string> = {
   当前生效状态未知: "Active state unknown",
   始终启用: "Always on",
   效果: "Effect",
-  "默认 = 恢复系统外观；不透明忽略透明度；透明保留透明度；模糊 / 亚克力为半透明磨砂":
-    "Default restores the system look; Opaque ignores opacity; Clear keeps opacity; Blur / Acrylic are translucent frosted effects",
   不透明: "Opaque",
   亚克力: "Acrylic",
-  "任务栏着色；透明效果下透明度 0% 即完全隐藏背景色":
-    "Taskbar tint; with the Clear effect, 0% opacity hides the background color entirely",
-  "0% 完全透明 · 100% 完全不透明（不透明效果忽略此项）":
-    "0% fully transparent · 100% fully opaque (ignored by the Opaque effect)",
   模糊半径: "Blur radius",
-  "高斯模糊半径 0–750，越大越朦胧": "Gaussian blur radius 0–750; larger is hazier",
   顶部分隔线: "Top divider line",
   "任务栏顶部 1px 分隔线": "The 1px divider line along the top of the taskbar",
+  任务栏组件完整性: "Taskbar module integrity",
   显示桌面按钮: "Show desktop button",
   "任务栏右端的「显示桌面」Peek 按钮": "The “Show desktop” Peek button at the right end of the taskbar",
   窗口规则: "Window rules",
   "暂无规则：命中规则的窗口使用其专属外观，其余使用上方默认外观":
     "No rules yet: windows matching a rule use its appearance; others use the default above",
   规则: "Rule",
+  "规则 {n}": "Rule {n}",
+  "规则 {id}": "Rule {id}",
   匹配类型: "Match type",
   窗口类: "Window class",
   窗口标题: "Window title",
@@ -2670,8 +2817,6 @@ export const ZH_TO_EN: Record<string, string> = {
   命中窗口失去焦点时切换到下方外观: "Switch to the appearance below when the matched window loses focus",
   非前台外观: "Inactive appearance",
   忽略的窗口: "Ignored windows",
-  "命中任一项的窗口不参与「可见窗口 / 最大化窗口」判定；出厂已包含 Vela 自身，可删除。":
-    "Windows matching any entry are excluded from the visible / maximized checks; Vela itself is included by default and can be removed.",
   精确匹配窗口类名: "Exact window class name",
   "如 Tauri Window": "e.g. Tauri Window",
   标题包含该子串即命中: "Matches when the title contains this text",
@@ -2682,13 +2827,20 @@ export const ZH_TO_EN: Record<string, string> = {
     "Coexistence with desktop widgets: the taskbar always sits above the desktop layer. With a transparent taskbar, widgets placed in the taskbar area are covered by it — this is expected; Dynamic Island avoidance is unaffected.",
   任务栏配置部分未生效: "Some taskbar settings did not apply",
   任务栏配置应用失败: "Failed to apply taskbar settings",
-  // TB-MONITOR 任务栏 · 多显示器（F-6：HEADER 显示器选择器 / 逐屏覆盖）
+  "任务栏配置部分未生效：{parts}": "Some taskbar settings did not apply: {parts}",
+  尚未注入: "Not injected yet",
+  注入副本与分发文件一致: "Injected copy matches the bundled file",
+  "注入副本哈希与分发文件不一致（下次注入会自动重新解包）":
+    "Injected copy hash differs from the bundled file (it will re-unpack on next injection)",
+  小组件层组件加载失败: "A widget failed to load",
+  灵动岛出现问题: "Dock hit a problem",
+  "灵动岛出现问题，点击重试可恢复": "Dock hit a problem; click retry to recover",
+  灵动岛面板未能加载: "Dock panel failed to load",
+  "灵动岛面板未能加载，点击重试可恢复": "Dock panel failed to load; click retry to recover",
+  "任务栏配置应用失败：{err}": "Failed to apply taskbar settings: {err}",
+  // TB-MONITOR 任务栏 · 多显示器（HEADER 显示器选择器 / 逐屏覆盖）
   逐显示器独立配置: "Per-monitor configuration",
-  "开启后各显示器可分别覆盖下方的动态外观 / 窗口规则 / 忽略列表；未覆盖的部分沿用「所有显示器统一」的配置":
-    "When on, each monitor can override the dynamic appearance / window rules / ignore list below; anything not overridden follows the “All monitors” configuration",
   正在编辑: "Editing",
-  "「所有显示器统一」编辑基础配置；选中某台显示器后，下方修改只写入该显示器的覆盖":
-    "“All monitors” edits the base configuration; with a monitor selected, changes below are written only to that monitor's override",
   所有显示器统一: "All monitors",
   "（未连接）": " (disconnected)",
   覆盖状态: "Override status",
@@ -2701,16 +2853,17 @@ export const ZH_TO_EN: Record<string, string> = {
     "Per-monitor configuration is off: overrides are kept but inactive; all monitors use the unified configuration",
   "已删除此显示器的覆盖，恢复为统一配置": "Override removed for this monitor; it now follows the unified configuration",
   切换卡片: "Switch card",
-  // TB-TRAY 任务栏 · 托盘与全局快捷键（F-11：shortcuts.rs 第 10/11 个可配置动作的设置页行 /
+  // TB-TRAY 任务栏 · 托盘与全局快捷键（shortcuts.rs 第 10/11 个可配置动作的设置页行 /
   // 速查表标签；未绑定动作的组合键芯片占位）
   开关任务栏外观: "Toggle taskbar appearance",
   重置任务栏状态: "Reset taskbar state",
   未设置: "Not set",
-  // TB-PREVIEW 任务栏 · F-8 实时预览（状态卡「预览此状态」按钮 / 预览中徽标 / 失败提示）
+  // TB-PREVIEW 任务栏 · 实时预览（状态卡「预览此状态」按钮 / 预览中徽标 / 失败提示）
   预览此状态: "Preview this state",
   停止预览: "Stop preview",
   预览中: "Previewing",
   预览失败: "Preview failed",
+  "预览失败：{err}": "Preview failed: {err}",
   "请先开启「自定义任务栏外观」": "Turn on “Customize taskbar appearance” first",
 
   /* ---- 会话前未提交的新增 + 组件内部 tr() 的属性字面量（SettingToggleRow title/desc、
@@ -2729,7 +2882,6 @@ export const ZH_TO_EN: Record<string, string> = {
     "The running timer is unaffected; new durations apply from the next segment",
   "一块面板装多个小组件：拖动排布、磁性吸附、自动整理":
     "One panel holding several widgets: drag to arrange, snaps to the grid, tidies itself",
-  "点右上角「+」添加，拖动顶部把手排布": "Add with the + at the top right; drag the top handle to arrange",
   "「杂项」面板请在灵动岛中使用": "The Misc board is meant for the Dynamic Island",
   "浏览器存储空间不足或受限，最近的更改可能未保留。":
     "Browser storage is full or restricted; recent changes may not have been kept.",
@@ -2737,13 +2889,8 @@ export const ZH_TO_EN: Record<string, string> = {
     "Browser storage is full or restricted; appearance settings may not have been kept.",
   "已自动隔离保存副本；本次将以空数据启动。":
     "A copy has been quarantined automatically; starting with empty data this time.",
-  "在灵动岛两端显示「‹ ›」窄按钮，点击切到上一个 / 下一个视图":
-    "Show slim ‹ › buttons at both ends of the island to step to the previous / next view",
-  "像 QQ 面板那样：平时收进屏幕上缘只留一条，鼠标靠近就弹出，离开后收回":
-    "QQ-style: tucks into the top edge leaving a thin strip; slides out when the mouse approaches, retracts after it leaves",
   "显示 GPU": "Show GPU",
   "GPU 使用率": "GPU usage",
-  "置顶应用排前，其余按使用频率排序": "Pinned apps first, the rest sorted by usage frequency",
   "显示 HSV": "Show HSV",
   "设计师常用的 HSB 色值": "HSB values commonly used by designers",
   "显示 CMYK": "Show CMYK",
@@ -2779,7 +2926,6 @@ export const ZH_TO_EN: Record<string, string> = {
   检测到损坏的本地数据: "Corrupted local data detected",
   个月: "mo",
   显示网络速度: "Show network speed",
-  常用优先: "Frequent first",
   印刷用四色分量的近似换算: "Approximate conversion to print CMYK components",
   显示标签栏: "Show tag bar",
   月格事件摘要: "Event summary in month cells",
@@ -2818,8 +2964,6 @@ export const ZH_TO_EN: Record<string, string> = {
   默认画笔粗细: "Default brush size",
   顶: "Top",
   底: "Bottom",
-  水平分布: "Distribute horizontally",
-  垂直分布: "Distribute vertically",
   琥珀: "Amber",
   青绿: "Teal",
   天蓝: "Sky",
@@ -2833,7 +2977,7 @@ export const ZH_TO_EN: Record<string, string> = {
   未知小组件类型: "Unknown widget type",
   杂项: "Misc",
   这里还没有小组件: "No widgets here yet",
-  /* W-145/W-153/W-167/W-169/W-170/W-171 网卡选择 / 流量统计 / 网速显示 / 连接详情 */
+  /* 网卡选择 / 流量统计 / 网速显示 / 连接详情 */
   选择网卡: "Network adapter",
   指定后只显示该网卡的速率: "Show only the selected adapter's rate",
   "自动选最活跃 / 全部网卡 / 聚合速率 / 指定网卡":
@@ -2867,13 +3011,22 @@ export const ZH_TO_EN: Record<string, string> = {
   任务栏网速条: "Taskbar speed strip",
   任务栏网速条开启失败: "Failed to toggle the taskbar speed strip",
   在系统任务栏托盘区左侧显示实时网速: "Live network speed at the left of the tray area",
+  "仅主屏任务栏（多屏时副屏不重复显示）": "Primary monitor's taskbar only (not duplicated on secondary screens)",
+  /* [TB-] 任务栏审计修复新增文案 */
+  "任务栏配置读取失败：{err}": "Failed to read the taskbar config: {err}",
+  "规则从上到下依次匹配，先命中的生效；空匹配值的规则不会命中任何窗口":
+    "Rules match top-down; the first hit wins. A rule with an empty pattern never matches",
+  "未生效：匹配值为空": "Inactive: empty pattern",
+  "已存在相同匹配值的规则，先命中的那条生效": "A rule with the same pattern already exists; the first hit wins",
+  "覆盖按创建时的整组快照保存：未单独修改的状态也冻结在当时的值，统一配置的后续调整不影响此屏":
+    "Overrides are saved as a whole-group snapshot: untouched states stay frozen at their snapshot values, and later unified-config changes do not affect this monitor",
   网卡: "Adapter",
   地址: "Address",
   当前连接: "Connections",
   "查看本机对外 TCP 连接及其归属进程": "Outbound TCP connections and their processes",
   "获取中…": "Loading…",
   刷新连接: "Refresh",
-  /* W-090 快捷方式小组件：OS 文件拖入 */
+  /* 快捷方式小组件：OS 文件拖入 */
   把桌面上的文件或快捷方式拖进来: "Drop files or shortcuts from your desktop here",
   "松手自动识别，点击直接打开": "Release to identify; click to open",
   "从桌面把文件或 .lnk 拖进卡片即可添加；此处也可手动添加文件、文件夹或链接":
@@ -2881,7 +3034,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "默认不带；按需勾选系统位置，回收站带真实角标":
     "Off by default; opt into system locations; Recycle Bin shows a real badge",
   "桌面文件拖入即用，图标自由排布": "Drop desktop files to pin; arrange icons freely",
-  /* DeskOrder 借鉴 #13：文件夹预览小窗 */
+  /* 文件夹预览小窗 */
   文件夹点击预览: "Folder click preview",
   文件夹预览: "Folder preview",
   上一级: "Up one level",
@@ -2890,7 +3043,7 @@ export const ZH_TO_EN: Record<string, string> = {
   空文件夹: "Empty folder",
   仅显示前: "Showing first",
   "项，共": "of",
-  /* DeskOrder 借鉴 #4：样式预设卡 */
+  /* 样式预设卡 */
   样式预设: "Style presets",
   选择样式预设: "Choose a style preset",
   "选择预设…": "Choose a preset…",
@@ -2898,16 +3051,17 @@ export const ZH_TO_EN: Record<string, string> = {
   存为预设: "Save as preset",
   保存样式预设: "Save style preset",
   删除样式预设: "Delete style preset",
-  "确定删除预设「": 'Delete preset "',
+  /* 拼接式（"确定删除预设「"+名+"」吗？"）改为整句模板，引号按英文习惯。 */
+  "确定删除预设「{name}」吗？": 'Delete preset "{name}"?',
   批量套用样式预设: "Apply style preset to selection",
   仅同类型组件可套用: "Only same-type widgets can share a preset",
   "暂无预设，可在组件配置弹层中保存": "No presets yet — save one from a widget's config popover",
-  /* DeskOrder 借鉴 #9：更新链 */
+  /* 更新链 */
   安装包文件名: "Installer file name",
   "GitHub 仓库地址兜底直链用的固定产物名（发布时上传不带版本号的同名文件与 .sha256）":
     "Fixed artifact name for the GitHub repo fallback link (upload the version-less file plus its .sha256)",
   "或直接填 GitHub 仓库地址": "or a GitHub repository URL directly",
-  /* DeskOrder 借鉴 #6：双击空白桌面 */
+  /* 双击空白桌面 */
   双击桌面切换显示: "Double-click desktop to toggle",
   "双击空白桌面显示或隐藏小组件层（与 Ctrl+Alt+D 等效）":
     "Double-click blank desktop to show or hide the widget layer (same as Ctrl+Alt+D)",
@@ -2923,7 +3077,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "磁贴从岛上消失，画布实例与组件设置不受影响":
     "The tile leaves the island; the canvas instance and its settings are untouched",
   "SWCA（未启用）": "SWCA (not enabled in this build)",
-  /* G8 通用磁贴摘要（{n}/{k} 占位符由 i18n-lite 的 fillParams 统一替换） */
+  /* 通用磁贴摘要（{n}/{k} 占位符由 i18n-lite 的 fillParams 统一替换） */
   "{n} 项待办": "{n} tasks",
   今日无待办: "No tasks today",
   无未完成截止: "No open deadlines",
@@ -2936,7 +3090,11 @@ export const ZH_TO_EN: Record<string, string> = {
   未添加: "None yet",
   "已选中，方向键移动，Shift+方向键缩放，Delete 删除":
     "Selected. Arrow keys to move, Shift+arrows to resize, Delete to remove",
-  /* G14：拼接式模板 → 占位符整句（i18n-lite fillParams 统一替换） */
+  /* 批 落地后的快捷键自述（卡片版含缩放；组版无缩放）。 */
+  "已选中，方向键移动，Shift+方向键缩放，Delete 删除，F2 重命名":
+    "Selected. Arrow keys to move, Shift+arrows to resize, Delete to remove, F2 to rename",
+  "已选中，方向键移动，Delete 删除，F2 重命名": "Selected. Arrow keys to move, Delete to remove, F2 to rename",
+  /* 拼接式模板 → 占位符整句（i18n-lite fillParams 统一替换） */
   "已逾期 {r}": "Overdue by {r}",
   "还有 {r}": "{r} left",
   "目标 {d}/天": "Goal {d}/day",
@@ -2964,6 +3122,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "磁盘 · {m}": "Disk · {m}",
   "体感 {t}": "Feels like {t}",
   "风速 {n} km/h": "Wind {n} km/h",
+  "风速 {n} mph": "Wind {n} mph",
   "湿度 {n}%": "Humidity {n}%",
   "已连接 {n} 个账户": "{n} accounts connected",
   "{n} 未读": "{n} unread",
@@ -2989,7 +3148,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "排序：按名称": "Sort: by name",
   "排序：按时间": "Sort: by time",
   "跳转到第 {n} 页": "Go to page {n}",
-  /* 编码 / 哈希（借鉴 ClassSoftwareHub #2，并入计算器三页签） */
+  /* 编码 / 哈希 */
   计算: "Calculate",
   "计算 · Base64/URL 编解码 · 哈希核对": "Calc · Base64/URL convert · hash verify",
   编码: "Encode",
@@ -3010,7 +3169,7 @@ export const ZH_TO_EN: Record<string, string> = {
   粘贴期望哈希值自动核对: "Paste an expected hash to verify",
   匹配: "match",
   不匹配: "mismatch",
-  /* 秒表（借鉴 ClassSoftwareHub #3；开始/暂停/继续/已暂停/秒表 已有既有词条） */
+  /* 秒表 */
   正计时与计次: "Count up and take laps",
   计次: "Lap",
   记录一次计次: "Record a lap",
@@ -3019,7 +3178,7 @@ export const ZH_TO_EN: Record<string, string> = {
   显示百分秒: "Show centiseconds",
   计次保留: "Laps kept",
   计时中: "running",
-  /* 截图套件 + 贴图（借鉴 ClassSoftwareHub #4） */
+  /* 截图套件 + 贴图 */
   截图: "Screenshot",
   "选择 / 移动选区": "Select / move region",
   荧光笔: "Highlighter",
@@ -3037,7 +3196,7 @@ export const ZH_TO_EN: Record<string, string> = {
   钉在桌面的截图: "Screenshots pinned to the desktop",
   图片已不存在: "Image no longer exists",
   空贴图: "Empty pin",
-  /* 全屏展示（借鉴 ClassSoftwareHub #5） */
+  /* 全屏展示 */
   全屏时钟: "Fullscreen clock",
   全屏倒计时: "Fullscreen countdown",
   全屏番茄钟: "Fullscreen pomodoro",
@@ -3047,7 +3206,7 @@ export const ZH_TO_EN: Record<string, string> = {
   倒计时进行中: "Countdown running",
   "等待番茄钟数据…": "Waiting for pomodoro data…",
   在番茄钟上开始专注后自动显示: "Start a focus session and it shows up here",
-  /* 更新通道 / 回滚 / 版本历史（借鉴 ClassSoftwareHub #6/#7） */
+  /* 更新通道 / 回滚 / 版本历史 */
   更新通道: "Update channel",
   稳定通道: "Stable",
   "Insider 通道": "Insider",
@@ -3065,6 +3224,8 @@ export const ZH_TO_EN: Record<string, string> = {
   确认安装: "Confirm install",
   "回滚失败：": "Rollback failed: ",
   "发布列表请求失败：": "Release list request failed: ",
+  "回滚失败：{err}": "Rollback failed: {err}",
+  "发布列表请求失败：{err}": "Release list request failed: {err}",
   "回滚列表仅支持 GitHub 仓库形式的更新源": "Rollback list requires a GitHub repo update source",
   仓库没有可用的发布版本: "No usable releases in the repo",
   无可安装资产: "No installable asset",
@@ -3073,7 +3234,7 @@ export const ZH_TO_EN: Record<string, string> = {
   "首次 {d}": "first {d}",
   "最近 {d}": "last {d}",
   暂无记录: "No records yet",
-  /* 在线预设画廊（借鉴 ClassSoftwareHub #9） */
+  /* 在线预设画廊 */
   在线预设画廊: "Online preset gallery",
   画廊源: "Gallery source",
   "GitHub 仓库地址，或 gallery-manifest.json 直链": "A GitHub repo URL, or a direct gallery-manifest.json link",
@@ -3088,7 +3249,9 @@ export const ZH_TO_EN: Record<string, string> = {
   "安装中…": "Installing…",
   "安装失败：": "Install failed: ",
   预设已安装: "Preset installed",
-  /* 系统快捷动作（借鉴 ClassSoftwareHub #10） */
+  已安装: "Installed",
+  套用为自定义主题: "Apply as custom theme",
+  /* 系统快捷动作 */
   显示桌面: "Show desktop",
   任务视图: "Task view",
   关闭前台应用: "Close foreground app",
@@ -3096,9 +3259,9 @@ export const ZH_TO_EN: Record<string, string> = {
   "将关闭 {n} 个窗口": "About to close {n} windows",
   已下发关闭: "Close sent",
   "共 {n} 个窗口": "{n} windows total",
-  /* 网页浮层（借鉴 ClassSoftwareHub #11） */
+  /* 网页浮层 */
   在浮层中打开: "Open in preview window",
-  /* 从图片提取色板（借鉴 ClassSoftwareHub #12） */
+  /* 从图片提取色板 */
   从图片提取色板: "Extract palette from image",
   提取源图片: "Source image",
   "从任意图片提取 7 档主题色阶（本机处理，不上传）": "Extract a 7-step color ramp from any image (processed locally)",
@@ -3108,12 +3271,12 @@ export const ZH_TO_EN: Record<string, string> = {
   色板: "Palette",
   "点击色块复制 hex；中间档为基准色": "Click a swatch to copy its hex; the middle one is the seed",
   设为主色: "Set as accent",
-  /* 分体主题（借鉴 ClassSoftwareHub #13） */
+  /* 分体主题 */
   浮窗深浅: "Floating windows shade",
   "设置窗口与速记窗的独立明暗档（桌面小组件层不受影响）":
     "Independent light/dark for the settings and quick-note windows (desktop layer unaffected)",
   跟随全局: "Follow global",
-  /* ZTools 借鉴批次（#1/#2/#4/#5）：粘贴态 / 窗口上下文 / 电源指令 / 直达 */
+  /* 批次（#1/#2/#4/#5）：粘贴态 / 窗口上下文 / 电源指令 / 直达 */
   "{n} 个文件": "{n} file(s)",
   关机: "Shut down",
   关闭电脑: "Shut down this PC",
@@ -3162,10 +3325,10 @@ export const ZH_TO_EN: Record<string, string> = {
   "使用 SSL/TLS 加密连接；关闭后口令将以明文经过网络，仅建议在可信内网环境使用":
     "Use SSL/TLS encrypted connection; if disabled, your password travels the network in cleartext — only for trusted intranets",
   记录文件: "Record file copies",
-  "文件资源管理器里复制的文件记为文件条目（ZTools 借鉴 #8）": "Files copied in Explorer are recorded as file entries",
+  "文件资源管理器里复制的文件记为文件条目": "Files copied in Explorer are recorded as file entries",
   "前台应用命中时命令面板 / 速记热键不触发（exe 名，逗号分隔）":
     "Palette / quick-note hotkeys stay quiet when these apps are in front (exe names, comma-separated)",
-  /* ── FocusTimer 借鉴批次：阶段推进门 / 事件音效 / 自动化 / 统计口径 / 环境音 ── */
+  /* ── 阶段推进门 / 事件音效 / 自动化 / 统计口径 / 环境音 ── */
   阶段推进: "Phase advance",
   "自动衔接；或每段结束等确认；或休息后等你回到座位再开始专注":
     "Chain automatically; confirm each phase; or start focus once you're back at your desk",
@@ -3227,14 +3390,80 @@ export const ZH_TO_EN: Record<string, string> = {
   "最近 {n} 天": "Last {n} days",
   累计小时分布: "All-time by hour",
   "近 {n} 天的小时分布": "Focus by hour over the last {n} days",
-  一天中的专注时段: "Focus by time of day",
   统计日界: "Day boundary",
   "0 点": "0:00",
   "2 点": "2:00",
   "4 点": "4:00",
   "跨午夜专注按此边界切分归日（熬夜可延到凌晨）":
     "Split cross-midnight focus at this boundary (night owls can push it to 2/4 AM)",
+
+  /* [ANTICAPTURE]/[WIN-OPS]/[WIN-ACTIONS] */
+  "在屏幕共享/录屏中隐藏桌面层": "Hide the widget layer from screen sharing/recording",
+  "本地正常显示，但截屏、录屏与共享画面中不出现 Vela 的任何窗口（需要 Windows 10 2004 或更高版本）":
+    "Windows stay visible locally but never appear in screenshots, recordings or shares (requires Windows 10 2004+)",
+  前台窗口置顶切换: "Toggle always-on-top for foreground window",
+  "前台窗口透明度 +": "Foreground window opacity +",
+  "前台窗口透明度 -": "Foreground window opacity -",
+  "前台窗口透明度 +10%": "Foreground window opacity +10%",
+  "前台窗口透明度 −10%": "Foreground window opacity −10%",
+  前台窗口透明度还原: "Reset foreground window opacity",
+  前台窗口居中: "Center foreground window",
+  前台窗口贴左半屏: "Snap foreground window to left half",
+  前台窗口贴右半屏: "Snap foreground window to right half",
+  前台窗口移到上一虚拟桌面: "Move foreground window to previous virtual desktop",
+  前台窗口移到下一虚拟桌面: "Move foreground window to next virtual desktop",
+  切换系统代理: "Toggle system proxy",
+  切换高对比度: "Toggle high contrast",
+  /* [CLICK-SHIELD]/[HUD-GIVEWAY] */
+  弹窗关闭后屏蔽误连点: "Swallow stray clicks right after closing a popup",
+  "关闭弹窗 / 浮层后的瞬间屏蔽一次点击，防止连点穿透到下层（约 80 毫秒）":
+    "Blocks clicks for ~80ms after a popup closes so a double-click doesn't fall through to the layer beneath",
+  "鼠标悬停时 HUD 淡出避让": "HUDs fade out under the mouse pointer",
+  "鼠标移到全屏展示窗上时将其淡化，不遮挡底下的内容（网速条已改为点击穿透，无需避让）":
+    "The fullscreen display fades when hovered so content below shows through (the net-speed strip is now click-through and needs no fade)",
+  /* [DOCK-COVER] */
+  音乐封面背景: "Album-cover background",
+  "媒体在播时岛体背景切换为当前曲目封面（模糊压暗，切歌淡入淡出）":
+    "While media plays, the island background becomes the current album cover (blurred and dimmed, crossfading on track change)",
+  专注背景文件夹: "Focus background folder",
+  "番茄钟运行期间岛体背景随机取该文件夹中的一张图（每个专注会话换一次；留空关闭）":
+    "During focus sessions the island shows a random image from this folder (new pick each session; empty = off)",
+  浏览: "Browse",
+  /* [PROC-WATCH] */
+  "事件 = 每次发生时执行；条件 = 进入/退出时分别执行；进程 = 指定进程启动/退出时执行":
+    "Event = run on each occurrence; Condition = run on enter/exit; Process = run when a process starts/exits",
+  "进程名，如 cargo.exe 或 *.exe（支持 * 和 ? 通配）":
+    "Process name, e.g. cargo.exe or *.exe (supports * and ? wildcards)",
+  触发时机: "Trigger on",
+  "轮询检测（约 5 秒一拍）；已在运行的进程不算启动":
+    "Polled every ~5s; processes already running don't count as started",
+  启动时: "On start",
+  退出时: "On exit",
+
   专注时暂停音乐: "Pause music while focusing",
   "专注开始自动暂停在播媒体，结束或休息时智能恢复（别的播放器在播则不顶掉）":
-    "Auto-pause playing media when a focus session starts; smart-resume on end/break (won't override anything you started yourself)"
+    "Auto-pause playing media when a focus session starts; smart-resume on end/break (won't override anything you started yourself)",
+
+  /* configs 补充键（图库链接归一化行内提示） */
+  请输入有效的图片链接: "Enter a valid image URL",
+  "该图片链接已存在，请勿重复添加": "This image URL is already in the gallery",
+
+  /* [] 设置页二轮修复新增键（StylePage 壁纸文件夹截断提示改整句模板，
+     替换原拼接式 `${n} ${tr("张图片")}`，避免英文语序破坏）。 */
+  "共 {n} 张图片，显示前 {cap} 张": "{n} images in total, showing the first {cap}",
+  "{n} 张图片": "{n} images",
+
+  /* [二轮协调收尾] 组新增文案。 */
+  显示器列表获取失败: "Failed to load displays",
+  "备份已导入数据库，但通知其他窗口刷新失败，即将自动刷新以同步":
+    "Backup was imported into the database, but notifying other windows to refresh failed — the app will refresh shortly to re-sync",
+  "端口需为 1–65535 之间的整数，已还原为上次保存的值":
+    "Port must be an integer between 1–65535; the last saved value was restored",
+
+  /* 设置项运行期下发失败 toast（store 已落盘、重启
+     生效，只提示不回滚）。 */
+  "已保存，但桌面双击开关本次会话未生效，重启后生效":
+    "Saved, but the desktop double-click toggle won't apply this session — it takes effect after restart",
+  "已保存，但系统通知开关本次会话未生效，重启后生效":
+    "Saved, but the system notification toggle won't apply this session — it takes effect after restart"
 };

@@ -1,6 +1,6 @@
-//! 任务栏类型探测与能力上报（F-12 / D7）。
+//! 任务栏类型探测与能力上报。
 //!
-//! 探测算法对齐标杆 taskbarattributeworker.cpp:1166-1221：
+//! 探测算法：
 //! 1. 用 `CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, explorer_pid)` 枚举
 //!    explorer 已加载模块，找 `Taskbar.dll` —— 未加载 = **Classic（Win10）**；
 //! 2. 已加载则 `EnumChildWindows(Shell_TrayWnd)` 数类名
@@ -12,18 +12,18 @@
 
 use crate::models::{TaskbarCapabilities, TaskbarPath};
 
-/// 任务栏实现类型（A-3：定义收敛于 models.rs，此处 re-export 维持路径）。
+/// 任务栏实现类型（定义收敛于 models.rs，此处 re-export 维持路径）。
 pub use crate::models::TaskbarType;
 
-/// Mixed 任务栏 blur 可用的最低版本：22000.282（标杆 UpgradeBlur 口径）。
+/// Mixed 任务栏 blur 可用的最低版本：22000.282。
 pub const MIXED_BLUR_MIN_BUILD: u32 = 22000;
 pub const MIXED_BLUR_MIN_UBR: u32 = 282;
 
-/// 纯函数：由任务栏类型 + OS build/UBR 推能力集合（D7 规则）。
+/// 纯函数：由任务栏类型 + OS build/UBR 推能力集合（规则）。
 ///
 /// - `Xaml` → `{path:"xaml", blur:true, peek:false, line:true}`（XAML 任务栏
-///   无 Win10 式 Peek 按钮结构，开关在 UI 中隐藏，F-7）；
-/// - `Mixed` → `path:"swca"`（路径 A，P3 才实现；能力描述路径就位后的
+/// 无 Win10 式 Peek 按钮结构，开关在 UI 中隐藏）；
+/// - `Mixed` → `path:"swca"`（路径 A，才实现；能力描述路径就位后的
 ///   可用集），blur 看版本 ≥ 22000.282，line 可（SetWindowRgn 裁 1px）；
 /// - `Classic` / `Unknown` → `path:"none"`（首期「此系统版本暂不支持」）。
 /// - `supports_battery_state` 与任务栏类型无关（电源通知为 OS 级），仅
@@ -46,7 +46,7 @@ pub fn capabilities_for(kind: TaskbarType, build: u32, ubr: u32) -> TaskbarCapab
     }
 }
 
-/// 探测 + 版本读取一步到位（TB-INJECT 启动 / explorer 重建时调用并
+/// 探测 + 版本读取一步到位（模块启动 / explorer 重建时调用并
 /// `emit_capabilities`）。
 pub fn probe_capabilities() -> TaskbarCapabilities {
     let (build, ubr) = os_build();
@@ -98,7 +98,7 @@ mod win {
 
     use super::TaskbarType;
 
-    /// XAML 岛宿主子窗口（标杆 :1144 判定的类名 + 标题）。
+    /// XAML 岛宿主子窗口（按类名 + 标题判定）。
     const XAML_ISLAND_CLASS: &str = "Windows.UI.Composition.DesktopWindowContentBridge";
     const XAML_ISLAND_TITLE: &str = "DesktopWindowXamlSource";
 
@@ -107,8 +107,8 @@ mod win {
         String::from_utf16_lossy(&buf[..end])
     }
 
-    /// explorer 是否加载了 Taskbar.dll（模块文件名大小写不敏感比较；标杆
-    /// 比全路径 System32\Taskbar.dll，此处按文件名足以区分且免查已知目录）。
+    /// explorer 是否加载了 Taskbar.dll（模块文件名大小写不敏感比较；
+    /// 按文件名足以区分且免查已知目录）。
     /// `None` = 快照失败（explorer 已死 / 权限）。
     unsafe fn explorer_has_taskbar_dll(pid: u32) -> Option<bool> {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid).ok()?;

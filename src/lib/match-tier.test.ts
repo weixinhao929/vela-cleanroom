@@ -17,7 +17,7 @@ describe("matchTierOf —— 五级分档边界", () => {
 
   it("wordStart：空格分隔词首 / camelCase 边界 / 分隔符后 / 汉字字首", () => {
     expect(matchTierOf("Visual Studio Code", "studio")).toBe("wordStart");
-    expect(matchTierOf("QuickNote", "note")).toBe("wordStart");
+    expect(matchTierOf("自动化工具", "toys")).toBe("wordStart");
     expect(matchTierOf("7-Zip", "zip")).toBe("wordStart");
     // 每个汉字自身即词首：搜「音乐」命中词首档而非子串档。
     expect(matchTierOf("网易云音乐", "音乐")).toBe("wordStart");

@@ -3,7 +3,7 @@ import { isIdleDecor, setIdleDecor, useIdleDecor } from "./idle-decor";
 import { act, renderHook } from "@testing-library/react";
 
 /**
- * G-9 空闲装饰降级事实源的行为守卫：属性翻转 / 订阅通知 / 幂等。
+ * 空闲装饰降级事实源的行为守卫：属性翻转 / 订阅通知 / 幂等。
  */
 describe("idle-decor（G-9）", () => {
   afterEach(() => {

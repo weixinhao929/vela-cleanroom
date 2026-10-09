@@ -2,10 +2,10 @@
 
 export type Deadline = { id: string, title: string, due_at: string, notified: boolean, completed: boolean, 
 /**
- * W-046 已发送提醒档位（JSON 数组字符串，如 `["24h","1h"]`）。
+ * 已发送提醒档位（JSON 数组字符串，如 `["24h","1h"]`）。
  */
 notified_tiers: string, 
 /**
- * W-049 周期规则：none/daily/weekly/monthly/yearly。
+ * 周期规则：none/daily/weekly/monthly/yearly。
  */
 repeat: string, };

@@ -1,9 +1,9 @@
-//! 任务栏登记表与外观应用——标杆 taskbarappearanceservice.cpp 的 Rust 等价物。
+//! 任务栏登记表与外观应用。
 //!
 //! 线程模型：所有触及 XAML 对象的操作都在**该任务栏自己的 UI 线程**上执行
 //! （登记时捕获 `DispatcherQueue`，见 watcher.rs）；本模块的公开入口
 //! [`dispatch`] 只负责按帧投递闭包。多任务栏（主屏 + 副屏）可能分属不同
-//! UI 线程——比标杆的单 dispatcher 转发更保守。
+//! UI 线程——按帧投递比单 dispatcher 转发更保守。
 //!
 //! 锁纪律：REGISTRY 是跨线程快照锁，**锁内只做纯数据读写、COM 指针克隆与
 //! 轻量 Win32 查询，不做任何 XAML 属性写**。`put_Fill` 会在设置线程上同步
@@ -13,9 +13,9 @@
 //! 锁内写回。
 //!
 //! 原始 Fill 保存与刷新：登记时若 Fill 已非空直接存；否则等系统首次赋值时由
-//! 属性变更回调补采（对齐系统任务栏外观服务的行为）。回调此后
+//! 属性变更回调补采（对齐 taskbarappearanceservice.cpp:243-250）。回调此后
 //! **常驻**：系统因明暗主题 / 强调色变化重设 Fill 时，刷新原始画刷并重套用
-//! 当前自定义外观（系统外观变化即重套用的语义），这样恢复
+//! 当前自定义外观（对齐 同类任务栏增强工具 OnTaskbarBackgroundUpdated），这样恢复
 //! 时恢复到的是"当下"的系统画刷，而不是主题切换前采到的旧值。
 
 use std::collections::{HashMap, HashSet};
@@ -43,7 +43,7 @@ pub fn monitor_matches(target: u64, taskbar_monitor: u64) -> bool {
     target == 0 || target == taskbar_monitor
 }
 
-/// σ = blur_radius / 3（D5；radius ∈ [0,750] → σ ∈ [0,250]）。纯函数。
+/// σ = blur_radius / 3（radius ∈ [0,750] → σ ∈ [0,250]）。纯函数。
 pub fn sigma_from_radius(blur_radius: u32) -> f32 {
     blur_radius as f32 / 3.0
 }
@@ -204,8 +204,8 @@ struct TaskbarEntry {
 struct Registry {
     taskbars: HashMap<InstanceHandle, TaskbarEntry>,
     /// Add 事件簿记 child→parent：BackgroundFill 向上找 TaskbarFrame 用
-    /// （替代标杆 VisualTreeHelper::GetParent 走查——纯数据、零额外 COM
-    /// 调用，R3 容错更好）。
+    /// （代替 VisualTreeHelper::GetParent 走查——纯数据、零额外 COM
+    /// 调用，容错更好）。
     parent_of: HashMap<InstanceHandle, InstanceHandle>,
     /// 尚未匹配到任务栏的 DesktopWindowXamlSource 句柄。
     unmatched_sources: HashSet<InstanceHandle>,
@@ -257,7 +257,10 @@ static SHUTDOWN: AtomicU64 = AtomicU64::new(0);
 /// （真机复现：注入成功但外观不生效，直到下一次状态翻转）。凡
 /// ApplyAppearance / SetBorderVisibility **零命中**即按 monitor 暂存于此，
 /// [`register_taskbar`] 登记新帧时在任务栏 UI 线程上重放。同 monitor 同类型
-/// 的新暂存覆盖旧的，保持最新语义；命中后清除。
+/// 的新暂存覆盖旧的，保持最新语义；per-monitor 项命中即清。
+/// monitor=0 的广播项**不随登记消费**——每台新登记的任务栏都重放
+/// 一份广播基线（首台独占会让副屏晚出现时无基线），广播项只被更新的
+/// 广播覆盖或 RestoreAll 清空（见 [`take_replay_for_registration`]）。
 static PENDING: Mutex<Vec<PendingMessage>> = Mutex::new(Vec::new());
 
 struct PendingMessage {
@@ -290,6 +293,33 @@ fn upsert_pending(pending: &mut Vec<PendingMessage>, message: TapMessage) {
     }
 }
 
+/// 新任务栏登记时从暂存中取重放集。纯函数，单测覆盖。
+///
+/// - per-monitor 项命中本显示器 → 取走并从暂存清除（唯一归属者已到）；
+/// - **monitor=0 的广播项不随登记消费**：广播的语义是"对每台任务栏都生效"，
+///   第一台登记就把它整体取走会让第二台（副屏晚出现 / 热插拔后新建）登记时
+///   无基线、停留系统默认。广播项每台新登记都重放一份、自身保留在暂存，
+///   由 dispatch 的覆盖（upsert）与 RestoreAll 的清空收敛——重放只在登记
+///   事件（Add 回调）时发生，每次登记至多一次，无重复刷屏。
+fn take_replay_for_registration(
+    pending: &mut Vec<PendingMessage>,
+    hmonitor: u64,
+) -> Vec<TapMessage> {
+    let mut taken = Vec::new();
+    pending.retain(|p| {
+        if p.monitor == 0 {
+            taken.push(p.message.clone()); // 广播：重放给本帧，但保留给后续登记。
+            true
+        } else if p.monitor == hmonitor {
+            taken.push(p.message.clone()); // per-monitor：命中即清。
+            false
+        } else {
+            true
+        }
+    });
+    taken
+}
+
 pub fn mark_shutdown() {
     SHUTDOWN.store(1, Ordering::SeqCst);
 }
@@ -311,10 +341,14 @@ pub fn install_registry(diag: IXamlDiagnostics) -> bool {
 }
 
 fn with_registry<T>(f: impl FnOnce(&mut Registry) -> T) -> Option<T> {
-    REGISTRY
-        .get()
-        .and_then(|r| r.lock().ok())
-        .map(|mut guard| f(&mut guard))
+    // 锁中毒改 into_inner 恢复（全仓惯例）——此前 .ok() 在任一持锁闭包
+    // panic 后恒 None：dispatch 恒走 parking、FillChangedHandler 读不到槽位，
+    // 任务栏外观在 explorer 内静默死亡直到重启资源管理器。REGISTRY 内是纯
+    // 数据（无「锁内不变式被破坏」的面），恢复安全。
+    REGISTRY.get().map(|r| {
+        let mut guard = r.lock().unwrap_or_else(|p| p.into_inner());
+        f(&mut guard)
+    })
 }
 
 /// 任务栏 XAML 岛所在显示器。自动隐藏任务栏完全滑出屏幕时
@@ -368,7 +402,7 @@ impl IDependencyPropertyChangedCallback_Impl for FillChangedHandler_Impl {
         sender: windows_core::Ref<IDependencyObject>,
         _dp: windows_core::Ref<IDependencyProperty>,
     ) -> windows_core::Result<()> {
-        // 铁律 R1：panic 绝不穿过 COM 边界（extern "system" 非 unwind ABI，漏网即
+        // 铁律 ：panic 绝不穿过 COM 边界（extern "system" 非 unwind ABI，漏网即
         // abort 整个 explorer）。本回调此前是全 crate 唯一未包 guarded 的 FFI 入口。
         crate::util::guarded("FillChangedHandler::Invoke", || {
             let Some(sender) = sender.as_ref() else {
@@ -417,7 +451,7 @@ impl IDependencyPropertyChangedCallback_Impl for FillChangedHandler_Impl {
                 self.frame,
                 if self.border { "border" } else { "background" }
             );
-            // 锁外：身上有自定义外观 → 重套用（系统重设外观后即重套用的语义）。
+            // 锁外：身上有自定义外观 → 重套用（同类任务栏增强工具 OnTaskbarBackgroundUpdated 语义）。
             match reapply {
                 Some(Reapply::Background(Some(applied))) => apply_background(self.frame, applied),
                 Some(Reapply::Border { hidden: true }) => apply_border(self.frame, true),
@@ -469,7 +503,7 @@ pub fn note_xaml_source(handle: InstanceHandle) {
 }
 
 /// TaskbarFrame 添加：取其父 RootGrid，反查持有它的 XamlSource → HWND → 登记。
-/// 任何一步失败都只是忽略该元素（R3：探测失败 ≠ 崩溃）。COM 反查在锁外。
+/// 任何一步失败都只是忽略该元素（探测失败 ≠ 崩溃）。COM 反查在锁外。
 ///
 /// 身份匹配：老树（22621 时代）XamlSource 的 content 就是 TaskbarFrame 的直接
 /// 父 Grid；24H2 起中间多插了一层 Grid，content 是 frame 父节点的**祖先**——
@@ -514,7 +548,7 @@ pub fn register_taskbar(frame: InstanceHandle, root_grid: InstanceHandle) {
         };
         let Ok(content) = (unsafe { source.content() }) else {
             crate::vlog!("register_taskbar: source {src_handle:#x} content() failed");
-            continue; // 瞬时错误（错线程等）：跳过该源，对齐标杆 continue
+            continue; // 瞬时错误（错线程等）：跳过该源
         };
         // content → 诊断树句柄，与 frame 父链（含父节点自身）做句柄级比对。
         let content_handle = unsafe { diag.handle_from_inspectable(&content) };
@@ -570,21 +604,14 @@ pub fn register_taskbar(frame: InstanceHandle, root_grid: InstanceHandle) {
                 },
             );
         });
-        // 重放登记前被暂存的基线消息。经 DispatcherQueue 延后一拍：本回调由
+        // 重放登记前被暂存的基线消息（广播项重放但保留，见
+        // take_replay_for_registration）。经 DispatcherQueue 延后一拍：本回调由
         // TaskbarFrame 的 Add 事件触发，背景矩形（BackgroundFill 等）的 Add
         // 事件通常紧随其后——同步执行会找不到槽位而被 set_slot_fill 静默吞掉。
         // 入队失败则放回暂存，等下一次机会。
         let replay: Vec<TapMessage> = {
             let mut pending = PENDING.lock().unwrap_or_else(|p| p.into_inner());
-            let mut taken = Vec::new();
-            pending.retain(|p| {
-                let hit = p.monitor == 0 || p.monitor == hmonitor;
-                if hit {
-                    taken.push(p.message.clone());
-                }
-                !hit
-            });
-            taken
+            take_replay_for_registration(&mut pending, hmonitor)
         };
         for message in replay {
             crate::vlog!("replaying parked message for monitor {hmonitor:#x}");
@@ -634,7 +661,7 @@ pub fn register_taskbar_fill(handle: InstanceHandle, border: bool) {
         slot.original_fill = Some(fill);
     }
     // 始终挂属性变更回调（不再只在 Fill 为空时挂）：Fill 为空则等首赋值补采
-    // （标杆 :243-250）；此后系统重设 Fill 时刷新原始画刷并重套用自定义外观。
+    // （Fill 为空时等首赋值补采）；此后系统重设 Fill 时刷新原始画刷并重套用自定义外观。
     let handler: IDependencyPropertyChangedCallback = FillChangedHandler { frame, border }.into();
     if let (Ok(dep), Ok(dp)) = (slot.shape.cast::<IDependencyObject2>(), fill_property()) {
         slot.fill_changed_token = unsafe { dep.register_changed(&dp, &handler) }.unwrap_or(0);
@@ -718,11 +745,23 @@ pub fn dispatch(msg: TapMessage) {
         }
     }
 
-    // 零命中 = 目标任务栏尚未登记（注入竞态 / 副屏晚出现）→ 暂存待登记重放；
-    // 有命中 = 基线已落位，清掉对应暂存。
-    if let Some((monitor, kind)) = pending_kind(&msg) {
+    // 暂存清理/登记：
+    // - RestoreAll：恢复默认语义下一切暂存基线作废——否则宿主停用 / 断连后
+    //   （两者都会 dispatch RestoreAll）新登记的任务栏会重放停用前的自定义
+    //   外观。全部清空。
+    // - 广播（monitor=0）：无论是否已有任务栏命中都 upsert 为最新基线。原实现
+    //   hit_any 即清：第一台任务栏登记后到来的广播直接送达已登记者、暂存被
+    //   清掉，此后第二台任务栏登记（副屏晚出现 / 热插拔）无基线可重放，停留
+    //   系统默认。保留最新一条广播在暂存，由每台新登记重放（至多两条：
+    //   ApplyAppearance + SetBorderVisibility 各一，不膨胀）。
+    // - per-monitor：命中即清（该显示器的唯一归属者已直接送达）；零命中暂存。
+    if matches!(msg, TapMessage::RestoreAll) {
+        PENDING.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    } else if let Some((monitor, kind)) = pending_kind(&msg) {
         let mut pending = PENDING.lock().unwrap_or_else(|p| p.into_inner());
-        if hit_any {
+        if monitor == 0 {
+            upsert_pending(&mut pending, msg.clone());
+        } else if hit_any {
             pending.retain(|p| pending_kind(&p.message) != Some((monitor, kind)));
         } else {
             upsert_pending(&mut pending, msg.clone());
@@ -796,8 +835,8 @@ fn apply_background(frame: InstanceHandle, applied: AppliedBackground) -> window
     })
 }
 
-/// 顶线槽：隐藏 = Opacity 0 的实心画刷（结构保留、完全透明，对齐标杆
-/// taskbarappearanceservice.cpp:134-138）；显示 = 恢复原始画刷。
+/// 顶线槽：隐藏 = Opacity 0 的实心画刷（结构保留、完全透明）；
+/// 显示 = 恢复原始画刷。
 fn apply_border(frame: InstanceHandle, hidden: bool) -> windows_core::Result<()> {
     capture_original_if_missing(frame, true);
     with_registry(|reg| {
@@ -821,6 +860,27 @@ fn apply_border(frame: InstanceHandle, hidden: bool) -> windows_core::Result<()>
     })
 }
 
+/// suppress_callback 的 panic 守卫——锁内置位后若中途 panic（guarded
+/// 捕获 unwind，清除段不执行），该槽位回调从此全忽略：系统重设 Fill 不再
+/// 刷新 original_fill，恢复时还原到主题切换前的旧画刷。Drop 兜底清位，
+/// 正常路径手动清位后 disarm 避免二次加锁。
+struct SuppressGuard {
+    frame: InstanceHandle,
+    border: bool,
+    armed: bool,
+}
+impl Drop for SuppressGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            with_registry(|reg| {
+                if let Some(slot) = reg.slot_mut(self.frame, self.border) {
+                    slot.suppress_callback = false;
+                }
+            });
+        }
+    }
+}
+
 /// 槽位 put_Fill 的唯一骨架（锁纪律见模块文档）：锁内取 shape、置 suppress →
 /// 锁外 `make_brush` 构造画刷并 put → 锁内清 suppress、记 last_put。槽位不存在
 /// 时静默成功（帧已亡 / 尚未探测到矩形）。
@@ -836,6 +896,11 @@ fn set_slot_fill(
     })
     .flatten() else {
         return Ok(());
+    };
+    let mut suppress_guard = SuppressGuard {
+        frame,
+        border,
+        armed: true,
     };
     let outcome = make_brush(&shape)
         .inspect_err(|e| crate::vlog!("set_slot_fill: make_brush failed: {e}"))
@@ -856,6 +921,7 @@ fn set_slot_fill(
             }
         }
     });
+    suppress_guard.armed = false;
     outcome.map(|_| ())
 }
 
@@ -938,7 +1004,13 @@ fn make_acrylic_brush(color: Color) -> windows_core::Result<IBrush> {
             hr
         }));
     }
-    // value 即新实例（inner 丢弃：无聚合外层，系统自持）。
+    // value 即新实例。：inner 出参按 ABI 是一次已 AddRef 的引用（composable
+    // 工厂契约），此前裸丢弃从不 Release——对照 blur_brush.rs:424 的同款工厂
+    // 写法（IInspectable::from_raw 接管所有权，Drop 即 Release），每次套用
+    // Acrylic 都在 explorer 内泄漏一票 COM 引用（画刷与 XAML/D2D 侧资源永不
+    // 析构，主题频繁切换时 explorer 内存单调增长）。接管后立即 drop 即完成
+    // 那次 Release（无聚合外层，行为不变、引用账平）。
+    let _inner = unsafe { windows_core::IInspectable::from_raw(inner_raw) };
     let acrylic: crate::xaml::IAcrylicBrush =
         unsafe { crate::xaml::IAcrylicBrush::from_raw(value_raw) };
     unsafe {
@@ -1082,18 +1154,8 @@ mod tests {
         let mut pending: Vec<PendingMessage> = Vec::new();
         upsert_pending(&mut pending, apply_msg(0x10001, 1));
         upsert_pending(&mut pending, apply_msg(0x10002, 2));
-        // monitor 0（全部）与精确 monitor 互为命中：登记 0x10001 时取走 0 与 0x10001。
-        let taken: Vec<TapMessage> = {
-            let mut out = Vec::new();
-            pending.retain(|p| {
-                let hit = p.monitor == 0 || p.monitor == 0x10001;
-                if hit {
-                    out.push(p.message.clone());
-                }
-                !hit
-            });
-            out
-        };
+        // per-monitor 项：登记 0x10001 时只取走 0x10001，其它 monitor 保留。
+        let taken = take_replay_for_registration(&mut pending, 0x10001);
         assert_eq!(taken.len(), 1);
         assert!(matches!(
             &taken[0],
@@ -1101,5 +1163,55 @@ mod tests {
         ));
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].monitor, 0x10002);
+    }
+
+    /// 广播（monitor=0）暂存不随首个登记消费——每台新登记的任务栏都
+    /// 拿到重放，第二台任务栏不再停留系统默认。
+    #[test]
+    fn broadcast_pending_replays_for_every_registration() {
+        let mut pending: Vec<PendingMessage> = Vec::new();
+        upsert_pending(&mut pending, apply_msg(0, 0xAA)); // 广播基线
+        upsert_pending(
+            &mut pending,
+            TapMessage::SetBorderVisibility {
+                monitor: 0,
+                visible: false,
+            },
+        );
+        upsert_pending(&mut pending, apply_msg(0x10002, 3)); // 他屏的 per-monitor
+
+        // 第一台任务栏登记：拿到广播重放，广播项仍保留在暂存。
+        let first = take_replay_for_registration(&mut pending, 0x10001);
+        assert_eq!(first.len(), 2, "广播 Apply + 广播 Border 都要重放");
+        assert!(matches!(
+            &first[0],
+            TapMessage::ApplyAppearance {
+                color_abgr: 0xAA,
+                ..
+            }
+        ));
+        assert_eq!(pending.len(), 3, "两条广播保留 + 他屏 per-monitor 保留");
+
+        // 第二台任务栏登记：同样拿到广播重放（的核心诉求）。
+        let second = take_replay_for_registration(&mut pending, 0x10003);
+        assert_eq!(second.len(), 2);
+        assert_eq!(pending.len(), 3, "广播项仍不消费");
+
+        // 他屏的 per-monitor 项在其归属显示器登记时才被取走清掉。
+        let third = take_replay_for_registration(&mut pending, 0x10002);
+        assert_eq!(third.len(), 3, "广播×2 + per-monitor×1");
+        assert_eq!(pending.len(), 2, "per-monitor 命中即清，广播仍在");
+
+        // 新广播到来覆盖旧广播（upsert），暂存不膨胀。
+        upsert_pending(&mut pending, apply_msg(0, 0xBB));
+        let fourth = take_replay_for_registration(&mut pending, 0x10004);
+        assert_eq!(fourth.len(), 2);
+        assert!(matches!(
+            &fourth[0],
+            TapMessage::ApplyAppearance {
+                color_abgr: 0xBB,
+                ..
+            }
+        ));
     }
 }

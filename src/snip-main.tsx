@@ -1,12 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 截图覆盖窗的独立精简入口（snip.html；C-10，对照 taskbar-net.html 模式）。
+ * 截图覆盖窗的独立精简入口（snip.html；，对照 taskbar-net.html 模式）。
  * 原走 index.html#snip 共用主入口——每次截图都要解析执行 3.5 万行 CSS 的
  * 大头（widget.css 11.8k 行等）+ 双 store 水合 + 全部全局 handler，与
  * 「按键到可见」的瞬时窗性能目标相悖。
  *
  * 职责（对照 main.tsx 裁剪）：
- *  - 样式：字体/全局 token + ToastHost 自带的 feature-toast.css（C-1 失败
+ *  - 样式：字体/全局 token + ToastHost 自带的 feature-toast.css（失败
  *    toast）+ SnipView 自带的 snip.css；
  *  - 水合：只水合 settings-store（主题 token / 语言）；不水合
  *    app-store/widget-store——截图窗不渲染它们；
@@ -29,12 +29,17 @@ import { logCrash, toCrashFields } from "./lib/crash-log";
 import { hydrateSettingsFromDb } from "./store/settings-store";
 import "./styles/fonts.css";
 import "./styles/global.css";
+/* 动效令牌面（--ease-* / --dur-* 派生链）定义在
+   feature-animations.css，vite 多入口不共享 CSS——不加载则本窗动效时长
+   恒吃回退字面量、速度三档失效。规则限定在本窗不存在的类名/fx 闸下，
+   无视觉泄漏。 */
+import "./styles/feature-animations.css";
 
 // 首帧即透明：与 main.tsx 同款处置（本窗不是设置窗，保持 widget-layer 形态；
 // 窗口由 Rust visible(false) 创建，SnipView 取到冻结帧后自行 show）。
 document.body.classList.add("tm-widget-layer");
 document.documentElement.classList.add("tm-widget-layer");
-// P3：隐藏时挂起循环动画（data-app-hidden → global.css paused）。
+// 隐藏时挂起循环动画（data-app-hidden → global.css paused）。
 installAppVisibilityGate();
 
 window.addEventListener("error", (e) => {

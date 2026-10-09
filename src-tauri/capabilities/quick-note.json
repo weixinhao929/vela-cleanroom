@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quick-note",
+  "description": "W-067 全局速记窗：与命令层信任定级对齐的最小权限集。速记窗被命令闸门视为最低信任级（require_trusted 白名单不含它），此前挂在 default capability 下白得了 notification/dialog——dialog 允许该注入面拉起文件选择框，与信任定级不一致，收紧为实际所需。实际依赖（core 命令面）：事件 listen/emit（sync:notes 广播、sync:settings/tray:*/wallpaper:changed 订阅，含于 core:default）；窗口 close（保存/取消退场）、show + set-focus（main.tsx 首帧就绪握手自显）；托盘「呼出设置」在所有窗口处理（useTrayEvents），从本窗向 settings 窗口句柄发起 unminimize/show/set-focus。通知与文件对话框在速记窗的模块图内均不可达（plugin-notification 仅在 notifyUser 内懒加载、且只被 primary widget 窗的监听路径调用；file-dialog 只被设置页/小组件面板使用），故不授予。自定义命令 IPC 不受 capability 门控（见 web-preview.json 说明），由命令级窗口闸门兜底。",
+  "windows": ["quick-note"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize"
+  ]
+}

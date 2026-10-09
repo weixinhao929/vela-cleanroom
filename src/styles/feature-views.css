@@ -67,7 +67,8 @@
 .widget-picker-overlay {
   position: fixed;
   inset: 0;
-  z-index: 400;
+  /* 模态遮罩消费阶梯令牌（原裸 400）。 */
+  z-index: var(--z-modal-scrim);
   /* 遮罩浓度收敛到 --scrim（原三处各自硬编码 rgba(0,0,0,.32)）。 */
   background: var(--scrim);
   display: flex;
@@ -159,6 +160,32 @@ html[data-reduce-motion="1"] :is(.widget-picker-overlay, .widget-picker-panel) {
 .widget-picker-close:hover {
   color: var(--ink);
   background: var(--surface-hover, rgba(255, 255, 255, 0.14));
+}
+/* 弹层内搜索（双语匹配），样式与 Gallery 页顶栏搜索同语言。 */
+.widget-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 18px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-soft, rgba(255, 255, 255, 0.06));
+  color: var(--muted-2);
+  flex-shrink: 0;
+}
+.widget-picker-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--fs-13);
+  outline: none;
+}
+.widget-picker-search input::placeholder {
+  color: var(--muted-2);
 }
 .widget-picker-close:active {
   transform: scale(0.92);

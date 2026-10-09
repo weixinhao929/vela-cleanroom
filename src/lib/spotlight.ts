@@ -3,7 +3,7 @@
  * 网页搜索兜底。
  *
  * 命令面板（CommandPalette）使用的应用索引与启动辅助（应用启动器小组件
- * 已下线）套数据与排序；评分复用 match-tier 五级分档。G11 文件搜索模式
+ * 已下线）套数据与排序；评分复用 match-tier 五级分档。文件搜索模式
  * 已并入：path-like 查询触发，命中经 launch 统计获得频率主序。
  *
  * 搜索引擎等配置暂存 localStorage（focus-desk.spotlight.v1），待 SYS 会话的
@@ -14,10 +14,10 @@ import { invoke, isTauri } from "./tauri";
 import { pinyinInitials } from "./pinyin";
 import { scoreMatch, type MatchFields } from "./match-tier";
 
-/** W-088 自定义应用可带启动参数与搜索别名（Rust list_apps 只回填 name/path）。 */
+/** 自定义应用可带启动参数与搜索别名（Rust list_apps 只回填 name/path）。 */
 export type AppInfo = { name: string; path: string; args?: string; alias?: string };
 
-/* ---- W-086 启动频率与置顶（全局 localStorage，随账号漫游而非实例） ---- */
+/* ---- 启动频率与置顶（全局 localStorage，随账号漫游而非实例） ---- */
 
 export const STATS_KEY = "focus-desk.launch-stats.v1";
 export const PINNED_KEY = "focus-desk.launch-pinned.v1";
@@ -130,7 +130,7 @@ export function launchApp(app: AppInfo): void {
   openApp(app);
 }
 
-/* ---- G11 文件搜索模式（path-like 查询触发，Rust 预算式扫描） ---- */
+/* ---- 文件搜索模式（path-like 查询触发，Rust 预算式扫描） ---- */
 
 export type FileHit = { name: string; path: string; isDir: boolean; modified?: string | null };
 
@@ -182,7 +182,7 @@ export type SearchAppsOptions = {
 };
 
 /**
- * 过滤并排序应用：置顶 > launchCount > lastUsedAt 为主序（W-086 频率排序是
+ * 过滤并排序应用：置顶 > launchCount > lastUsedAt 为主序（频率排序是
  * Vela 的既有优势，保留），match-tier 得分为次级键（prefix 命中排在
  * subsequence 命中前），同级再按名称字典序稳定化。空查询 = 全部命中
  * （是否在空查询时调用由调用方决定）。

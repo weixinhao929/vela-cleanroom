@@ -140,14 +140,35 @@ fn debounce_loop(shared: Arc<DebounceShared>, app: tauri::AppHandle) {
         }
         let due = guard.pop_due(Instant::now());
         drop(guard);
+        // （慢屏拖累全部）：DDC 写含「枚举 + 写前读 + 写」，一块不响应的外接屏
+        // 可挂住数秒——此前串行执行，其它屏的防抖写入全部在队列里干等。改为
+        // 每屏一线程并行执行；主循环最多等 2s 收完成信号，慢屏线程在后台自行
+        // 收尾（DDD/CI 调用最终会超时返回），不阻塞下一批派发。
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let total = due.len();
         for (key, value) in due {
-            if let Err(e) = execute_write(&key, value) {
-                log::warn!("brightness write failed for '{key}': {e}");
-                // 写失败（拔线 / HDR / 显示器不响应）→ 前端该屏标记「不支持」。
-                let _ = app.emit(
-                    "brightness:write-failed",
-                    serde_json::json!({ "key": key, "error": e }),
-                );
+            let tx = tx.clone();
+            let app = app.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = execute_write(&key, value) {
+                    log::warn!("brightness write failed for '{key}': {e}");
+                    // 写失败（拔线 / HDR / 显示器不响应）→ 前端该屏标记「不支持」。
+                    let _ = app.emit(
+                        "brightness:write-failed",
+                        serde_json::json!({ "key": key, "error": e }),
+                    );
+                }
+                drop(tx); // 完成信号（载荷无关）
+            });
+        }
+        drop(tx);
+        let mut remaining = total;
+        while remaining > 0 {
+            // recv_deadline 尚不稳定（deadline_api）：按剩余时长 recv_timeout。
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(()) => remaining -= 1,
+                Err(_) => break, // 全部完成（Disconnected）或到 2s 上限（Timeout）
             }
         }
     }
@@ -198,6 +219,11 @@ fn vcp_to_percent(cur: u32, max: u32) -> Result<u32, String> {
 fn percent_to_vcp(value: u32, max: u32) -> u32 {
     if max == 0 {
         return value;
+    }
+    // 0% 直写 VCP 0：`.max(1)` 此前把 0% 钳到 1，用户永远无法把外接屏调灭；
+    // 仅对非零输入防 0（极小百分比四舍五入为 0 时保底 1，避免误灭屏）。
+    if value == 0 {
+        return 0;
     }
     (value.min(100).saturating_mul(max) / 100).max(1)
 }
@@ -588,7 +614,7 @@ unsafe fn wmi_get_string(
     out
 }
 
-/// 读对象数值属性（I4 / UI4；其他类型 None）。
+/// 读对象数值属性（/ UI4；其他类型 None）。
 #[cfg(windows)]
 unsafe fn wmi_get_u32(
     obj: &windows::Win32::System::Wmi::IWbemClassObject,
@@ -1025,6 +1051,10 @@ mod tests {
         assert!(vcp_to_percent(10, 0).is_err());
         // 越界钳制。
         assert_eq!(percent_to_vcp(120, 100), 100);
+        // 0% 直写 0（不再被 .max(1) 钳成 1）；非零小值保底 1。
+        assert_eq!(percent_to_vcp(0, 255), 0);
+        assert_eq!(percent_to_vcp(0, 100), 0);
+        assert!(percent_to_vcp(1, 255) >= 1);
     }
 
     #[cfg(windows)]

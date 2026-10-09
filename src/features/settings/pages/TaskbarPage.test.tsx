@@ -3,11 +3,11 @@
  * - settings-store.setTaskbar：patch 经 sanitize 入 state（3/4/6 位颜色归一到 8 位、坏值回默认），
  *   350ms 防抖后落盘快照含 general.taskbar 且可 normalizeTaskbar 往返；
  * - 外观编辑器：accent 切到 blur 才出现「模糊半径」滑条；取色器 #rrggbb + 透明度滑条合成 #rrggbbaa；
- * - 能力渲染（D7）：无 taskbar:capabilities 不渲染 showPeek，supportsPeek 到达后出现，supportsLine=false 隐藏顶线；
- * - 状态条（F-10）：无事件「模块未就绪」/ 回读 idle「未启用」/ 开启仍 idle「模块未就绪」/ ready「运行中」/ failed 带原因；
- * - 徽标（F-14）：无 state-changed 事件每卡「—」，事件到达后命中卡「当前生效」+ 高亮；
+ * - 能力渲染：无 taskbar:capabilities 不渲染 showPeek，supportsPeek 到达后出现，supportsLine=false 隐藏顶线；
+ * - 状态条：无事件「模块未就绪」/ 回读 idle「未启用」/ 开启仍 idle「模块未就绪」/ ready「运行中」/ failed 带原因；
+ * - 徽标：无 state-changed 事件每卡「—」，事件到达后命中卡「当前生效」+ 高亮；
  * - 规则 / 忽略列表增删改排序；「恢复默认」重置整切片；搜索索引命中本页；
- * - TaskbarConfigSync（F-1 模式 B）：与 Rust 等价只 get 不 apply、不同才 apply、防抖内多次改动只一次、
+ * - TaskbarConfigSync（模式 B）：与 Rust 等价只 get 不 apply、不同才 apply、防抖内多次改动只一次、
  *   apply Err / 失败项 toast、非设置窗不发 IPC。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -488,7 +488,7 @@ describe("TaskbarConfigSync（F-1 模式 B 对账）", () => {
   });
 });
 
-/* ══════════════════════════════ F-8 实时预览（TB-PREVIEW） ══════════════════════════════ */
+/* ══════════════════════════════ 实时预览（TB-PREVIEW） ══════════════════════════════ */
 
 describe("TaskbarPage · 实时预览（F-8）", () => {
   type PreviewArgs = { state: string | null; overrides: Record<string, unknown> | null };

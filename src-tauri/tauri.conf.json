@@ -12,10 +12,10 @@
   "app": {
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://icons.duckduckgo.com https://www.google.com; media-src 'self' asset: http://asset.localhost blob:; connect-src 'self' ipc: http://ipc.localhost https://api.open-meteo.com https://geocoding-api.open-meteo.com https://air-quality-api.open-meteo.com https://archive-api.open-meteo.com https://lrclib.net https://open.er-api.com https://api.frankfurter.app https://speed.cloudflare.com https://cdn.jsdelivr.net https://cachefly.cachefly.net https://www.gstatic.com https://www.msftconnecttest.com https://connect.rom.miui.com https://ipwho.is; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost https://icons.duckduckgo.com https://www.google.com; media-src 'self' asset: http://asset.localhost blob:; connect-src 'self' ipc: http://ipc.localhost https://api.open-meteo.com https://geocoding-api.open-meteo.com https://air-quality-api.open-meteo.com https://archive-api.open-meteo.com https://lrclib.net https://open.er-api.com https://api.frankfurter.app https://speed.cloudflare.com https://www.gstatic.com https://ipwho.is https://api.ip.sb; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/gallery/**", "$APPDATA/snip/**"]
+        "scope": ["$APPDATA/gallery/**", "$APPDATA/snip/**", "$APPDATA/*-dev/gallery/**", "$APPDATA/*-dev/snip/**"]
       }
     }
   },

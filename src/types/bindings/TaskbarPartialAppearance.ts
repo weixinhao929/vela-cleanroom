@@ -2,7 +2,7 @@
 import type { TaskbarAccent } from "./TaskbarAccent";
 
 /**
- * 部分外观覆盖（F-8 `overrides`）：全部可选，缺省字段沿用该状态已配置的
+ * 部分外观覆盖（`overrides`）：全部可选，缺省字段沿用该状态已配置的
  * 外观；前端拖动时整套外观全传，状态卡预览可只传状态键。
  */
 export type TaskbarPartialAppearance = { accent?: TaskbarAccent, color?: string, showPeek?: boolean, showLine?: boolean, blurRadius?: number, };

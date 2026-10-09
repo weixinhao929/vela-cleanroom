@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * P8 对齐测试（CODE_REVIEW B-2）：widget/trash hydrate 以 localStorage 为权威源，
+ * 对齐测试：widget/trash hydrate 以 localStorage 为权威源，
  * SQLite 只是镜像——读库 IPC 失败或镜像落后都不得反过来覆盖新鲜状态，并在发现
  * 分叉时把 localStorage 内容回写 DB 自愈；仅缺键/损坏时才采纳 DB 副本并回填镜像。
  *
@@ -175,5 +175,36 @@ describe("hydrate() / repullWidgetsFromDb() P8 语义", () => {
 
     expect(useWidgetStore.getState().instances.map((i) => i.id)).toEqual(["fresh-1"]);
     expect(setCalls).toContainEqual([DB_LAYOUT_KEY, fresh]);
+  });
+
+  it("hydrate 同步加载编组（回归：此前只载实例，重启后编组整组消失）", async () => {
+    // 两个成员挂 groupId + 组键完整；第三个实例引用已不存在的组（孤儿）。
+    localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify([
+        { ...inst("a"), groupId: "g1" },
+        { ...inst("b"), groupId: "g1" },
+        { ...inst("c"), groupId: "gone" }
+      ])
+    );
+    const GROUPS_KEY = "focus-desk.screen.0.groups.home.v1";
+    localStorage.setItem(
+      GROUPS_KEY,
+      JSON.stringify([
+        { id: "g1", x: 0, y: 0, w: 400, h: 200, z: 3, opacity: 0.5, memberIds: ["a", "b"], activeId: "a" }
+      ])
+    );
+
+    const { useWidgetStore } = await loadModule();
+    useWidgetStore.setState({ activeView: "home" });
+    await useWidgetStore.getState().hydrate();
+    await flush();
+
+    const st = useWidgetStore.getState();
+    expect(st.groups).toHaveLength(1);
+    expect(st.groups[0]).toMatchObject({ id: "g1", memberIds: ["a", "b"], opacity: 0.5 });
+    // 孤儿 groupId 清理；组员保留标记（渲染由 GroupCard 承担）。
+    expect(st.instances.find((i) => i.id === "c")!.groupId).toBeUndefined();
+    expect(st.instances.find((i) => i.id === "a")!.groupId).toBe("g1");
   });
 });

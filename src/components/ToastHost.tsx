@@ -14,9 +14,9 @@
  * 窗口不挂。跨窗口不会重复弹：队列不随跨窗口事件同步，各窗口只显示自己
  * 代码发出的 toast。
  *
- * B8（审计升级）：类型图标前缀（CheckCircle/AlertTriangle/XCircle/Info）、
+ * 类型图标前缀（CheckCircle/AlertTriangle/XCircle/Info）、
  * error 用 role=alert 立即播报、悬停暂停计时、× 手动关闭、action 插槽
- * （如「撤销」，B2 危险操作轻确认的标准通道）。
+ * （如「撤销」，危险操作轻确认的标准通道）。
  */
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
@@ -24,7 +24,7 @@ import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { flipReorder } from "../lib/anim";
 import { animDurations } from "../lib/durations";
 import { useT } from "../i18n-lite";
-/* C-10：样式随组件走——snip 等精简入口窗口挂 Host 即有样式，不必背整份
+/* 样式随组件走——snip 等精简入口窗口挂 Host 即有样式，不必背整份
    widget-anim.css（原在 widget-anim.css F 节）。 */
 import "../styles/feature-toast.css";
 
@@ -37,6 +37,10 @@ type ToastItem = {
   kind: ToastKind;
   /** 已进入退场阶段（200ms 后从队列移除）。 */
   closing: boolean;
+  /** 本条自己的到期时刻（进入 / 恢复计时时刻 + stayMs）。每条只调度
+      自己的定时器——新条进入不触碰旧条的到期时刻（此前全部重排完整时长，
+      连续推多条时最旧一条近乎永不过期）。 */
+  dueAt: number;
   /** 可选动作按钮（如「撤销」），点击后触发 action 并关闭本条。 */
   action?: { label: string; run: () => void };
   /** 本条以任何方式离场（停留超时 / 手动关闭 / 动作后关闭 / 被新条挤掉）时回调一次。
@@ -95,15 +99,30 @@ function markClosing(id: number): void {
 function scheduleRemove(id: number): void {
   const item = queue.find((x) => x.id === id);
   if (!item || item.closing) return;
-  const t = window.setTimeout(() => {
-    timers.delete(id);
-    // 先置 closing 播 200ms 退场，再真正移除。
-    markClosing(id);
-    notify();
-    const t2 = window.setTimeout(() => removeWithFlip(id), exitLingerMs());
-    timers.set(id, t2);
-  }, stayMs(item.kind));
+  /* 按条目自己的到期时刻算剩余时长（进入时 now + duration，被暂停 /
+      恢复时刷新）——调用方（新条进入）不再触碰旧条的到期时刻。 */
+  const t = window.setTimeout(
+    () => {
+      timers.delete(id);
+      // 先置 closing 播 200ms 退场，再真正移除。
+      markClosing(id);
+      notify();
+      const t2 = window.setTimeout(() => removeWithFlip(id), exitLingerMs());
+      timers.set(id, t2);
+    },
+    Math.max(0, item.dueAt - Date.now())
+  );
   timers.set(id, t);
+}
+
+/** 悬停 / 焦点暂停后的恢复——按当前时刻重排完整停留时长（dueAt 刷新
+ *  为 now + stayMs），与进度条 key 重挂重播对齐（离开时的视觉语义本就是
+ *  重新计满，维持既有手势行为不变）。 */
+function restartRemove(id: number): void {
+  const item = queue.find((x) => x.id === id);
+  if (!item || item.closing) return;
+  queue = queue.map((x) => (x.id === id ? { ...x, dueAt: Date.now() + stayMs(x.kind) } : x));
+  scheduleRemove(id);
 }
 
 function closeOne(id: number): void {
@@ -132,28 +151,28 @@ function removeWithFlip(id: number): void {
 }
 
 /** 推入应用内 toast（最多保留 3 条）。超出挤掉最旧：旧条播 is-closing 退场后
- *  移除（补发 onDismiss），余条用 flipReorder 从原位平滑上移补位（D8），不再瞬跳。 */
+ *  移除（补发 onDismiss），余条用 flipReorder 从原位平滑上移补位，不再瞬跳。
+ *  新条只带自己的到期时刻（dueAt = now + duration）、只调度自己的定时器
+ *  此前进入时清掉全部旧条定时器并按完整时长重排，旧条的剩余停留时间被
+ *  整体重置（连续推三条，第一条近乎永不过期）；退场中条目的 linger 移除
+ *  定时器更是不可触碰（修复的回归点）。 */
 export function pushAppToast(
   title: string,
   body: string,
   kind: ToastKind = "info",
   opts?: { action?: { label: string; run: () => void }; onDismiss?: () => void }
 ): void {
-  // P3（审计修复）：只清"非退场中"条目的定时器——此前无条件 clearTimeout
-  // 所有句柄（含退场中的移除定时器 t2），随后 filter 掉 closing 项，
-  // 退场中的 toast 被瞬间摘除而非淡出。
-  for (const [id, t] of [...timers]) {
-    const closing = queue.some((x) => x.id === id && x.closing);
-    if (!closing) {
-      window.clearTimeout(t);
-      timers.delete(id);
-    }
-  }
-  // 重建计时器：保留下来的旧条目重置停留时长，避免新旧条目交错退场。
-  const kept = [
-    ...queue.filter((x) => !x.closing),
-    { id: ++seq, title, body, kind, closing: false, action: opts?.action, onDismiss: opts?.onDismiss }
-  ];
+  const item: ToastItem = {
+    id: ++seq,
+    title,
+    body,
+    kind,
+    closing: false,
+    dueAt: Date.now() + stayMs(kind),
+    action: opts?.action,
+    onDismiss: opts?.onDismiss
+  };
+  const kept = [...queue.filter((x) => !x.closing), item];
   const evicted = kept.slice(0, Math.max(0, kept.length - 3));
   const next = kept.slice(-3);
   const commit = () => {
@@ -167,18 +186,24 @@ export function pushAppToast(
     }
     // 被挤掉的旧条不再瞬删：保留挂载播 is-closing 退场（与超时/手动关闭同语言），
     // linger 后从队列移除（退场按钮隐藏、不重复补发 onDismiss，语义同 closeOne）。
-    // 早前一次挤出仍在退场中的条目原样保留——它们的移除定时器未被本函数清掉。
-    queue = [
-      ...queue.filter((x) => x.closing),
-      ...evicted.map((x) => ({ ...x, closing: true })),
-      ...next.map((x) => ({ ...x, closing: false }))
-    ];
+    // 早前一次挤出仍在退场中的条目原样保留——它们的移除定时器不受本函数影响。
+    queue = [...queue.filter((x) => x.closing), ...evicted.map((x) => ({ ...x, closing: true })), ...next];
     const linger = exitLingerMs();
     for (const ev of evicted) {
+      // 被挤出条目的原停留定时器已无意义（停留被退场取代）：清掉再挂 linger，
+      // 否则晚到的旧定时器会误删 linger 句柄、重复排一次移除。evicted 全部
+      // 来自上方 !closing 过滤，不会误清退场中条目的 linger 移除定时器。
+      const stale = timers.get(ev.id);
+      if (stale !== undefined) {
+        window.clearTimeout(stale);
+        timers.delete(ev.id);
+      }
       const t2 = window.setTimeout(() => removeWithFlip(ev.id), linger);
       timers.set(ev.id, t2);
     }
-    for (const x of next) scheduleRemove(x.id);
+    // 只调度新条自己的定时器；保留下来的旧条定时器原样在跑
+    // （到期时刻未被动过），与新条自然按各自的 shownAt 续排退场。
+    scheduleRemove(item.id);
     notify();
   };
   if (evicted.length === 0) {
@@ -199,7 +224,7 @@ function subscribe(fn: () => void): () => void {
   };
 }
 
-/** 单条文本 toast 的统一入口（#B-4）：转发到本 Host，避免此前双系统下静默丢弃。 */
+/** 单条文本 toast 的统一入口（#）：转发到本 Host，避免此前双系统下静默丢弃。 */
 export function showToast(text: string, kind: "ok" | "error" | "info" = "info"): void {
   pushAppToast(text, "", kind);
 }
@@ -215,7 +240,7 @@ export function ToastHost() {
   return (
     <div className="app-toast-stack">
       {items.map((t) => (
-        /* B8：error 用 role=alert（assertive 播报），其余 polite。 */
+        /* error 用 role=alert（assertive 播报），其余 polite。 */
         <div
           key={t.id}
           role={t.kind === "error" ? "alert" : "status"}
@@ -230,7 +255,9 @@ export function ToastHost() {
           }}
           onMouseLeave={() => {
             if (t.closing) return;
-            scheduleRemove(t.id);
+            /* 恢复 = 从当前时刻重排完整时长（与进度条重播对齐，
+               悬停手势的既有语义不变）。 */
+            restartRemove(t.id);
             setHoverGen((m) => new Map(m).set(t.id, (m.get(t.id) ?? 0) + 1));
           }}
           /* 键盘/读屏焦点同样暂停停留计时：Tab 到「撤销」action 或关闭按钮时
@@ -248,8 +275,9 @@ export function ToastHost() {
           onBlur={() => {
             if (t.closing) return;
             /* 焦点可能只是移到同条内另一按钮：blur 先触发 resume、同拍 focus
-               再暂停，行为正确；仅当焦点真正离开本条时才会走到下一次超时。 */
-            scheduleRemove(t.id);
+               再暂停，行为正确；仅当焦点真正离开本条时才会走到下一次超时。
+               恢复同悬停——重排完整时长（restartRemove）。 */
+            restartRemove(t.id);
             setHoverGen((m) => new Map(m).set(t.id, (m.get(t.id) ?? 0) + 1));
           }}
         >

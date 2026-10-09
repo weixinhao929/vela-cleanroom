@@ -1,12 +1,14 @@
 /**
- * 更新链共享逻辑（BentoDesk 借鉴 #10，从 UpdatePage 拆出供调度器复用）：
+ * 更新链共享逻辑：
  *
  * - **严格 manifest 校验**：版本号必须是 vX.Y.Z 形态、下载 URL 禁止携带
  *   凭据（user:pass@）/非 http(s) 协议——把「manifest 被改成任意下载链接/
  *   凭据钓鱼链接」这类攻击面在前端先关一道（下载域白名单在 Rust 侧）。
+ * - **签名准入**：自动安装/回滚一律要求清单带 Ed25519 签名且验签通过
+ *   （sha256+sig 成对）；无签名清单（旧 Release）由 Rust download_update
+ *   缺省拒绝并回传阻断文案，仅保留手动下载。
  * - **操作状态 CAS 门**：idle/checking/downloading/installing 原子转移，
- *   防止定时检查、手动检查、下载安装并发交叠（BentoDesk UpdateOperation
- *   同款语义；安装后进程退出，不需要显式释放）。
+ *   防止定时检查、手动检查、下载安装并发交叠。
  * - **调度判定纯函数**：isCheckDue（按小时间隔 + 上次检查时间）、
  *   isSkippedVersion。
  *
@@ -19,11 +21,35 @@ export type RemoteManifest = {
   version: string;
   notes?: string;
   url?: string;
-  /** 安装包 SHA-256（64 hex）。与 sig 成对出现时经签名锚定，优先于同源 sidecar。 */
+  /** 安装包 SHA-256（64 hex）。与 sig 成对出现时经签名锚定，优先于同源 sidecar。
+   *  sha256+sig 缺失的清单不再允许自动安装/回滚（见 UNSIGNED_INSTALL_BLOCKED）。 */
   sha256?: string;
   /** Ed25519 签名（base64），签名对象为 buildManifestPayload 的产出。 */
   sig?: string;
 };
+
+/**
+ * 无签名清单的自动安装/回滚统一阻断文案。签名机制之前的
+ * 旧 Release（含 GitHub Releases API 回滚列表、GitHub 302 兜底直链——这两条
+ * 路径天然没有 manifest 签名）不允许走自动下载安装：Rust 侧 `download_update`
+ * 对缺省调用（不传 expectedSha256）fail-closed 拒绝并把本文案回传，更新页
+ * 「回滚失败 / 更新失败」区域原样展示，用户仍可用「打开下载页」手动下载。
+ * 保留 sidecar 的「最后兼容路径」需显式传 allow_unsigned_sidecar=true（前端
+ * 正常流程一律不传）。
+ */
+export const UNSIGNED_INSTALL_BLOCKED =
+  "该版本早于签名机制，出于安全不再提供自动回滚/自动更新（缺少签名校验清单；如需安装请手动下载）";
+
+/**
+ * 自动安装准入判定（纯函数）——manifest 必须同时携带 sha256 与 sig
+ * （二者经 fetchRemoteManifest 强制成对出现，且 sig 已过 Ed25519 验签）才
+ * 允许走自动下载安装；否则返回阻断文案，调用方据此禁用自动安装入口并提示
+ * 手动下载。Rust `download_update` 侧对同一契约 fail-closed 二次把关。
+ */
+export function autoInstallBlockReason(m: RemoteManifest | null | undefined): string | null {
+  if (!m) return null;
+  return m.sig && m.sha256 ? null : UNSIGNED_INSTALL_BLOCKED;
+}
 
 /* ---- 语义化版本与 GitHub 兜底（原 UpdatePage 实现，测试锚点不变）。 ---- */
 
@@ -44,7 +70,7 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** D-1：更新链只接受 https 绝对地址（http 源对 MITM 无防御力，已停用）。 */
+/** 更新链只接受 https 绝对地址（http 源对 MITM 无防御力，已停用）。 */
 export function safeHttpUrl(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
   try {
@@ -60,7 +86,7 @@ export function isValidManifestVersion(v: string): boolean {
   return /^\d+\.\d+\.\d+([-+][\w.-]+)?$/i.test(v.trim().replace(/^v/i, ""));
 }
 
-/** 下载 URL 附加门槛：非 https（D-1）、携带凭据（user:pass@host）、带空白的一律拒绝。 */
+/** 下载 URL 附加门槛：非 https、携带凭据（user:pass@host）、带空白的一律拒绝。 */
 export function manifestUrlSafe(v: string): boolean {
   if (/\s/.test(v)) return false;
   try {
@@ -73,7 +99,7 @@ export function manifestUrlSafe(v: string): boolean {
   }
 }
 
-/** DeskOrder 借鉴 #9：更新源是 GitHub 仓库地址（owner/repo 两段、不含 /releases）。 */
+/** 更新源是 GitHub 仓库地址（owner/repo 两段、不含 /releases）。 */
 export function isGithubRepoUrl(url: string): boolean {
   try {
     const u = new URL(url);
@@ -126,7 +152,7 @@ export function isSkippedVersion(version: string, skipped: string): boolean {
   return version.trim().replace(/^v/i, "") === skipped.trim().replace(/^v/i, "");
 }
 
-/* ---- 更新通道（借鉴 ClassSoftwareHub #6：稳定 / Insider 双通道）。 ---- */
+/* ---- 更新通道。 ---- */
 
 export type UpdateChannel = "stable" | "insider";
 
@@ -141,7 +167,13 @@ export function effectiveUpdateChannel(stored: unknown, setByUser: boolean, appV
   return defaultUpdateChannel(appVersion);
 }
 
-/* ---- GitHub Releases 列表（借鉴 ClassSoftwareHub #7：回滚 = 同一安装流程）。 ---- */
+/* ---- GitHub Releases 列表。 ---- */
+
+/* 回滚列表天然混有签名机制之前的旧 Release，且 Releases API 条目不携带
+ * manifest 签名——列表照常加载展示，但逐条的自动安装走 download_update 缺省
+ * 调用（无 expectedSha256），Rust 侧 fail-closed 拒绝并回传
+ * UNSIGNED_INSTALL_BLOCKED（「该版本早于签名机制……」），用户只保留手动下载；
+ * 新发布的带 .sha256+sig 清单的版本不受影响。 */
 
 export type GhRelease = {
   tag: string;
@@ -200,7 +232,7 @@ export function parseGithubReleases(json: unknown, artifact: string): GhRelease[
       prerelease: o.prerelease === true,
       publishedAt: typeof o.published_at === "string" ? o.published_at : "",
       url: pickReleaseAsset(o.assets, artifact),
-      // [CHANGELOG]（ZTools 借鉴 #16）Release body 常为成段 markdown，400 字
+      // [CHANGELOG]Release body 常为成段 markdown，400 字
       // 只够一行标题——放宽到 4000（更新页用 mini-md 渲染）。
       notes: typeof o.body === "string" ? o.body.slice(0, 4000) : ""
     });
@@ -242,8 +274,17 @@ function isSha256Hex(v: unknown): v is string {
 
 /**
  * 验证清单 Ed25519 签名（Rust 侧离线公钥 + 单点载荷规范化）。带 sig 的清单
- * 签名不过即抛错（fail-closed：宁可不更新也不能装被改过的哈希）。不带 sig
- * 的清单返回 false（走旧的 sidecar 校验路径，较弱但兼容存量更新源）。
+ * 签名不过即抛错（fail-closed：宁可不更新也不能装被改过的哈希）。
+ * 不带 sig 的清单返回 false 只表示「无签名可用」——它**不再**自动落入
+ * 旧的 sidecar 弱路径；Rust `download_update` 对缺省调用（不传 expectedSha256、
+ * 不显式 allowUnsignedSidecar）一律拒绝（见 UNSIGNED_INSTALL_BLOCKED），前端
+ * 展示阻断文案并只保留手动下载。
+ * 验签成功时 Rust 侧会把 (version, url, sha256) 登记
+ * 为后端证据（30 分钟过期、下载命中即消费）——download_update 只接受命中该
+ * 证据的 (url, sha256) 且清单版本必须高于当前版本。因此下载前必须先走过本
+ * 函数（正常流程 fetchRemoteManifest → 这里 → 用户点击下载天然满足）；若
+ * 距检查已超 30 分钟，下载会报「缺少有效的签名清单证据……请重新检查更新」，
+ * 重新执行一次检查即可。
  */
 export async function verifyManifestSignature(m: RemoteManifest): Promise<boolean> {
   if (!m.sig || !m.sha256) return false;
@@ -258,7 +299,7 @@ export async function verifyManifestSignature(m: RemoteManifest): Promise<boolea
 
 /** 拉取并严格校验用户自配更新源 JSON（Rust 受信代理，CSP 不放行 webview 直连）。 */
 export async function fetchRemoteManifest(endpoint: string): Promise<RemoteManifest> {
-  // D-1：更新源 endpoint 本身必须 https——http 源上的 manifest 可被链路
+  // 更新源 endpoint 本身必须 https——http 源上的 manifest 可被链路
   // 中间人整体替换，后续同域校验会锚定到攻击者域。
   if (!/^https:\/\//i.test(endpoint.trim())) {
     throw new Error("更新源必须为 https 地址");
@@ -306,8 +347,11 @@ export async function resolveUpdateManifest(
   let remote: RemoteManifest | null = null;
   try {
     remote = await fetchRemoteManifest(url);
-    // D-1：带签名的清单必须验签通过才可用（fail-closed）；无签名清单继续
-    // 走 Rust 侧的同源 sidecar 校验（较弱，仅防损坏）。
+    // 带签名的清单必须验签通过才可用（fail-closed）。：无签名清单
+    // 仍返回（更新页要展示版本号并保留「打开下载页」手动下载），但自动
+    // 下载安装会被 Rust download_update 缺省拒绝（autoInstallBlockReason
+    // 同口径）——同源 sidecar 只剩显式 allowUnsignedSidecar=true 的
+    // 「最后兼容路径」。
     if (remote.sig && !(await verifyManifestSignature(remote))) {
       throw new Error("更新清单签名验证失败（更新源可能被篡改，已拒绝）");
     }
@@ -328,7 +372,7 @@ export async function resolveUpdateManifest(
 export async function fetchCurrentVersion(): Promise<string | null> {
   if (!isTauri()) return null;
   try {
-    const r = await invoke<{ current_version: string }>("check_updates");
+    const r = await invoke<{ current_version: string }>("get_update_info");
     return r.current_version;
   } catch {
     return null;

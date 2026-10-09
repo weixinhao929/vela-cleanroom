@@ -6,7 +6,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BarChart3, Check, ChevronUp, Download, Flame, MoreHorizontal, Pin, Plus, Trash2, X } from "lucide-react";
 import { useWidgetConfig } from "../widget-config";
 import { useT } from "../../i18n-lite";
-import { sourceNotify } from "../../lib/notifications";
 import { flipReorder, useCountUp } from "../../lib/anim";
 import { useConfirmAction, useDelayedRemoval } from "../../lib/use-confirm-remove";
 import { useNow, dayKeyOf } from "../../lib/use-now";
@@ -26,7 +25,7 @@ const todayKey = () => {
 const dateKey = (d: Date): string =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-/** W-032 周一作为一周的第一天。 */
+/** 周一作为一周的第一天。 */
 const weekStartOf = (d: Date): Date => {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
@@ -51,8 +50,10 @@ const weekCountOf = (h: Habit, ws: Date): number => {
   return n;
 };
 
-/** 半年热力图（26 周 × 7 天）：格子颜色 = 当日完成习惯占比。 */
-function HabitHeatmap({ habits, weeks = 26 }: { habits: Habit[]; weeks?: number }) {
+/** 半年热力图（26 周 × 7 天）：格子颜色 = 当日完成习惯占比。
+ *  dayKey：调用方传入的本地日键（含在重算依赖里）——常驻桌面跨天/跨周后
+ *  窗口跟随滚动，不再定格在挂载周。 */
+function HabitHeatmap({ habits, weeks = 26, dayKey }: { habits: Habit[]; weeks?: number; dayKey?: string }) {
   const tr = useT();
   const grid = useMemo(() => {
     const end = new Date();
@@ -87,12 +88,14 @@ function HabitHeatmap({ habits, weeks = 26 }: { habits: Habit[]; weeks?: number 
       columns.push(col);
     }
     return columns;
-  }, [habits, weeks]);
+    // dayKey 是刻意的失效键（跨天滚动窗口），不参与计算体。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [habits, weeks, dayKey]);
 
   const level = (cell: { ratio: number; total: number }) =>
     cell.total === 0 || cell.ratio === 0 ? 0 : cell.ratio < 0.34 ? 1 : cell.ratio < 0.67 ? 2 : cell.ratio < 1 ? 3 : 4;
 
-  /* #106 今日格：key 拼上等级，点亮/升级时重建触发一次 scale 弹跳 */
+  /* 今日格：key 拼上等级，点亮/升级时重建触发一次 scale 弹跳 */
   const todayStr = dateKey(new Date());
 
   return (
@@ -125,15 +128,35 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
   const setHabitPinned = useHabitsStore((s) => s.setHabitPinned);
   const moveHabitUp = useHabitsStore((s) => s.moveHabitUp);
   const removeHabit = useHabitsStore((s) => s.removeHabit);
-  const markHabitsReminded = useHabitsStore((s) => s.markHabitsReminded);
   const [adding, setAdding] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
   const now = useNow();
-  // 本地日历日键：跨零点自动翻新（useNow 共享 ticker 驱动）。
-  const today = dayKeyOf(now);
-  /** W-031/033 展开的习惯详情面板（重命名 / 每周目标 / 提醒 / 补卡）。 */
+  /* （零点 30s 相位）：useNow 共享 ticker 的相位与零点无对齐，跨零点后
+     ≤30s 内 today 仍是昨天，此时打卡会记错天。补一个对齐下一个零点的
+     一次性定时器，到点立刻翻日（自重排到之后的每个零点）。 */
+  const [midnightToday, setMidnightToday] = useState<string | null>(null);
+  useEffect(() => {
+    let cancel: (() => void) | null = null;
+    const schedule = () => {
+      const d = new Date();
+      const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 2).getTime();
+      const id = window.setTimeout(
+        () => {
+          setMidnightToday(dayKeyOf(new Date()));
+          schedule();
+        },
+        Math.max(50, next - d.getTime())
+      );
+      cancel = () => window.clearTimeout(id);
+    };
+    schedule();
+    return () => cancel?.();
+  }, []);
+  // 时钟回拨等极端情况下以较新者为准（日期键字典序可比）。
+  const today = midnightToday && midnightToday >= dayKeyOf(now) ? midnightToday : dayKeyOf(now);
+  /** /033 展开的习惯详情面板（重命名 / 每周目标 / 提醒 / 补卡）。 */
   const [expandId, setExpandId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const { config } = useWidgetConfig(instanceId);
@@ -142,31 +165,6 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
   const showCount = config.showCount !== false;
 
   const visibleHabits = showCompleted ? habits : habits.filter((h) => !h.done[today]);
-
-  const habitsRef = useRef(habits);
-  useEffect(() => {
-    habitsRef.current = habits;
-  }, [habits]);
-
-  /** W-034：到点未打卡的习惯发一次系统通知（当天只发一次）。 */
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      if (document.hidden) return;
-      const tk = todayKey();
-      const now = new Date();
-      const mins = now.getHours() * 60 + now.getMinutes();
-      const due = habitsRef.current.filter((h) => {
-        if (!h.remindAt || h.done[tk] || h.remindedOn === tk) return false;
-        const [hh, mm] = h.remindAt.split(":").map(Number);
-        return !Number.isNaN(hh) && !Number.isNaN(mm) && mins >= hh * 60 + mm;
-      });
-      if (due.length === 0) return;
-      const ids = [...new Set(due.map((h) => h.id))];
-      markHabitsReminded(ids, tk);
-      void sourceNotify("habit", tr("习惯打卡提醒"), `${due.map((h) => h.name).join("、")} ${tr("今天还没打卡")}`);
-    }, 20_000);
-    return () => window.clearInterval(id);
-  }, [tr, markHabitsReminded]);
 
   const add = () => {
     const name = draft.trim();
@@ -178,13 +176,13 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
 
   const toggle = (id: string) => toggleHabit(id, today);
 
-  /** W-033 补卡：补打/撤销任意历史日期。 */
+  /** 补卡：补打/撤销任意历史日期。 */
   const toggleDate = (id: string, key: string) => toggleHabit(id, key);
 
-  /** W-035 上移一位（在当前可见列表内交换，隐藏项不动）。 */
+  /** 上移一位（在当前可见列表内交换，隐藏项不动）。 */
   const setPinned = (id: string, v: boolean) => setHabitPinned(id, v);
 
-  /** W-035 上移一位（在当前可见列表内交换，隐藏项不动）；落位用 FLIP 回弹替代瞬移。 */
+  /** 上移一位（在当前可见列表内交换，隐藏项不动）；落位用 FLIP 回弹替代瞬移。 */
   const moveUp = (id: string) => {
     const el = listRef.current;
     if (el) flipReorder(el, ".habit-row", () => moveHabitUp(id, { today, showCompleted }));
@@ -192,7 +190,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
   };
 
   /* 删除交互：二次点击确认 + 收拢淡出后真正移除（时长由 hook 按 --dur-fx
-     运行时派生，P1：写死 240ms 不随动效速度档缩放；统一状态机见 use-confirm-remove）。 */
+     运行时派生：写死 240ms 不随动效速度档缩放；统一状态机见 use-confirm-remove）。 */
   const { confirmingId: confirmDeleteId, request: confirmRequest } = useConfirmAction();
   const { removingIds, begin: beginRemoval } = useDelayedRemoval(removeHabit);
   const requestDelete = (id: string) => {
@@ -220,7 +218,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
   };
 
   const doneCount = habits.filter((h) => h.done[today]).length;
-  /* #14 完成 x/y 计数 count-up：勾选/取消时数字滚动而非瞬时跳变 */
+  /* 完成 x/y 计数 count-up：勾选/取消时数字滚动而非瞬时跳变 */
   const doneCountStr = useCountUp(doneCount);
 
   /** 每日习惯连胜：今天未打卡不断链，从昨天起算。 */
@@ -239,7 +237,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
     return n;
   };
 
-  /** W-032 每周目标习惯连胜：按"周达成次数 ≥ perWeek"逐周回溯；本周未达标且未结束不计不断链。 */
+  /** 每周目标习惯连胜：按"周达成次数 ≥ perWeek"逐周回溯；本周未达标且未结束不计不断链。 */
   const weekStreakOf = (h: Habit): number => {
     const t = h.perWeek ?? 0;
     if (t <= 0) return 0;
@@ -255,7 +253,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
 
   const streakOf = (h: Habit): number => ((h.perWeek ?? 0) > 0 ? weekStreakOf(h) : dayStreakOf(h));
 
-  /** W-036 统计派生：总打卡 / 最长连胜（周习惯按周）/ 本月完成率。 */
+  /** 统计派生：总打卡 / 最长连胜（周习惯按周）/ 本月完成率。 */
   const longestDayStreak = (h: Habit): number => {
     const keys = Object.keys(h.done)
       .filter((k) => h.done[k])
@@ -338,7 +336,9 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
     return out;
   })();
 
-  /** W-033 补卡网格：近 8 周 × 7 天，历史格子可点击补打/撤销。 */
+  /** 补卡网格：近 8 周 × 7 天，历史格子可点击补打/撤销。
+     依赖 today（共享 ticker 的本地日键）——桌面常驻数日后零点翻新，
+     此前 useMemo([]) 把网格定格在挂载日（"今天"格子消失、future 标记失真）。 */
   const patchGrid = useMemo(() => {
     const start = weekStartOf(new Date());
     const cols: { key: string; future: boolean }[][] = [];
@@ -352,7 +352,9 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
       cols.push(col);
     }
     return cols;
-  }, []);
+    // today 是刻意的失效键（共享 ticker 的本地日键，跨零点重算网格）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [today]);
 
   const toggleExpand = (id: string) => {
     setExpandId((cur) => (cur === id ? null : id));
@@ -413,7 +415,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
               <i className="habit-heatmap-cell l4" />
             </span>
           </div>
-          {/* W-036 月度/年度统计：由 done 记录派生 */}
+          {/* 月度/年度统计：由 done 记录派生 */}
           <div className="habit-stats">
             <span>
               {tr("本月")} <b>{stats.rate}%</b>
@@ -429,7 +431,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
               </b>
             </span>
           </div>
-          <HabitHeatmap habits={habits} />
+          <HabitHeatmap habits={habits} dayKey={today} />
         </div>
       )}
 
@@ -438,7 +440,8 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
           <input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && add()}
+            /* IME 组合期回车选词不当作提交——拼音串会被存成习惯名。 */
+            onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && add()}
             placeholder={tr("新习惯，例如：喝水 8 杯")}
             data-interactive
           />
@@ -464,7 +467,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
                 <span className="habit-name">{h.name}</span>
                 {showStreak &&
                   (() => {
-                    /* #108 streak≥2 时火焰常亮摇曳（.lit）；数值 +1 时 key 重建触发 flare 放大 */
+                    /* streak≥2 时火焰常亮摇曳（.lit）；数值 +1 时 key 重建触发 flare 放大 */
                     const s = streakOf(h);
                     const unit = perWeek > 0 ? tr("周") : tr("天");
                     return (
@@ -521,7 +524,7 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
                 </button>
               </div>
 
-              {/* W-031/032/033/034/035 详情面板 */}
+              {/* /032/033/034/035 详情面板 */}
               {expandId === h.id && (
                 <div className="habit-panel">
                   <div className="habit-panel-row">
@@ -529,7 +532,8 @@ export function HabitWidget({ instanceId }: { instanceId: string }) {
                     <input
                       value={renameDraft}
                       onChange={(e) => setRenameDraft(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && saveRename(h)}
+                      /* IME 组合期回车选词不当作改名提交。 */
+                      onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && saveRename(h)}
                       onBlur={() => saveRename(h)}
                       placeholder={tr("习惯名称")}
                       data-interactive

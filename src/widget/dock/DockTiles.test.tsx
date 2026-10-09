@@ -1,5 +1,5 @@
 /**
- * ISLAND-SORT 组件测试（pointer 事件路径，F-3 / F-2 入口 b / F-12）：
+ * ISLAND-SORT 组件测试（pointer 事件路径，入口 b / ）：
  * 编辑模式直拖排序落盘、拖出 ≥48px 移除 + toast 撤销原位恢复、非编辑模式长按
  * 300ms 起拖且不展开 / 单击仍展开、Esc 原位放回、Ctrl+→ 与 Delete 键盘路径、
  * 「+」选计算器追加通用磁贴、>8 枚横向可滚、让位 / 竖条 / 距离纯函数。
@@ -68,7 +68,7 @@ function mockRects() {
   });
 }
 
-/* 三枚通用磁贴（不在 F-1 首批 12 个富形态清单内：无 MiniComponent，渲染同步、
+/* 三枚通用磁贴（不在 首批 12 个富形态清单内：无 MiniComponent，渲染同步、
    不拉懒加载 chunk，aria-label 就是类型名，不受 MINI 会话并行登记影响）。 */
 const TILES: DockTile[] = [
   { id: "t-a", type: "notes" },
@@ -348,6 +348,31 @@ describe("DockTiles 岛内交互", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "撤销" }).at(-1)!);
     expect(ids()).toEqual(["t-a", "t-b", "t-c"]);
+  });
+
+  it("P0-6：Ctrl+Shift+←/→ 让位冒泡（DockShell 吸附点快捷键），不触发磁贴排序", () => {
+    seed(true);
+    mockRects();
+    render(
+      <>
+        <Harness onTileOpen={vi.fn()} />
+        <ToastHost />
+      </>
+    );
+    const a = tile(NAME_A);
+    a.focus();
+    const windowKey = vi.fn();
+    window.addEventListener("keydown", windowKey);
+    // 修复前：箭头分支无条件 consume()（stopPropagation），Ctrl+Shift 被当
+    // Ctrl+← 执行排序且 Shell 的 onDockKeyDown 永远收不到。
+    fireEvent.keyDown(a, { key: "ArrowRight", ctrlKey: true, shiftKey: true });
+    expect(ids()).toEqual(["t-a", "t-b", "t-c"]); // 未排序
+    expect(windowKey).toHaveBeenCalledTimes(1); // 已冒泡出磁贴层
+    // 纯 Shift+方向无 Shell 语义：仍走本层焦点移动（不冒泡）。
+    fireEvent.keyDown(a, { key: "ArrowRight", shiftKey: true });
+    expect(document.activeElement).toBe(tile(NAME_B));
+    expect(windowKey).toHaveBeenCalledTimes(1);
+    window.removeEventListener("keydown", windowKey);
   });
 
   it("「+」只在编辑模式显示；选「计算器」→ 追加通用磁贴并关闭弹层", async () => {

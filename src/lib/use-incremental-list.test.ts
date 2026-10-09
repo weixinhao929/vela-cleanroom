@@ -42,7 +42,7 @@ describe("useIncrementalList", () => {
     act(() => result.current.loadMore());
     expect(result.current.items).toHaveLength(40);
 
-    // P2 三轮：模拟删除条目后总数变小——已扩容的窗口保持，不回缩回首屏
+    // 三轮：模拟删除条目后总数变小——已扩容的窗口保持，不回缩回首屏
     //（此前任何 total 变化都重置，已滚动的长列表删一条就视觉上「闪一下」）。
     rerender({ data: mk(120) });
     expect(result.current.items).toHaveLength(40);

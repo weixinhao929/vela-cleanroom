@@ -16,11 +16,11 @@ export type Note = {
   text: string;
   updatedAt: string;
   pinned?: boolean;
-  /** W-062 便签颜色（默认无色）。 */
+  /** 便签颜色（默认无色）。 */
   color?: string;
-  /** W-064 手动排序序号（小者在前，仅 sortBy=manual 时生效）。 */
+  /** 手动排序序号（小者在前，仅 sortBy=manual 时生效）。 */
   order?: number;
-  /** DeskOrder 借鉴 #8：定时提醒（ISO；到点由 notes-reminders 发通知后清除）。 */
+  /** 定时提醒（ISO；到点由 notes-reminders 发通知后清除）。 */
   remindAt?: string;
 };
 /**
@@ -134,10 +134,13 @@ export function saveTrash(instanceId: string, trash: TrashNote[]) {
  * StrictMode 下 updater 会被双调用，若在此写回收站会导致便签重复入站。
  */
 export function deleteToTrash(instanceId: string, note: Note): void {
-  const { pinned: _pinned, color: _color, order: _order, ...rest } = note;
+  // remindAt 一并剥掉：删除即取消提醒——否则已过期的 remindAt 随回收站幸存，
+  // 恢复后 ≤30s 内被提醒扫描器当「错过补发」弹出陈旧通知。
+  const { pinned: _pinned, color: _color, order: _order, remindAt: _remindAt, ...rest } = note;
   void _pinned;
   void _color;
   void _order;
+  void _remindAt;
   const trash = loadTrash(instanceId);
   saveTrash(instanceId, [...trash, { ...rest, deletedAt: new Date().toISOString() }]);
 }
@@ -172,7 +175,7 @@ export function emptyTrash(instanceId: string): void {
 }
 
 /**
- * W-096 聚合便签回收站：枚举所有便签实例的回收站条目，供组件回收站统一
+ * 聚合便签回收站：枚举所有便签实例的回收站条目，供组件回收站统一
  * 管理（原先便签回收站只在各便签组件内部，与组件回收站割裂两处）。
  */
 export type TrashNoteRef = { instanceId: string; note: TrashNote };
@@ -217,7 +220,7 @@ export function purgeExpiredNotesTrash(): number {
   return purged;
 }
 
-// ── W-065 导出 / 导入 ─────────────────────────────────────────
+// ── 导出 / 导入 ─────────────────────────────────────────
 // 导出格式（Markdown，带可解析的注释标记）：
 //   <!-- vela-note id=<uuid> at=<ISO> -->
 //   正文…
@@ -227,13 +230,31 @@ export function purgeExpiredNotesTrash(): number {
 const NOTE_OPEN = /^<!--\s*vela-note id=([\w-]+) at=([^\s>]+)([^>]*)-->$/;
 const NOTE_CLOSE = /^<!--\s*\/vela-note\s*-->$/;
 
+/** 导出转义：正文里恰好独占一行、形如开/闭标记的文本会让导入解析提前
+ * 闭合（后续正文被当新内容错切）。在行尾追加零宽空格打破整行匹配；导入
+ * 侧统一剥离行尾零宽空格还原（用户正文的行尾 ZWSP 无语义）。 */
+function escapeMarkerLines(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .map((line) => (NOTE_OPEN.test(line.trim()) || NOTE_CLOSE.test(line.trim()) ? `${line}\u200B` : line))
+    .join("\n");
+}
+
 export function exportNotesMarkdown(notes: Note[]): string {
   const head = `<!-- vela-notes-export v1 count=${notes.length} -->`;
   const body = notes
     .map((n) => {
-      const meta = [n.pinned ? "pinned" : "", n.color ? `color=${n.color}` : ""].filter(Boolean).join(" ");
+      // order/remindAt 此前不进导出，round-trip 丢失手动排序与提醒设置。
+      const meta = [
+        n.pinned ? "pinned" : "",
+        n.color ? `color=${n.color}` : "",
+        typeof n.order === "number" && Number.isFinite(n.order) ? `order=${n.order}` : "",
+        n.remindAt ? `remindAt=${n.remindAt}` : ""
+      ]
+        .filter(Boolean)
+        .join(" ");
       const open = `<!-- vela-note id=${n.id} at=${n.updatedAt}${meta ? ` ${meta}` : ""} -->`;
-      return `${open}\n${n.text}\n<!-- /vela-note -->`;
+      return `${open}\n${escapeMarkerLines(n.text)}\n<!-- /vela-note -->`;
     })
     .join("\n\n");
   return `${head}\n\n${body}\n`;
@@ -241,21 +262,26 @@ export function exportNotesMarkdown(notes: Note[]): string {
 
 /** 解析导出的 Markdown；无标记的纯文本返回单条新便签。 */
 export function parseNotesImport(raw: string): Note[] {
-  const lines = raw.split(/\r?\n/);
+  const lines = raw.split(/\r?\n/).map((l) => l.replace(/\u200B+$/, ""));
   const out: Note[] = [];
   let current: Note | null = null;
   const now = new Date().toISOString();
   for (const line of lines) {
-    const open = NOTE_OPEN.exec(line.trim());
+    const open = line.trim().match(NOTE_OPEN);
     if (open) {
       if (current && current.text.trim()) out.push(current);
       const extra = open[3] ?? "";
+      const orderRaw = extra.match(/(?:^|\s)order=(-?\d+(?:\.\d+)?)(?:\s|$)/)?.[1];
+      const remindRaw = extra.match(/(?:^|\s)remindAt=([^\s>]+)(?:\s|$)/)?.[1];
       current = {
         id: open[1],
         text: "",
         updatedAt: open[2] || now,
         pinned: /(?:^|\s)pinned(?:\s|$)/.test(extra),
-        color: /(?:^|\s)color=([\w-]+)(?:\s|$)/.exec(extra)?.[1]
+        color: extra.match(/(?:^|\s)color=([\w-]+)(?:\s|$)/)?.[1],
+        ...(orderRaw !== undefined ? { order: Number(orderRaw) } : {}),
+        // 已过期的提醒不还原：导入即弹陈旧通知（与回收站恢复同口径）。
+        ...(remindRaw && Date.parse(remindRaw) > Date.now() ? { remindAt: remindRaw } : {})
       };
       continue;
     }
@@ -286,7 +312,7 @@ export function downloadTextFile(filename: string, content: string, mime = "text
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// ── W-067 全局速记 ────────────────────────────────────────────
+// ── 全局速记 ────────────────────────────────────────────
 
 /** 速记窗口没有任何便签实例可落时的兜底桶 id（见 {@link pickQuickNoteTarget}）。 */
 export const QUICK_NOTE_FALLBACK_ID = "quicknote";

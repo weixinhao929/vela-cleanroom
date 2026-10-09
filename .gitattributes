@@ -1,0 +1,36 @@
+# 行尾规范化（E-2）：统一 LF 入库，消除「本机 autocrlf=true 时 format:check
+# 本地永久红、CI 绿」的分歧行为；二进制类型显式标记防止 git 做任何转换。
+* text=auto eol=lf
+
+# ---- 二进制：禁止 text 转换与 diff ----
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.bmp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.mp3 binary
+*.wav binary
+*.ogg binary
+*.flac binary
+*.mp4 binary
+*.webm binary
+*.dll binary
+*.exe binary
+*.zip binary
+*.7z binary
+*.gz binary
+*.dmp binary
+*.xlsx binary
+*.xls binary
+*.docx binary
+*.pdf binary
+*.der binary
+*.pdb binary

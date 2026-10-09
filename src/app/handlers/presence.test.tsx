@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 
 /**
- * E-3（handlers 契约测试）：presence 域全局 handler 的事件载荷 → DOM 效应
+ * （handlers 契约测试）：presence 域全局 handler 的事件载荷 → DOM 效应
  * 映射。handlers 是所有 Tauri 事件的分发枢纽，此前整目录零测试。这里把
  * @tauri-apps/api/event 的 listen 换成进程内注册表，按真实载荷形状派发
  * presence:state 快照，断言三件套（淡化/降玻璃/装饰降级）的根属性翻转与
@@ -35,7 +35,12 @@ import { GlobalIdleDecor, GlobalIdleDim, GlobalIdleGlass } from "./presence";
 import { useSettingsStore, reapplyTheme } from "../../store/settings-store";
 import { isIdleDecor } from "../../lib/idle-decor";
 
-type Snap = { state: "active" | "idle" | "fullscreen"; idle_secs: number; fullscreen?: boolean };
+type Snap = {
+  state: "active" | "idle" | "fullscreen";
+  idle_secs: number;
+  fullscreen?: boolean;
+  covered?: boolean;
+};
 const snap = (state: Snap["state"], idle_secs: number): Snap => ({ state, idle_secs, fullscreen: false });
 function emitPresence(p: Snap): void {
   for (const fn of handlers.get("presence:state") ?? []) fn(p);
@@ -102,11 +107,53 @@ describe("presence handlers 契约（presence:state → DOM）", () => {
     expect(reapplyTheme).toHaveBeenCalled();
   });
 
+  it("GlobalIdleDecor：空闲期间改动画设置（applySettings 重写 data-fx-off）后立即补挂 ambientMotion", () => {
+    emitPresence(snap("idle", 30));
+    expect(document.documentElement.getAttribute("data-fx-off")).toContain("ambientMotion");
+    // 模拟 applySettings 按 fxToggles 重写 data-fx-off：空闲闸被抹掉。
+    document.documentElement.setAttribute("data-fx-off", "pointerFollow");
+    expect(document.documentElement.getAttribute("data-fx-off")).not.toContain("ambientMotion");
+    // 任何 extra 写入（sanitize 新建 fxToggles 引用）触发订阅 effect 补挂。
+    act(() => {
+      useSettingsStore.setState({
+        extra: { ...useSettingsStore.getState().extra, fxToggles: { ...useSettingsStore.getState().extra.fxToggles } }
+      });
+    });
+    expect(document.documentElement.getAttribute("data-fx-off")).toBe("pointerFollow ambientMotion");
+    // 活跃态不补挂（applySettings 的重写即最终态）。
+    emitPresence(snap("active", 0));
+    document.documentElement.setAttribute("data-fx-off", "pointerFollow");
+    act(() => {
+      useSettingsStore.setState({
+        extra: { ...useSettingsStore.getState().extra, fxToggles: { ...useSettingsStore.getState().extra.fxToggles } }
+      });
+    });
+    expect(document.documentElement.getAttribute("data-fx-off")).toBe("pointerFollow");
+  });
+
   it("fullscreen 态不触发任何空闲降级（投影/全屏是活跃使用）", () => {
     emitPresence(snap("fullscreen", 120));
     expect(document.documentElement.classList.contains("idle-dim")).toBe(false);
     expect(document.documentElement.getAttribute("data-no-glass")).toBeNull();
     expect(isIdleDecor()).toBe(false);
+  });
+
+  it("P-占用②：covered=true（active 态被最大化盖住）触发装饰降级与降玻璃，退出即时恢复", () => {
+    emitPresence({ state: "active", idle_secs: 0, fullscreen: false, covered: true });
+    // 装饰降级与时钟降频同空闲路径；淡化（视觉态）不参与。
+    expect(isIdleDecor()).toBe(true);
+    expect(document.documentElement.getAttribute("data-fx-off")).toContain("ambientMotion");
+    expect(document.documentElement.getAttribute("data-no-glass")).toBe("1");
+    expect(document.documentElement.classList.contains("idle-dim")).toBe(false);
+    emitPresence({ state: "active", idle_secs: 0, fullscreen: false, covered: false });
+    expect(isIdleDecor()).toBe(false);
+    expect(reapplyTheme).toHaveBeenCalled();
+  });
+
+  it("P-占用②：covered 字段缺省（旧载荷）按无遮挡处理，行为与改动前一致", () => {
+    emitPresence({ state: "active", idle_secs: 0, fullscreen: false });
+    expect(isIdleDecor()).toBe(false);
+    expect(document.documentElement.getAttribute("data-no-glass")).toBeNull();
   });
 
   it("畸形载荷（null/缺字段）不抛异常不翻转状态", () => {

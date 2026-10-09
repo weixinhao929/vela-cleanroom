@@ -2,6 +2,6 @@
 
 export type PomodoroSession = { id: string, session_type: string, mode: string, started_at: string, ended_at: string, planned_seconds: number, completed: boolean, 
 /**
- * W-051 任务用时归集：关联的待办 id / 自定义事件名（老数据为 NULL）。
+ * 任务用时归集：关联的待办 id / 自定义事件名（老数据为 NULL）。
  */
 task_id: string | null, event_label: string | null, };

@@ -1,6 +1,6 @@
 /**
  * 涂鸦小组件：手绘画布（画笔/橡皮/形状/颜色/背景），撤销栈截断 20
- * （F-5 控内存），笔画期缓存视口 rect、保存节流合并写盘（W-103）。
+ * （控内存），笔画期缓存视口 rect、保存节流合并写盘。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -78,7 +78,7 @@ const BG_FILL: Record<BgMode, string> = {
 
 /**
  * Whiteboard / doodle widget. Draw with the mouse or a pen on a sticky-canvas;
- * strokes are persisted as a PNG file in app data (W-103) so the sketch
+ * strokes are persisted as a PNG file in app data () so the sketch
  * survives restarts without eating the localStorage quota. Supports brush /
  * eraser / shapes, custom colors, canvas backgrounds, undo / redo, export and
  * clipboard copy.
@@ -131,20 +131,20 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
   const [canRedo, setCanRedo] = useState(false);
   /* 快照切换闪变：undo/redo/clear 后画布轻闪一次，给出「内容变了」的因果反馈。 */
   const [snapFlash, setSnapFlash] = useState(false);
-  /* W-098 键盘作用域：仅当鼠标悬停在本组件上时响应 Ctrl+Z/Y 与 B/E。 */
+  /* 键盘作用域：仅当鼠标悬停在本组件上时响应 Ctrl+Z/Y 与 B/E。 */
   const [hover, setHover] = useState(false);
-  /* W-100 导出菜单 / W-102 复制反馈 / W-104 导入中。 */
+  /* 导出菜单 / 复制反馈 / 导入中。 */
   const [exportOpen, setExportOpen] = useState(false);
   const [copyState, setCopyState] = useState<"ok" | "fail" | null>(null);
   const [busy, setBusy] = useState(false);
-  /* W-109 最近取色：取色器历史作为额外色源。 */
+  /* 最近取色：取色器历史作为额外色源。 */
   const [recent, setRecent] = useState<string[]>(() => listAllPickerHistory(10));
   /* 形状工具拖拽预览：down 时的画布快照 + 起点。 */
   const shapeSnap = useRef<ImageData | null>(null);
   const shapeStart = useRef<{ x: number; y: number } | null>(null);
   /* 笔画期间缓存的画布视口矩形：pos() 不再每次 pointermove 都 getBoundingClientRect。 */
   const strokeRect = useRef<DOMRect | null>(null);
-  /* W-103 保存节流：连续笔画合并成一次写盘。 */
+  /* 保存节流：连续笔画合并成一次写盘。 */
   const saveTimer = useRef<number | null>(null);
 
   const snapshot = (): HistEntry => {
@@ -175,10 +175,16 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     if (!drawing.current) pumpEncode();
   };
 
+  /* （undo/redo 异步乱序）：dataUrl 快照经 Image 异步装载，连续 undo/redo
+     时多个 onload 完成顺序无保证——后触发的旧快照会盖掉已应用的新快照。
+     应用序号守卫：仅当本回合仍是最新应用时才允许上屏。 */
+  const applySeqRef = useRef(0);
+
   const apply = (entry: HistEntry) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
+    const seq = ++applySeqRef.current;
     // 橡皮擦会把合成模式留在 destination-out，不复位则这里的 drawImage 变成「擦」。
     ctx.globalCompositeOperation = "source-over";
     if (entry.canvas) {
@@ -190,6 +196,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     if (!entry.dataUrl) return;
     const img = new Image();
     img.onload = () => {
+      if (seq !== applySeqRef.current) return;
       ctx.globalCompositeOperation = "source-over";
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -201,7 +208,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
   const pushHistory = () => {
     const e = snapshot();
     past.current.push(e);
-    // F-5：撤销栈上限 50→20，控制大画布 PNG dataURL 常驻内存（每实例峰值达数十 MB）。
+    // 撤销栈上限 50→20，控制大画布 PNG dataURL 常驻内存（每实例峰值达数十 MB）。
     if (past.current.length > 20) past.current.shift();
     future.current = [];
     enqueueEncode(e);
@@ -239,13 +246,13 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     schedulePersist();
   };
 
-  /* W-098 快捷键经 ref 调最新实现，避免 hover 期间重复绑监听。 */
+  /* 快捷键经 ref 调最新实现，避免 hover 期间重复绑监听。 */
   const undoRef = useRef(undo);
   undoRef.current = undo;
   const redoRef = useRef(redo);
   redoRef.current = redo;
 
-  // Restore a previously saved sketch (W-103: file first, legacy dataURL second).
+  // Restore a previously saved sketch (: file first, legacy dataURL second).
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -311,7 +318,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     return () => ro.disconnect();
   }, []);
 
-  /* W-109 最近取色：低频刷新 + 窗口聚焦时刷新。 */
+  /* 最近取色：低频刷新 + 窗口聚焦时刷新。 */
   useEffect(() => {
     const refresh = () => setRecent(listAllPickerHistory(10));
     const t = window.setInterval(() => {
@@ -337,7 +344,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
 
   const isShape = (t: Tool) => t === "line" || t === "rect" || t === "ellipse" || t === "arrow";
 
-  /** W-101 形状落笔：按当前工具画直线/矩形/椭圆/箭头。 */
+  /** 形状落笔：按当前工具画直线/矩形/椭圆/箭头。 */
   const drawShape = (
     ctx: CanvasRenderingContext2D,
     t: Tool,
@@ -388,10 +395,13 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
   };
 
   const down = (e: React.PointerEvent) => {
+    // 右键/中键落笔不入撤销栈——此前会 pushHistory + 画一个点，undo 栈
+    // 被无意义快照污染。
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     e.preventDefault();
     // 先置 drawing 再入栈：快照的 PNG 编码在笔画期间不泵，留到 up() 后的空闲时段。
     drawing.current = true;
-    // 入栈时机移到落笔前：捕获本笔开始前的基线，使首笔也能撤销（#B-1）。
+    // 入栈时机移到落笔前：捕获本笔开始前的基线，使首笔也能撤销（#）。
     pushHistory();
     const canvas = canvasRef.current!;
     canvas.setPointerCapture(e.pointerId);
@@ -464,7 +474,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     setHaveInk(true);
   };
 
-  /* W-103 持久化：Tauri 下存 app data 文件（localStorage 只留 "file" 标记），
+  /* 持久化：Tauri 下存 app data 文件（localStorage 只留 "file" 标记），
      浏览器 dev 下退回 dataURL。600ms 节流合并连续笔画。 */
   const doPersistNow = () => {
     const canvas = canvasRef.current ?? canvasKeep.current;
@@ -530,7 +540,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     if (isTauri()) void invoke("delete_sketch_image", { instanceId }).catch(() => {});
   };
 
-  /* W-100 导出：透明 PNG / 含背景 PNG / JPEG（质量可配）。 */
+  /* 导出：透明 PNG / 含背景 PNG / JPEG（质量可配）。 */
   const doExport = (kind: "png-t" | "png-bg" | "jpeg") => {
     setExportOpen(false);
     const canvas = canvasRef.current;
@@ -560,7 +570,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     );
   };
 
-  /* W-102 复制到剪贴板：Tauri 走 Rust 写 CF_DIBV5/CF_DIB；dev 浏览器走
+  /* 复制到剪贴板：Tauri 走 Rust 写 CF_DIBV5/CF_DIB；dev 浏览器走
      navigator.clipboard。 */
   const copyImage = async () => {
     const canvas = canvasRef.current;
@@ -582,7 +592,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     safeTimeout(() => setCopyState(null), 1500);
   };
 
-  /* W-104 置入图片：选本地图片 → 居中等比贴到画布，随后即可批注。 */
+  /* 置入图片：选本地图片 → 居中等比贴到画布，随后即可批注。 */
   const importImage = async () => {
     if (!isTauri() || busy) return;
     setBusy(true);
@@ -614,7 +624,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     }
   };
 
-  /* W-098 键盘快捷键（悬停/聚焦作用域）：Ctrl+Z 撤销 / Ctrl+Y·Ctrl+Shift+Z 重做、
+  /* 键盘快捷键（悬停/聚焦作用域）：Ctrl+Z 撤销 / Ctrl+Y·Ctrl+Shift+Z 重做、
       B 画笔 / E 橡皮。focus-within 同步 hover 态，纯键盘 Tab 进入也能用。 */
   useEffect(() => {
     if (!hover) return;
@@ -642,7 +652,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [hover]);
 
-  /* W-100 导出菜单：Esc 关闭。 */
+  /* 导出菜单：Esc 关闭。 */
   useEffect(() => {
     if (!exportOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -729,7 +739,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
               aria-label={`${tr("颜色")} ${c}`}
             />
           ))}
-          {/* W-099 自定义颜色：原生 color 输入，选任意色即用。 */}
+          {/* 自定义颜色：原生 color 输入，选任意色即用。 */}
           <label className="sketch-custom" title={tr("自定义颜色")}>
             <input
               type="color"
@@ -771,7 +781,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
           />
         </div>
         <div className="sketch-actions">
-          {/* W-099 画布背景：透明 / 网格 / 白底 / 深色 循环切换。 */}
+          {/* 画布背景：透明 / 网格 / 白底 / 深色 循环切换。 */}
           <button
             className={`sketch-act bg-${bgMode}`}
             title={tr("画布背景") + "：" + tr(BG_LABEL[bgMode])}
@@ -852,7 +862,7 @@ export function SketchWidget({ instanceId }: { instanceId: string }) {
           </button>
         </div>
       </div>
-      {/* W-099 深色背景色值以 BG_FILL 为单一来源，CSS 经 --sketch-bg-dark 消费。 */}
+      {/* 深色背景色值以 BG_FILL 为单一来源，CSS 经 --sketch-bg-dark 消费。 */}
       <div
         className={`sketch-stage bg-${bgMode}`}
         style={bgMode === "dark" ? { ["--sketch-bg-dark" as string]: BG_FILL.dark } : undefined}

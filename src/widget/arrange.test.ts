@@ -1,5 +1,5 @@
 /**
- * 批量自动排布（BentoDesk 借鉴 #8）测试：纯函数 + store 动作。
+ * 批量自动排布测试：纯函数 + store 动作。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

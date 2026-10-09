@@ -1,5 +1,5 @@
 /**
- * 天气站（C1 天气沉浸页，§4.7 + 图表体系）：24h 多指标折线 + 「今日 vs
+ * 天气站（天气沉浸页，§4.7 + 图表体系）：24h 多指标折线 + 「今日 vs
  * 历史同期」气候常模参考线（Open-Meteo archive）+ minutely_15「未来一小时
  * 降雨」条 + 空气质量/日出日落。
  *
@@ -12,8 +12,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CloudSun, Droplets, RefreshCw, Sunrise, Sunset, Thermometer } from "lucide-react";
-import { fetchJson } from "../../lib/network";
 import { isAbortError } from "../../lib/retry";
+import { fetchJsonShared } from "./weather-shared";
 import { useOnline } from "../../lib/online-status";
 import { useSettingsStore } from "../../store/settings-store";
 import { useT } from "../../i18n-lite";
@@ -80,7 +80,7 @@ type StationSnapshot = {
 
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 const AQI_URL = "https://air-quality-api.open-meteo.com/v1/air-quality";
-/** 沉浸页刷新间隔（比卡片 30min 更长——展开是短时会话，节能优先）。 */
+/** 沉浸页刷新间隔（15min，卡片默认 30min——展开会话看得更细，收起即停）。 */
 const REFRESH_MS = 15 * 60 * 1000;
 
 type LoadState = "idle" | "loading" | "ok" | "error";
@@ -97,7 +97,10 @@ export function WeatherStation({ instanceId, active }: ExpandedComponentProps) {
   const lon = useSettingsStore((s) => s.extra.weatherLon);
   const extraCities = useSettingsStore((s) => s.extra.weatherCities);
   const cities = useMemo(() => [{ name: city || "未知位置", lat, lon }, ...extraCities], [city, lat, lon, extraCities]);
-  const activeCity = cities[Math.min(cityIndex, cities.length - 1)];
+  // cityIndex 双向钳制 + 非整数回退（手改/损坏配置里的 -5 / 2.5 会让
+  // cities[...] 取 undefined，整站进错误边界——卡片侧 WeatherWidget 同款守卫）。
+  const activeCity =
+    cities[Number.isInteger(cityIndex) && cityIndex >= 0 ? Math.min(cityIndex, cities.length - 1) : 0] ?? cities[0];
 
   const [snap, setSnap] = useState<StationSnapshot | null>(null);
   const [snapState, setSnapState] = useState<LoadState>("idle");
@@ -131,7 +134,9 @@ export function WeatherStation({ instanceId, active }: ExpandedComponentProps) {
         `&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,relative_humidity_2m,wind_speed_10m,weather_code` +
         `&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset` +
         `&minutely_15=precipitation&timezone=auto&forecast_days=2`;
-      fetchJson<ForecastResponse>(url, { retries: 2, signal: controller.signal })
+      /* 与卡片共享在途请求（fetchJsonShared）：展开瞬间的拉取若与卡片轮询
+         重叠，同 URL 只发一次；卡片先发起则站点直接复用其结果。 */
+      fetchJsonShared<ForecastResponse>(url, { retries: 2, signal: controller.signal })
         .then((d) => {
           if (forecastSeq.current !== seq || controller.signal.aborted) return;
           const nowMs = Date.now();
@@ -172,8 +177,8 @@ export function WeatherStation({ instanceId, active }: ExpandedComponentProps) {
           if (forecastSeq.current !== seq || isAbortError(err)) return;
           setSnapState((s) => (s === "ok" ? s : "error"));
         });
-      /* 空气质量独立降级：失败只隐藏该行。 */
-      void fetchJson<AirQualityResponse>(
+      /* 空气质量独立降级：失败只隐藏该行；URL 与卡片完全同构，走共享合并。 */
+      void fetchJsonShared<AirQualityResponse>(
         `${AQI_URL}?latitude=${activeCity.lat}&longitude=${activeCity.lon}&current=european_aqi,uv_index&timezone=auto`,
         { retries: 1, signal: controller.signal }
       )
@@ -223,6 +228,13 @@ export function WeatherStation({ instanceId, active }: ExpandedComponentProps) {
     if (c == null || !Number.isFinite(c)) return "—";
     return unit === "fahrenheit" ? `${Math.round((c * 9) / 5 + 32)}°` : `${Math.round(c)}°`;
   };
+  /* 风速显示层换算 mph（与卡片 fmtWind 同口径：缓存/响应恒 km/h）。 */
+  const fmtWind = (kmh: number | null | undefined) =>
+    kmh == null || !Number.isFinite(kmh)
+      ? ""
+      : unit === "fahrenheit"
+        ? `${Math.round(kmh / 1.609344)} mph`
+        : `${Math.round(kmh)} km/h`;
 
   const Icon = weatherIcon(snap?.code ?? 2);
   const today = useMemo(() => (normals ? normalForDate(normals.byDay, new Date(), 3) : null), [normals]);
@@ -299,7 +311,7 @@ export function WeatherStation({ instanceId, active }: ExpandedComponentProps) {
             {snap?.wind != null && (
               <>
                 {" "}
-                · {tr("风速")} {Math.round(snap.wind)} km/h
+                · {tr("风速")} {fmtWind(snap.wind)}
               </>
             )}
             {snap?.humidity != null && (

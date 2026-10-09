@@ -11,6 +11,8 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentType } from "react";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 vi.mock("../../registry", async () => {
   const React = await import("react");
@@ -218,5 +220,37 @@ describe("MiscBoardPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "移除 待办" }));
     expect(tileItems()).toEqual([{ type: "clock", x: 0, y: 0, w: 2, h: 2 }]);
+  });
+});
+
+/* ---- 单磁贴展开的滚动高度链（防漂移契约）----
+   jsdom 不做布局，无法直接断言滚动行为；杂项板「放多了滚轮滚不动、只能放大
+   面板」的根因是百分比高度链在 .dock-expand-surface 断成 auto（见
+   feature-dock.css 该规则注释）。这里锁住链条的三个关键环节，任一被改回
+   auto / 移除 overflow 即红。 */
+describe("MiscBoardPanel · 展开面板滚动高度链（CSS 契约）", () => {
+  const ruleOf = (css: string, sel: string): string => {
+    const m = css.match(new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`));
+    return m?.[1] ?? "";
+  };
+  const readCss = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
+  it(".dock-expand-surface 铺满高度 → .widget-error-host / .dock-panel 的 100% 能逐级解析", () => {
+    const dock = readCss("../../../styles/feature-dock.css");
+    const surface = ruleOf(dock, ".dock-expand-surface");
+    expect(surface).toContain("height: 100%");
+    expect(surface).toContain("min-height: 0");
+    const panel = ruleOf(dock, ".dock-panel");
+    expect(panel).toContain("height: 100%");
+    const widget = readCss("../../../styles/widget.css");
+    expect(ruleOf(widget, ".widget-error-host")).toContain("height: 100%");
+  });
+
+  it(".misc-scroll 保持可滚（flex:1 + min-height:0 + overflow-y:auto）", () => {
+    const dock = readCss("../../../styles/feature-dock.css");
+    const scroll = ruleOf(dock, ".misc-scroll");
+    expect(scroll).toContain("flex: 1");
+    expect(scroll).toContain("min-height: 0");
+    expect(scroll).toMatch(/overflow:\s*hidden auto/);
   });
 });

@@ -1,7 +1,7 @@
 //! Vela 自定义模糊画刷——手工复刻 C++/WinRT 对**可组合（overridable）类**
 //! `Windows.UI.Xaml.Media.XamlCompositionBrushBase` 的派生机制。
 //!
-//! C++/WinRT 的 `XamlCompositionBrushBaseT<T>`（标杆 XamlBlurBrush）实际做的是
+//! C++/WinRT 的 `XamlCompositionBrushBaseT<T>` 实际做的是
 //! COM 聚合：
 //! 1. 派生对象 O 先建好（实现 `IXamlCompositionBrushBaseOverrides`）；
 //! 2. 经 `IXamlCompositionBrushBaseFactory::CreateInstance(O, &inner, &value)`
@@ -12,7 +12,7 @@
 //!    `IXamlCompositionBrushBaseProtected::put_CompositionBrush` 把
 //!    Backdrop → GaussianBlur(σ) → Flood(tint) → SourceOver 效果链设回 inner。
 //!
-//! 效果链构图与 ExplorerTAP\XamlBlurBrush.cpp:12-36 逐行对应。
+//! 效果链构图：Backdrop → GaussianBlur(σ) → Flood(tint) → SourceOver。
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -33,7 +33,7 @@ const REFS_DYING: u32 = u32::MAX / 2;
 /// 效果链参数（构造后不可变）。
 pub(crate) struct BlurBrushParams {
     pub compositor: Compositor,
-    /// 高斯标准差 σ = blur_radius / 3（D5）。
+    /// 高斯标准差 σ = blur_radius / 3。
     pub sigma: f32,
     /// tint，线性空间 [r,g,b,a]。
     pub tint: [f32; 4],

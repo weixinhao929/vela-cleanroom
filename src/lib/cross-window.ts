@@ -2,16 +2,35 @@ import { useEffect } from "react";
 import { shallow } from "zustand/shallow";
 import { isTauri, currentWindowLabel } from "./tauri";
 import { suspendPersistence, resumePersistence } from "./persist-gate";
-import { isRemoteApplying } from "./sync-gate";
-import { applySettings, sanitizeSettings, themeEnvOf, useSettingsStore } from "../store/settings-store";
+import { isRemoteApplying, withRemoteApply } from "./sync-gate";
+import {
+  applySettings,
+  repullSettingsFromLs,
+  sanitizeSettings,
+  scheduleSettingsSave,
+  themeEnvOf,
+  setExternalSettingsAdoptionHook,
+  useSettingsStore
+} from "../store/settings-store";
 import {
   applyRemotePomodoroSnapshot,
+  getLastLocalControlWallMs,
+  getPomodoroControlEpoch,
   getPomodoroSyncSnapshot,
+  hydrateApp,
+  noteHydrationRemoteRemovals,
+  readPomodoroLiveSnapshot,
   walkPomodoroDisplay,
+  writePomodoroLiveSnapshot,
   useAppStore,
   type PomodoroSyncSnapshot
 } from "../store/app-store";
-import { normalizeConfig, type PomodoroConfig } from "../domain/pomodoro";
+import {
+  normalizeConfig,
+  type PomodoroConfig,
+  type PomodoroInterruption,
+  type PomodoroSessionRecord
+} from "../domain/pomodoro";
 import type { Deadline, Task } from "../domain/schemas";
 import { applyRemoteHabits, useHabitsStore } from "../store/habits-store";
 import {
@@ -19,6 +38,9 @@ import {
   applyRemoteWidgets,
   currentScreenId,
   reconcileDockTiles,
+  registerDockBroadcastFlusher,
+  registerWidgetsBroadcastFlusher,
+  repullDockFromLs,
   repullWidgetsFromDb,
   useWidgetStore,
   type DockSyncPayload,
@@ -75,7 +97,7 @@ export function resetReplayBackoffForTests(): void {
 }
 
 /**
- * F-2：拖拽/缩放这类「编辑会话」进行中挂起 widgets 的对外广播。编辑会话里
+ * 拖拽/缩放这类「编辑会话」进行中挂起 widgets 的对外广播。编辑会话里
  * instances 每帧变化（resize）时，若仍走「每帧全量 JSON.stringify + 80ms 防抖
  * emit」，序列化成本依然存在；挂起后广播仅在 pointerup 一次性发出。
  */
@@ -83,10 +105,30 @@ let widgetsSyncSuspended = false;
 /** 挂起期间是否发生过被抑制的布局变化，resume 时据此补发一次最终快照。 */
 let widgetsDirtyDuringSuspend = false;
 
-/** A-12：本窗口 widgets 快照的单调版本号，随每次 emit 自增。 */
+/** 本窗口 widgets 快照的单调版本号，随每次 emit 自增。 */
 let widgetsRev = 0;
 /** 本窗口 dock 快照的单调版本号（与 widgetsRev 同型，独立计数）。 */
 let dockRev = 0;
+
+/**
+ * emit 失败此前完全静默（`.catch(() => {})`），而各通道的基线推进 /
+ * 墓碑重盖 / 删除凭证消费都发生在 emit **之前**——失败后后续合并判定基于
+ * 虚基线、对端停留旧值且无任何证据。统一入口：失败留 warn 证据 + 300ms×n
+ * 退避重发同一载荷（ts/rev 不变，接收方幂等）；重发仍失败由 onFinalFail
+ * 标脏（复位去重串 / 恢复被消费的删除凭证），本窗下一次任意编辑即重播。
+ */
+function emitWithRetry(event: string, payload: unknown, onFinalFail?: () => void): void {
+  const send = (attempt: number): void => {
+    import("@tauri-apps/api/event")
+      .then(({ emit }) => emit(event, payload))
+      .catch((err: unknown) => {
+        console.warn(`[sync] ${event} emit failed (attempt ${attempt}/3)`, err);
+        if (attempt < 3) window.setTimeout(() => send(attempt + 1), 300 * attempt);
+        else onFinalFail?.();
+      });
+  };
+  send(1);
+}
 
 /** 统一 emit 入口：带上 instanceId + 单调 rev（接收方据此拒旧、拒重复）。 */
 function emitWidgets(snap: {
@@ -98,9 +140,15 @@ function emitWidgets(snap: {
   trash: WidgetSyncPayload["trash"];
 }) {
   const rev = ++widgetsRev;
-  import("@tauri-apps/api/event")
-    .then(({ emit }) => emit(SYNC_EVENTS.widgets, { instanceId: INSTANCE_ID, rev, ...snap } as WidgetSyncPayload))
-    .catch(() => {});
+  /* emit 终败兜底（对齐 settings/app/dock/habits 四
+     通道的现有写法）。widgets 的发射侧去重是订阅闭包里的引用级短路，模块层
+     没有可复位的去重串——改标挂起期脏位：终败后置位 widgetsDirtyDuringSuspend，
+     下一次编辑会话结束（setWidgetsSyncSuspended(false)，每次拖拽/缩放
+     pointerup 都会调）即补发一次全量快照（幂等）；期间任何真实编辑本就会因
+     引用变化重新发射。语义与其他通道的「终败后下一次编辑必重播」一致。 */
+  emitWithRetry(SYNC_EVENTS.widgets, { instanceId: INSTANCE_ID, rev, ...snap } as WidgetSyncPayload, () => {
+    widgetsDirtyDuringSuspend = true;
+  });
 }
 
 function broadcastWidgetsSnapshot() {
@@ -137,7 +185,7 @@ const INSTANCE_ID =
     ? crypto.randomUUID()
     : `win-${Math.random().toString(36).slice(2)}`;
 
-/** D-3：同步事件名单点定义，替代散布 7 处的魔法字符串。 */
+/** 同步事件名单点定义，替代散布 7 处的魔法字符串。 */
 export const SYNC_EVENTS = {
   settings: "sync:settings",
   widgets: "sync:widgets",
@@ -145,13 +193,29 @@ export const SYNC_EVENTS = {
   dock: "sync:dock",
   app: "sync:app",
   pomodoro: "sync:pomodoro",
+  /** （副屏统计即时刷新）：单条新完成的专注会话记录（增量广播，
+   *  receiver 按 id 去重 append——sessions 整表不在 AppSyncPayload 里，
+   *  副屏「今日 N 轮/时长」此前要等本窗重启才刷新）。 */
+  session: "sync:session",
+  /** （打断统计跨窗同步）：单条新打断记录（receiver 按起始/结束/原因
+   *  组合键去重 append——副窗口的中断计数与月度打断图即时刷新）。 */
+  interruption: "sync:interruption",
   habits: "sync:habits"
 } as const;
 
-const SETTINGS_FIELDS = [
+/** 同步字段清单（单点定义）。：export 供防漂移锁测试遍历——
+ *  snapshotFor 每新增一个持久化字段而漏更此清单时，测试必红（漏同步的
+ *  字段在其他窗口保持旧值直到重启，如此前漏 floatingThemeMode）。 */
+export const SETTINGS_FIELDS = [
   "preset",
   "themeMode",
+  // [SPLIT-THEME] 浮窗深浅档（消费方 app/FloatingThemeSync.tsx）：漏进清单时
+  // 设置窗改档后其他浮窗保持旧档直到重启（修复的正是这一例）。
+  "floatingThemeMode",
   "primaryColor",
+  // 自定义主题的底色/文字配色：与 preset 配对（preset="custom" 时由它供色）——
+  // 漏进同步清单时设置窗改色后其他窗口保持旧色直到重启。
+  "customColors",
   "zoom",
   "font",
   "fontSize",
@@ -173,7 +237,7 @@ const SETTINGS_FIELDS = [
   "appShortcuts"
 ] as const;
 
-/** D-3：同步字段快照类型由 SETTINGS_FIELDS 单点派生，字段增删只改这一处。 */
+/** 同步字段快照类型由 SETTINGS_FIELDS 单点派生，字段增删只改这一处。 */
 export type SettingsSnapshot = Record<(typeof SETTINGS_FIELDS)[number], unknown>;
 
 /** settings 同步载荷：字段快照 + 发送方 instanceId + 发送时刻（并发仲裁用）。 */
@@ -188,7 +252,7 @@ export type ViewSwitchSyncPayload = {
 /** app 同步载荷：任务 / 截止日 / 番茄钟配置快照 + 删除凭证。 */
 export type AppSyncPayload = {
   instanceId?: string;
-  /** 发送时刻单调时间戳：既用于拒乱序旧包（P0-DDL），也是本包内所有变更行/
+  /** 发送时刻单调时间戳：既用于拒乱序旧包（-DDL），也是本包内所有变更行/
    *  叶子/删除的统一仲裁时刻（发送方发射时把本地改动的时间戳重盖为它，使同一
    *  个值在两端拿到相同的 ts，并发冲突两端才能选出同一个赢家）。 */
   ts?: number;
@@ -200,11 +264,16 @@ export type AppSyncPayload = {
   deadlines?: Deadline[];
   pomodoroConfig?: PomodoroConfig;
 };
-/** D-1：番茄钟运行态载荷。快照带墙钟锚点，接收方据此走秒与正确暂停。 */
+/** 番茄钟运行态载荷。快照带墙钟锚点，接收方据此走秒与正确暂停。 */
 export type PomodoroSyncPayload = PomodoroSyncSnapshot & {
   instanceId?: string;
   /** 发送时刻的 Date.now()，接收方拒乱序到达的旧快照。 */
   wallMs?: number;
+  /** 控制态包（sig 变化：开始/暂停/模式/任务/正倒计时切换）为 true；
+   *  纯锚点包（走秒降频重发）为 false。接收方对控制包做严格纪元仲裁，
+   *  对锚点包只比对已应用的远端纪元（见 u4 注释）。旧版本载荷缺省
+   *  undefined，按控制包严格处理，行为与历史版本一致。 */
+  control?: boolean;
 };
 /** §4.14 习惯打卡载荷：与 widgets 通道同型的按发送方单调 rev（此前 last-writer-wins，
  *  两窗口连续打卡时乱序到达的旧整表会把新打卡回滚）。 */
@@ -352,8 +421,13 @@ export function mergeLeaves(
     const localTs = editTs.get(path) ?? mem?.ts ?? 0;
     let takeRemote: boolean;
     if (!hasRemote) takeRemote = false;
-    else if (!hasLocal) takeRemote = true;
-    else {
+    else if (!hasLocal) {
+      // 远端有、本地无（对端新增叶子）无条件采纳——sanitize 白名单
+      // 兜底最终值，但静默采纳不可观测；留 debug 级观测点（生产零噪声，
+      // 排查「设置项凭空出现」时可开）。
+      console.debug("[sync] mergeLeaves: adopting remote-only leaf", path);
+      takeRemote = true;
+    } else {
       const remoteChanged = !mem || remoteJson !== mem.json;
       takeRemote = remoteChanged && remoteWins(localTs, localJson, remoteTs, remoteJson);
       if (!takeRemote && remoteJson !== localJson) diverged = true;
@@ -373,10 +447,39 @@ export function mergeLeaves(
 }
 
 /** 对比前后快照，给本地刚改动的叶子盖上编辑时刻（供并发仲裁；不动基线）。 */
+/**
+ * 顶层 section 的「相对路径 → 规范化串」视图，按对象引用备忘。
+ * Zustand 不可变更新语义下未变 section 的引用稳定——逐键编辑 / 拖滑条
+ * 时订阅期盖章只重算被写的 section，不再每次全表 flatten + canonicalize
+ * ×2（~200 叶）。原始值顶层字段（preset/themeMode 等）整体视为单叶子。
+ */
+const sectionLeavesMemo = new WeakMap<object, Map<string, string>>();
+
+function sectionLeaves(value: unknown): Map<string, string> {
+  if (value !== null && typeof value === "object") {
+    let m = sectionLeavesMemo.get(value as object);
+    if (!m) {
+      m = new Map();
+      for (const [path, v] of flattenLeaves(value)) m.set(path, jsonOf(v));
+      sectionLeavesMemo.set(value as object, m);
+    }
+    return m;
+  }
+  return new Map([["", JSON.stringify(value) ?? ""]]);
+}
+
 function stampLeafEdits(prev: unknown, curr: unknown, editTs: Map<string, number>, now: number) {
-  const before = flattenLeaves(prev);
-  for (const [path, v] of flattenLeaves(curr)) {
-    if (!before.has(path) || jsonOf(before.get(path)) !== jsonOf(v)) editTs.set(path, now);
+  if (!isPlainObject(prev) || !isPlainObject(curr)) return;
+  const p = prev as Record<string, unknown>;
+  const c = curr as Record<string, unknown>;
+  for (const k of Object.keys(c)) {
+    // 引用未变 ⇒ 内容未变（不可变语义），整节跳过；undefined 叶子与
+    // flattenLeaves 同口径跳过。
+    if (p[k] === c[k] || c[k] === undefined) continue;
+    const before = sectionLeaves(p[k]);
+    for (const [sub, json] of sectionLeaves(c[k])) {
+      if (before.get(sub) !== json) editTs.set(sub ? `${k}.${sub}` : k, now);
+    }
   }
 }
 
@@ -426,11 +529,10 @@ function emitSettings(isReplay = false) {
   const snap = snapshotSettings();
   const ts = Date.now();
   settingsBase = syncLeafBase(snap, settingsBase, settingsEditTs, ts, isReplay);
-  import("@tauri-apps/api/event")
-    .then(({ emit }) =>
-      emit(SYNC_EVENTS.settings, { instanceId: INSTANCE_ID, ts, ...snap } satisfies SettingsSyncPayload)
-    )
-    .catch(() => {});
+  // 重发仍失败 → 复位去重串，本窗下一次任意编辑必重播。
+  emitWithRetry(SYNC_EVENTS.settings, { instanceId: INSTANCE_ID, ts, ...snap } satisfies SettingsSyncPayload, () => {
+    lastSettingsJson = "";
+  });
 }
 
 /** 分歧回播入口：按指数退避调度（立即 → 50ms → … → 2s 封顶）。 */
@@ -468,7 +570,11 @@ function applyRemoteSettings(payload: Partial<SettingsSnapshot>, remoteTs: numbe
     const __st = useSettingsStore.getState();
     applySettings(__st, themeEnvOf(__st), __st.general.reduceEffects);
     // 采纳后的快照串同步进去重短路，防后续等值编辑被漏播（见声明处注释）。
-    lastSettingsJson = JSON.stringify(snapshotSettings());
+    // 去重串与合并口径统一走 canonicalize（键序无关）。
+    lastSettingsJson = jsonOf(snapshotSettings());
+    // 采纳即落盘：本地 setter 之外的唯一状态入口也要回写持久层（并发
+    // 整快照 last-writer-wins——否则磁盘停在旧快照，重启回档）。
+    scheduleSettingsSave();
   }
   if (result.diverged) replaySettings();
 }
@@ -477,6 +583,19 @@ function applyRemoteSettings(payload: Partial<SettingsSnapshot>, remoteTs: numbe
 function seedSettingsBase() {
   settingsEditTs = new Map();
   settingsBase = syncLeafBase(snapshotSettings(), new Map(), new Map(), 0);
+}
+
+/**
+ * 静默采纳外部权威快照（LS 回读 repullSettingsFromLs / DB 水合）后
+ * 推进同步基线（发射侧去重通例，dock/habits 通道同款收口）：刷新
+ * lastSettingsJson 短路串并重播 settingsBase 种子——否则回读后用户改回
+ * 「本窗上次发射过的值」会被误判重复而漏播，对端停留在旧值直到下一次
+ * 不同的编辑。settings-store 经 setExternalSettingsAdoptionHook 反向注册
+ * （依赖倒置防循环 import，click-shield 同款）。
+ */
+export function noteExternalSettingsAdoption(): void {
+  lastSettingsJson = jsonOf(snapshotSettings());
+  seedSettingsBase();
 }
 
 /* ============ sync:app 通道：行级三方合并 + 显式删除凭证 + 墓碑 ============ */
@@ -503,8 +622,25 @@ let pendingRemovedDeadlines = new Set<string>();
 const appTombstones = new Map<string, number>();
 const APP_TOMBSTONE_TTL_MS = 30_000;
 
-function pruneAppTombstones(now: number) {
+/** 导出仅供测试（TTL 边界用例）。 */
+export function pruneAppTombstones(now: number) {
   for (const [id, at] of appTombstones) if (now - at > APP_TOMBSTONE_TTL_MS) appTombstones.delete(id);
+}
+
+/** 行对象的规范化串备忘（按行引用）——对比前后整表时未变行引用
+ *  稳定，只有被写/新增行需要序列化。 */
+const rowJsonMemo = new WeakMap<object, string>();
+
+function rowJsonOf(r: { id: string }): string {
+  if (r !== null && typeof r === "object") {
+    let s = rowJsonMemo.get(r);
+    if (s === undefined) {
+      s = jsonOf(r);
+      rowJsonMemo.set(r, s);
+    }
+    return s;
+  }
+  return jsonOf(r);
 }
 
 /** 对比前后整表：改动/新增的行盖编辑时刻，消失的行记墓碑并进入待发删除凭证（不动基线）。 */
@@ -515,7 +651,7 @@ function stampRowEdits<T extends { id: string }>(
   pendingRemoved: Set<string>,
   now: number
 ) {
-  const before = new Map(prev.map((r) => [r.id, jsonOf(r)]));
+  const before = new Map(prev.map((r) => [r.id, rowJsonOf(r)]));
   const currIds = new Set<string>();
   for (const row of curr) {
     currIds.add(row.id);
@@ -525,7 +661,7 @@ function stampRowEdits<T extends { id: string }>(
       appTombstones.delete(row.id);
       pendingRemoved.delete(row.id);
       rowTs.set(row.id, now);
-    } else if (b !== jsonOf(row)) {
+    } else if (b !== rowJsonOf(row)) {
       rowTs.set(row.id, now);
     }
   }
@@ -548,7 +684,10 @@ function syncRowBase<T extends { id: string }>(
 ): Map<string, LeafMem> {
   const next = new Map<string, LeafMem>();
   for (const row of rows) {
-    const json = jsonOf(row);
+    /* 行基线对齐改走 rowJsonOf（WeakMap 按行引用
+       备忘，同源）——每包全表 canonicalize+stringify 的热路径中，未变行
+       引用稳定直接命中备忘；产出与 jsonOf 逐字节同构（同一函数算出后缓存）。 */
+    const json = rowJsonOf(row);
     const prev = base.get(row.id);
     if ((!prev || prev.json !== json) && !isReplay) rowTs.set(row.id, packetTs);
     next.set(row.id, { json, ts: rowTs.get(row.id) ?? prev?.ts ?? 0 });
@@ -569,6 +708,10 @@ export type RowMergeResult<T> = {
   tombstoned: string[];
   /** 对端在我删除之后又编辑、按仲裁复活采纳的行 id（调用方撤墓碑）。 */
   revived: string[];
+  /** 命中墓碑被拒收的行 id——拒收证明删除凭证仍被需要，调用方滑动
+   *  续期墓碑时刻；否则 30s TTL 过期后，链式重播/休眠唤醒积压的同一陈旧
+   *  包可让已删行复活。 */
+  renewedTombstones: string[];
 };
 
 /**
@@ -590,7 +733,17 @@ export function mergeRows<T extends { id: string }>(
   tombstones: Map<string, number>,
   remoteTs: number
 ): RowMergeResult<T> {
-  if (!remote) return { merged: local, changed: false, diverged: false, base, rowTs, tombstoned: [], revived: [] };
+  if (!remote)
+    return {
+      merged: local,
+      changed: false,
+      diverged: false,
+      base,
+      rowTs,
+      tombstoned: [],
+      revived: [],
+      renewedTombstones: []
+    };
   const removed = new Set(removedIds ?? []);
   const remoteMap = new Map(remote.map((r) => [r.id, r]));
   const localIds = new Set(local.map((r) => r.id));
@@ -598,19 +751,25 @@ export function mergeRows<T extends { id: string }>(
   const nextTs = new Map(rowTs);
   const tombstoned: string[] = [];
   const revived: string[] = [];
+  const renewedTombstones: string[] = [];
   const merged: T[] = [];
   let changed = false;
   let diverged = false;
 
   for (const row of local) {
     const id = row.id;
-    const localJson = jsonOf(row);
+    /* 本地行改走 rowJsonOf 备忘（行对象不可变更新，
+       引用即版本；后续 emitApp → syncRowBase 对同一批行对象二次序列化时直接
+       命中，不再每包 2-3 次全量 canonicalize+stringify）。 */
+    const localJson = rowJsonOf(row);
     const mem = base.get(id);
     const localTs = rowTs.get(id) ?? mem?.ts ?? 0;
     const localChanged = !mem || localJson !== mem.json;
     const r = remoteMap.get(id);
     if (r !== undefined) {
-      const remoteJson = jsonOf(r);
+      /* 远端行同样走备忘——与基线串（jsonOf/rowJsonOf 同构产出）的
+         逐字节比较语义不变。 */
+      const remoteJson = rowJsonOf(r);
       const remoteChanged = !mem || remoteJson !== mem.json;
       const takeRemote = remoteChanged && remoteWins(localTs, localJson, remoteTs, remoteJson);
       if (takeRemote) {
@@ -646,13 +805,15 @@ export function mergeRows<T extends { id: string }>(
   for (const r of remote) {
     const id = r.id;
     if (localIds.has(id)) continue;
-    const remoteJson = jsonOf(r);
+    /* 远端独有行的序列化同样换 rowJsonOf 备忘。 */
+    const remoteJson = rowJsonOf(r);
     const delTs = tombstones.get(id);
     if (delTs !== undefined) {
       const mem = base.get(id);
       const editedAfterDelete = !!mem && remoteJson !== mem.json && remoteTs > delTs;
       if (!editedAfterDelete) {
         if (mem) nextBase.set(id, mem);
+        renewedTombstones.push(id);
         continue;
       }
       revived.push(id);
@@ -662,7 +823,7 @@ export function mergeRows<T extends { id: string }>(
     nextTs.set(id, remoteTs);
     changed = true;
   }
-  return { merged, changed, diverged, base: nextBase, rowTs: nextTs, tombstoned, revived };
+  return { merged, changed, diverged, base: nextBase, rowTs: nextTs, tombstoned, revived, renewedTombstones };
 }
 
 type AppSnapshot = { tasks: Task[]; deadlines: Deadline[]; pomodoroConfig: PomodoroConfig };
@@ -685,7 +846,10 @@ function seedAppBase() {
   pendingRemovedDeadlines = new Set();
 }
 
-/** 回播定时器（与用户编辑的 80ms 防抖互不抢占；与 settings 的退避状态独立计数）。 */
+/** 回播定时器（与用户编辑的 80ms 防抖互不抢占）。注释更正：定时器与
+ *  settings 各自独立，但退避档位与 replaySettings 共用同一 replayBackoff
+ *  梯子（50ms→2s 封顶、3s 静默复位）——两通道交错分歧时各自爬梯更快，
+ *  行为仍收敛（封顶即上限）。 */
 let appReplayTimer = 0;
 
 /** 发射 app 快照。isReplay = 分歧回播：不重盖行/叶子时间戳（防乒乓放大）。 */
@@ -703,17 +867,23 @@ function emitApp(isReplay = false) {
   tasksBase = syncRowBase(s.tasks, tasksBase, tasksTs, ts, isReplay);
   deadlinesBase = syncRowBase(s.deadlines, deadlinesBase, deadlinesTs, ts, isReplay);
   configBase = syncLeafBase(s.pomodoroConfig, configBase, configEditTs, ts, isReplay);
-  import("@tauri-apps/api/event")
-    .then(({ emit }) =>
-      emit(SYNC_EVENTS.app, {
-        instanceId: INSTANCE_ID,
-        ts,
-        removedTasks,
-        removedDeadlines,
-        ...s
-      } satisfies AppSyncPayload)
-    )
-    .catch(() => {});
+  // 重发仍失败 → 恢复被消费的删除凭证（否则删除永远传不出去）+
+  // 复位去重串，本窗下一次任意编辑必重播。
+  emitWithRetry(
+    SYNC_EVENTS.app,
+    {
+      instanceId: INSTANCE_ID,
+      ts,
+      removedTasks,
+      removedDeadlines,
+      ...s
+    } satisfies AppSyncPayload,
+    () => {
+      pendingRemovedTasks = new Set([...pendingRemovedTasks, ...removedTasks]);
+      pendingRemovedDeadlines = new Set([...pendingRemovedDeadlines, ...removedDeadlines]);
+      lastAppJson = "";
+    }
+  );
 }
 
 /** 分歧回播入口：指数退避调度（与 replaySettings 同型）。 */
@@ -731,8 +901,8 @@ function replayApp() {
 }
 
 /**
- * M5（行级守卫）：sync:app 的行载荷虽来自另一窗口的内存态，仍是「线上数据」
- * ——坏行（旧版本/损坏的载荷）不校验就会经 persist-first 动作写进 SQLite。
+ * （行级守卫）：sync:app 的行载荷虽来自另一窗口的内存态，仍是「线上数据」
+ * 坏行（旧版本/损坏的载荷）不校验就会经 persist-first 动作写进 SQLite。
  * 手写轻量守卫而非 zod：主包不静态引入 zod（与 local-storage 的动态 import
  * 纪律一致）；这里只挡类型级垃圾，ISO 格式等严检仍由持久化/导入边界负责。
  */
@@ -782,6 +952,21 @@ function sanitizeRemoteRows<T>(rows: unknown, guard: (r: unknown) => r is T, lab
  * 返回是否需要回播（保留了对端没有的本地更新值）。
  */
 function applyRemoteApp(payload: AppSyncPayload, remoteTs: number): boolean {
+  /* 水合窗口内到达的删除凭证先并入水合墓碑（本窗内存尚无这些行，
+     mergeRows 不会为不存在的行立墓碑——否则随后落地的陈旧 DB 快照会把
+     已删行 merge 回内存且 withRemoteApply 抑制再广播，复活滞留到重启）。
+     水合墓碑只影响本次水合的 mergeById——水合结束
+     后，持有旧内存的第三个窗口发来的陈旧整包仍带着已删行，而 appTombstones
+     无记录会被 mergeRows 当「远端新增」采纳并回播扩散。凭证生效时同步镜像
+     进 appTombstones（Date.now() 口径与 tombstoned 写入一致；的拒收
+     滑动续期照常覆盖它，30s TTL 后回归「信任远端」的既定语义）。 */
+  const hydrationNoted = noteHydrationRemoteRemovals(payload.removedTasks, payload.removedDeadlines);
+  if (hydrationNoted) {
+    const mirrorAt = Date.now();
+    if (Array.isArray(payload.removedTasks)) for (const id of payload.removedTasks) appTombstones.set(id, mirrorAt);
+    if (Array.isArray(payload.removedDeadlines))
+      for (const id of payload.removedDeadlines) appTombstones.set(id, mirrorAt);
+  }
   const current = snapshotApp();
   pruneAppTombstones(Date.now());
   const tm = mergeRows(
@@ -819,6 +1004,11 @@ function applyRemoteApp(payload: AppSyncPayload, remoteTs: number): boolean {
   for (const id of dm.tombstoned) appTombstones.set(id, remoteTs);
   for (const id of tm.revived) appTombstones.delete(id);
   for (const id of dm.revived) appTombstones.delete(id);
+  // 墓碑拒收滑动续期——拒收证明删除凭证仍被需要，不续期则 30s 后
+  // 同一陈旧包（链式重播/休眠唤醒积压）可复活已删行。
+  const renewAt = Date.now();
+  for (const id of tm.renewedTombstones) appTombstones.set(id, renewAt);
+  for (const id of dm.renewedTombstones) appTombstones.set(id, renewAt);
   if (tm.changed || dm.changed || cm.changed) {
     useAppStore.setState({
       tasks: tm.merged,
@@ -826,8 +1016,13 @@ function applyRemoteApp(payload: AppSyncPayload, remoteTs: number): boolean {
       pomodoroConfig: normalizeConfig(cm.next as Partial<PomodoroConfig>)
     });
     // 与 settings 通道同理：采纳后的快照串进短路基准，防等值编辑漏播。
-    const snap = snapshotApp();
-    lastAppJson = JSON.stringify(snap);
+    // 本地编辑的防抖发射在飞时**不**刷新——采纳后快照已含本地新行，
+    // 刷新会让在飞定时器尾判「无变化」吞掉新行首播；保持旧基准，定时器
+    // 尾对比不等即整包发射，新行随包带出。
+    if (!appEmitPending) {
+      const snap = snapshotApp();
+      lastAppJson = jsonOf(snap);
+    }
   }
   return tm.diverged || dm.diverged || cm.diverged;
 }
@@ -838,6 +1033,11 @@ function applyRemoteApp(payload: AppSyncPayload, remoteTs: number): boolean {
 let lastSettingsJson = "";
 /** app 快照的最近已知串（同上）。 */
 let lastAppJson = "";
+/** app 通道防抖发射在飞标记：本地编辑已排队未播期间，applyRemoteApp
+ *  不得用采纳后的快照刷新 lastAppJson——快照已含本地新行，刷新会让在飞
+ *  定时器尾判「与上次发射相同」直接返回，本地新增行的首播被吞（对端看不到
+ *  新任务直到本窗下一次任意编辑）。 */
+let appEmitPending = false;
 
 /**
  * 跨窗口状态同步 hook（发布/订阅中介者）。
@@ -853,6 +1053,71 @@ let lastAppJson = "";
  * @throws 无（emit/listen 失败静默）。
  */
 /**
+ * persist-pause / persist-resume 监听（B-恢复 ack 协议的接收侧，抽共用）。
+ *
+ * 任何窗口收到 pause 即置位本窗闸门（此后一切防抖落盘直接丢弃）并回发
+ * sync:persist-acked；resume 解除。ack 载荷带本窗口 label：发起方按 label
+ * 排除自己（emit 回环到发送方自身时不能计入去重集合）；重复 pause 再次回
+ * ack 无害。完整同步（useCrossWindowSync）与只读设置精简同步
+ * （useCrossWindowSettingsSync 的 taskbar-net / snip / super-panel /
+ * fullscreen 卫星窗）都必须挂载——卫星窗不挂则：①恢复备份的 ack 永远收不齐
+ * 恒等满 1200ms 超时；②卫星窗未置 suspended，迟到的 sync:settings 被采纳后
+ * 照常写共享 localStorage，与恢复流程竞态可把恢复前旧态写回。
+ */
+function setupPersistGateListeners(): () => void {
+  let disposed = false;
+  /* 逐个注册、逐个入列——旧实现两个 listen 都成功
+     才给 un 赋值，uPause 成功后 uResume 因瞬时 IPC 失败 reject 时 un 仍是
+     null，uPause 泄漏且本窗落入「有 pause 无 resume」的半残态（闸门被远端
+     pause 置位后再也解不开，直到 reload）。失败路径先拆已注册者再上报。 */
+  const unsubs: (() => void)[] = [];
+  let un: (() => void) | null = null;
+  void (async () => {
+    try {
+      const { listen, emit } = await import("@tauri-apps/api/event");
+      // 按发起方 label 计数置位/解除——两窗并发恢复时先完成方的
+      // resume 不再解除另一方的暂停；自回声（remote:自己）与本地 self
+      // 是同一所有者，重复 pause 由集合去重。
+      const uPause = await listen<string>("sync:persist-pause", (e) => {
+        const me = currentWindowLabel() ?? INSTANCE_ID;
+        const sender = typeof e.payload === "string" ? e.payload : "unknown";
+        suspendPersistence(sender === me ? "self" : `remote:${sender}`);
+        /* ack 裸 emit 的 rejection 是 unhandled；
+           失败补一次轻量重试（ack 丢失会让发起方等满 1200ms 超时才放行，
+           恢复流程整体慢一拍），仍失败上报后放弃（发起方超时兜底仍在）。 */
+        emit("sync:persist-acked", me).catch((err: unknown) => {
+          console.warn("[sync] persist-acked emit failed, retrying once", err);
+          emit("sync:persist-acked", me).catch((retryErr: unknown) => {
+            console.error("[sync] persist-acked emit retry failed", retryErr);
+          });
+        });
+      });
+      unsubs.push(uPause);
+      const uResume = await listen<string>("sync:persist-resume", (e) => {
+        const me = currentWindowLabel() ?? INSTANCE_ID;
+        const sender = typeof e.payload === "string" ? e.payload : "unknown";
+        resumePersistence(sender === me ? "self" : `remote:${sender}`);
+      });
+      unsubs.push(uResume);
+      if (disposed) {
+        unsubs.forEach((u) => u());
+      } else {
+        un = () => unsubs.forEach((u) => u());
+      }
+    } catch (err) {
+      // 监听注册失败只损失本窗的闸门响应（不致命）；先拆已注册者防泄漏
+      //记日志便于排查。
+      unsubs.forEach((u) => u());
+      console.error("[sync] persist-gate listen failed", err);
+    }
+  })();
+  return () => {
+    disposed = true;
+    un?.();
+  };
+}
+
+/**
  * 设置通道广播（80ms 防抖 + 防抖尾去重）：完整同步（useCrossWindowSync）与
  * 只读设置精简同步（useCrossWindowSettingsSync，网速条）共用。挂载即以当前
  * 快照重建三方合并基线的 settings 半边。返回清理函数。
@@ -861,6 +1126,9 @@ function setupSettingsBroadcast(): () => void {
   let settingsTimer = 0;
   lastSettingsJson = "";
   seedSettingsBase();
+  // 注册「外部快照采纳」基线推进钩子（settings-store 的 LS 回读 /
+  // DB 水合两条静默写路径完成后回调）；卸载时摘除。
+  setExternalSettingsAdoptionHook(noteExternalSettingsAdoption);
   // Selector over ONLY the synced fields + shallow equality: the listener runs
   // just when a synced value actually changes, not on every store write such as
   // settingsOpen/settingsPage (which would JSON.stringify the whole snapshot for
@@ -868,7 +1136,7 @@ function setupSettingsBroadcast(): () => void {
   const unsubSettingsStore = useSettingsStore.subscribe(
     (s) => pickSettingsFields(s),
     (snap, prev) => {
-      // applyingRemote：采纳远端期间；isRemoteApplying()：水合等「非用户编辑」
+      // applyingRemote：采纳远端期间；isRemoteApplying：水合等「非用户编辑」
       // 的晚到写入（见 sync-gate）——两者都不得视为本地编辑去广播。
       if (applyingRemote || isRemoteApplying()) return;
       stampLeafEdits(prev, snap, settingsEditTs, Date.now());
@@ -877,7 +1145,7 @@ function setupSettingsBroadcast(): () => void {
       // store 写入都在主线程整表 stringify——逐字编辑设置 = 每窗口每键
       // O(N) 序列化。80ms 窗口内至多序列化一次，与上次发射相同则不发。
       settingsTimer = window.setTimeout(() => {
-        const json = JSON.stringify(pickSettingsFields(useSettingsStore.getState()));
+        const json = jsonOf(pickSettingsFields(useSettingsStore.getState()));
         if (json === lastSettingsJson) return;
         lastSettingsJson = json;
         emitSettings();
@@ -885,9 +1153,35 @@ function setupSettingsBroadcast(): () => void {
     },
     { equalityFn: shallow }
   );
+  /* 80ms 广播防抖的 pagehide 冲刷（对齐 widget-config
+       150ms 通道的收尾范式）。根因：关窗时防抖尾包随定时器一起蒸发——对端错过
+       本窗最后一次设置编辑后，其内存停留在旧快照，此后对端任意一次编辑都会以
+       陈旧内存整包回写共享 LS/磁盘，把本窗刚做的修改回滚。冲刷仅在该定时器
+       计时中触发：clear 后按定时器回调同款「现取 store 现值」口径发射（去重串
+       照常短路等值包），幂等——接收方有叶子基线 + (ts,json) 仲裁守卫。完整同步
+       与精简同步（useCrossWindowSettingsSync 卫星窗）共用本 setup，一并获得。 */
+  const flushSettingsOnPageHide = () => {
+    if (!settingsTimer) return;
+    clearTimeout(settingsTimer);
+    settingsTimer = 0;
+    const json = jsonOf(pickSettingsFields(useSettingsStore.getState()));
+    if (json === lastSettingsJson) return;
+    lastSettingsJson = json;
+    emitSettings();
+  };
+  window.addEventListener("pagehide", flushSettingsOnPageHide);
   return () => {
     window.clearTimeout(settingsTimer);
+    window.removeEventListener("pagehide", flushSettingsOnPageHide);
+    // 分歧回播定时器（模块级 settingsReplayTimer）一并清理：完整同步的
+    // cleanup 自行清过一次；精简同步（useCrossWindowSettingsSync）只调用本
+    // 函数，若不在此清理，卫星窗卸载后待发回播会在已拆除的订阅上发射。
+    // 清理后必须复位句柄：残留非 0 值会让 remount 后 replaySettings 的
+    // 「已有待发回播」早退永久成立（退避档通道失效）。
+    clearTimeout(settingsReplayTimer);
+    settingsReplayTimer = 0;
     unsubSettingsStore();
+    setExternalSettingsAdoptionHook(null);
   };
 }
 
@@ -931,22 +1225,27 @@ export function useCrossWindowSync() {
     // Selector 只取持久化字段：selectedId / selectedIds / editMode 等瞬态
     // （编辑模式点选、框选、拖拽参考线）变化频繁但不参与同步，旧的全量
     // 订阅会让每次点选都触发一次全量 JSON.stringify + 定时器重排。
-    let lastWidgetsSnap: Pick<WidgetSyncPayload, "instances" | "views" | "activeView" | "trash"> | null = null;
+    // groups 必须随包：漏发会让接收端 applyRemoteWidgets 把本地组清成空表
+    // （「合并后打开设置窗口编组就散」的根因——设置窗挂载 hydrate 触发的
+    // 一次无 groups 快照把桌面刚建的组冲掉）。
+    let lastWidgetsSnap: Pick<WidgetSyncPayload, "instances" | "groups" | "views" | "activeView" | "trash"> | null =
+      null;
     let widgetsTimer = 0;
     const unsubWidgetsStore = useWidgetStore.subscribe(
-      (s) => ({ instances: s.instances, views: s.views, activeView: s.activeView, trash: s.trash }),
+      (s) => ({ instances: s.instances, groups: s.groups, views: s.views, activeView: s.activeView, trash: s.trash }),
       (snap) => {
         if (applyingRemote) return;
         if (widgetsSyncSuspended) {
           widgetsDirtyDuringSuspend = true;
           return;
         }
-        // F-2：引用级短路。equalityFn=shallow 已保证「字段引用有变」才进回调，
+        // 引用级短路。equalityFn=shallow 已保证「字段引用有变」才进回调，
         // 这里再按引用比较一次作第二道保险，彻底移除每帧全量 JSON.stringify
         // （真正的序列化只在 80ms 防抖触发 emit 时由 IPC 层进行）。
         if (
           lastWidgetsSnap &&
           lastWidgetsSnap.instances === snap.instances &&
+          lastWidgetsSnap.groups === snap.groups &&
           lastWidgetsSnap.views === snap.views &&
           lastWidgetsSnap.activeView === snap.activeView &&
           lastWidgetsSnap.trash === snap.trash
@@ -956,7 +1255,21 @@ export function useCrossWindowSync() {
         lastWidgetsSnap = snap;
         clearTimeout(widgetsTimer);
         widgetsTimer = window.setTimeout(() => {
-          emitWidgets({ screenId: currentScreenId(), ...snap });
+          /* 发射时现取 store 现值（对齐 dock 通道
+             emitDockNow 的口径），不再沿用订阅回调捕获的旧 snap——屏号与
+             数据同源同时刻取自 getState，从结构上杜绝「防抖窗口内编辑后
+             切屏：定时器到期把旧屏数据打上新屏标」。防抖窗口内若远端包
+             被采纳（applyingRemote 抑制了本回调的重排），现值发射只是一次
+             幂等回声，不再像旧 snap 那样把远端刚带来的值整包回滚。 */
+          const cur = useWidgetStore.getState();
+          emitWidgets({
+            screenId: currentScreenId(),
+            instances: cur.instances,
+            groups: cur.groups,
+            views: cur.views,
+            activeView: cur.activeView,
+            trash: cur.trash
+          });
         }, 80);
       },
       { equalityFn: shallow }
@@ -972,42 +1285,92 @@ export function useCrossWindowSync() {
       (s) => s.activeView,
       (view) => {
         if (applyingRemote) return;
-        import("@tauri-apps/api/event")
-          .then(({ emit }) =>
-            emit(SYNC_EVENTS.viewSwitch, {
-              instanceId: INSTANCE_ID,
-              screenId: currentScreenId(),
-              view
-            } satisfies ViewSwitchSyncPayload)
-          )
-          .catch(() => {});
+        /* 补齐：emit 失败退避重发（接收方按 view 字符串幂等采纳）。 */
+        emitWithRetry(SYNC_EVENTS.viewSwitch, {
+          instanceId: INSTANCE_ID,
+          screenId: currentScreenId(),
+          view
+        } satisfies ViewSwitchSyncPayload);
       }
     );
 
     // ---- 对外广播：灵动岛配置（按屏） ----
     // 每个写方（setDock / addDockTile / setDockPlacement…）都整对象替换 dock，
     // 引用变化即有效变更；dockDrag 等瞬态不在 selector 里，拖动排序不触发。
+    // 去重序列化移入防抖尾（与 habits 通道同口径）——引用变化但内容相同
+    // 的写入（幂等重放 / 陈旧闭包整包回写）不再每写一次整包 stringify + 广播。
     let dockTimer = 0;
+    let lastDockJson = "";
+    const emitDockNow = () => {
+      const cur = useWidgetStore.getState().dock;
+      const json = jsonOf(cur);
+      if (json === lastDockJson) return;
+      lastDockJson = json;
+      const rev = ++dockRev;
+      emitWithRetry(
+        SYNC_EVENTS.dock,
+        {
+          instanceId: INSTANCE_ID,
+          rev,
+          screenId: currentScreenId(),
+          dock: cur
+        } satisfies DockSyncPayload,
+        () => {
+          lastDockJson = "";
+        }
+      );
+    };
     const unsubDockStore = useWidgetStore.subscribe(
       (s) => s.dock,
-      (dock) => {
+      () => {
         if (applyingRemote) return;
         clearTimeout(dockTimer);
         dockTimer = window.setTimeout(() => {
-          const rev = ++dockRev;
-          import("@tauri-apps/api/event")
-            .then(({ emit }) =>
-              emit(SYNC_EVENTS.dock, {
-                instanceId: INSTANCE_ID,
-                rev,
-                screenId: currentScreenId(),
-                dock
-              } satisfies DockSyncPayload)
-            )
-            .catch(() => {});
+          dockTimer = 0;
+          emitDockNow();
         }, 80);
       }
     );
+    /* 把「pending 即发」的冲刷能力挂给 widget-store（经 register 回调
+       注入，避免静态环依赖）——switchScreen 分区切换 set() 会触发订阅回调把
+       旧屏 80ms 内待发射的 sync:dock **取消**（clear 不发），此后发射的是新屏
+       快照：旧屏对端错过事件且 repull 只在监听就绪时执行一次，其后任意一次
+       dock 写入都以陈旧内存整包回写、污染 LS 权威源与 SQLite 镜像。布局通道
+       有 flushWidgetLayoutSync 同款，dock 此前漏了。 */
+    registerDockBroadcastFlusher(() => {
+      if (applyingRemote) return;
+      if (dockTimer) {
+        clearTimeout(dockTimer);
+        dockTimer = 0;
+      }
+      emitDockNow();
+    });
+    /* widgets 80ms 广播防抖的对位冲刷钩子（dock 的
+       同款）——switchScreen 的 set() 会触发上面的 widgets 订阅回调，把
+       旧屏待发射的 sync:widgets **取消**（clear 不发），旧屏那次编辑从此
+       无人知晓（旧屏对端要等下一次任意编辑才追上）。switchScreen 在切换前
+       经此钩子先发射一次——冲刷点在 currentScreen 改写之前，屏号与数据
+       一致；无待发定时器时 no-op。 */
+    registerWidgetsBroadcastFlusher(() => {
+      if (applyingRemote) return;
+      if (!widgetsTimer) return;
+      clearTimeout(widgetsTimer);
+      widgetsTimer = 0;
+      /* 冲刷与 的 80ms 定时器同口径——现取 store
+         现值发射，不再用订阅回调捕获的 lastWidgetsSnap。防抖窗口内远端包被
+         采纳时（applyingRemote 抑制订阅回调、snap 不更新），旧 snap 会把远端
+         刚带来的值整包回滚给同屏对端（widgets 通道整包 LWW、无墓碑可救）；
+         现值发射在无并发时与 snap 等价（幂等回声），有并发时保住对端更新。 */
+      const cur = useWidgetStore.getState();
+      emitWidgets({
+        screenId: currentScreenId(),
+        instances: cur.instances,
+        groups: cur.groups,
+        views: cur.views,
+        activeView: cur.activeView,
+        trash: cur.trash
+      });
+    });
 
     // ---- 对外广播：任务 / 截止日 / 番茄钟配置 ----
     // 设置窗口里改「专注时长」或增删任务时，桌面层正在运行的番茄钟与
@@ -1024,12 +1387,14 @@ export function useCrossWindowSync() {
         stampRowEdits(prev.deadlines, snap.deadlines, deadlinesTs, pendingRemovedDeadlines, now);
         stampLeafEdits(prev.pomodoroConfig, snap.pomodoroConfig, configEditTs, now);
         clearTimeout(appTimer);
+        appEmitPending = true;
         // 去重序列化移入防抖尾：任何一条任务/截止日的每次编辑（拖输入法、逐字
         // 打标题）此前都在每个窗口主线程整表 stringify 一遍。80ms 窗口内至多
         // 一次序列化，与上次发射相同则不发。
         appTimer = window.setTimeout(() => {
+          appEmitPending = false;
           const cur = useAppStore.getState();
-          const json = JSON.stringify({
+          const json = jsonOf({
             tasks: cur.tasks,
             deadlines: cur.deadlines,
             pomodoroConfig: cur.pomodoroConfig
@@ -1042,7 +1407,7 @@ export function useCrossWindowSync() {
       { equalityFn: shallow }
     );
 
-    // ---- 对外广播：番茄钟运行态（D-1 残留接线）----
+    // ---- 对外广播：番茄钟运行态（残留接线）----
     // tick 只在 primary 窗口跑，其余窗口的番茄钟小组件读到的
     // remainingSeconds 若无同步将永久冻结。快照带墙钟锚点（segmentAnchor 等
     // 模块级变量不随 store 走），接收方应用后既每秒走秒，暂停/中断等操作
@@ -1068,7 +1433,12 @@ export function useCrossWindowSync() {
     const unsubPomodoroStore = useAppStore.subscribe(
       (s) => s.pomodoro,
       (pomodoro) => {
-        if (applyingRemote) return;
+        // 必须与 app 通道同款双重门闩。此前只查 applyingRemote——
+        // useCrossWindowSync 挂载后的兜底 hydrateApp 虽包在 withRemoteApply 里，
+        // 但本订阅不认 sync-gate 的门闩，水合重建的 pomodoro 对象（引用必变）
+        // 被当成「本地控制变更」广播：任一副窗口启动都会向全网发射一份
+        // defaults+LS 恢复值的陈旧快照，静默暂停/重置其他窗口正在运行的计时。
+        if (applyingRemote || isRemoteApplying()) return;
         const sig = `${pomodoro.isRunning}|${pomodoro.mode}|${pomodoro.timerMode}|${pomodoro.currentTaskId}|${pomodoro.currentEventLabel}`;
         const now = Date.now();
         const controlChanged = sig !== lastPomoSig;
@@ -1080,15 +1450,60 @@ export function useCrossWindowSync() {
         lastPomoSig = sig;
         lastPomoEmitAt = now;
         lastPomoRemaining = pomodoro.remainingSeconds;
-        import("@tauri-apps/api/event")
-          .then(({ emit }) =>
-            emit(SYNC_EVENTS.pomodoro, {
-              instanceId: INSTANCE_ID,
-              wallMs: now,
-              ...getPomodoroSyncSnapshot()
-            } satisfies PomodoroSyncPayload)
-          )
-          .catch(() => {});
+        // （迟加入窗口）：同一份快照落 LS 引导键——sync:pomodoro 在暂停态
+        // 完全不广播，晚打开的窗口（全屏窗/新副屏）靠这份键值拿到初始数据。
+        writePomodoroLiveSnapshot();
+        /* 补齐：控制包失败退避重发（接收方按 wallMs/纪元幂等，重发无害；
+           暂停/恢复跨窗不因单次 IPC 抖动丢失）。control 标记控制态包。 */
+        emitWithRetry(SYNC_EVENTS.pomodoro, {
+          instanceId: INSTANCE_ID,
+          wallMs: now,
+          control: controlChanged,
+          ...getPomodoroSyncSnapshot()
+        } satisfies PomodoroSyncPayload);
+      }
+    );
+
+    /* （副屏统计即时刷新）：新完成的会话记录增量广播。订阅尾条 id：
+       append-only（tail 截断只影响头部），尾条变化即新记录。水合/远端应用
+       都在双重门闩内，不会回声。 */
+    let lastEmittedSessionId = useAppStore.getState().sessions.at(-1)?.id ?? "";
+    const unsubSessionStore = useAppStore.subscribe(
+      (s) => s.sessions,
+      (sessions) => {
+        if (applyingRemote || isRemoteApplying()) return;
+        const last = sessions.at(-1);
+        if (!last || last.id === lastEmittedSessionId) return;
+        lastEmittedSessionId = last.id;
+        /* 补齐：增量包失败退避重发（接收方按记录 id 幂等去重）。 */
+        emitWithRetry(SYNC_EVENTS.session, {
+          instanceId: INSTANCE_ID,
+          record: last
+        });
+      }
+    );
+
+    /* （打断统计跨窗同步）：新打断记录增量广播——与 session 通道同款。
+       打断记录无 id 字段，用 startedAt|endedAt|reason 组合键去重（同一打断
+       瞬时三元组实际只在重复广播时出现）。此前副窗口的「中断 N 次」与
+       月度打断图要等重启才刷新。 */
+    const interruptionKey = (i: PomodoroInterruption) => `${i.startedAt}|${i.endedAt}|${i.reason}`;
+    const initialInterruption = useAppStore.getState().interruptions.at(-1);
+    let lastEmittedInterruptionKey = initialInterruption ? interruptionKey(initialInterruption) : "";
+    const unsubInterruptionStore = useAppStore.subscribe(
+      (s) => s.interruptions,
+      (interruptions) => {
+        if (applyingRemote || isRemoteApplying()) return;
+        const last = interruptions.at(-1);
+        if (!last) return;
+        const key = interruptionKey(last);
+        if (key === lastEmittedInterruptionKey) return;
+        lastEmittedInterruptionKey = key;
+        /* 补齐：增量包失败退避重发（接收方按组合键幂等去重）。 */
+        emitWithRetry(SYNC_EVENTS.interruption, {
+          instanceId: INSTANCE_ID,
+          record: last
+        });
       }
     );
 
@@ -1104,28 +1519,90 @@ export function useCrossWindowSync() {
         // 相同的写入不再每写一次整表 stringify。
         habitsTimer = window.setTimeout(() => {
           const cur = useHabitsStore.getState().habits;
-          const json = JSON.stringify(cur);
+          const json = jsonOf(cur);
           if (json === lastHabitsJson) return;
           lastHabitsJson = json;
           const rev = ++habitsRev;
-          import("@tauri-apps/api/event")
-            .then(({ emit }) => emit(SYNC_EVENTS.habits, { instanceId: INSTANCE_ID, rev, habits: cur }))
-            .catch(() => {});
+          // 重发仍失败 → 复位去重串，本窗下一次任意编辑必重播。
+          emitWithRetry(SYNC_EVENTS.habits, { instanceId: INSTANCE_ID, rev, habits: cur }, () => {
+            lastHabitsJson = "";
+          });
         }, 80);
       },
       { equalityFn: shallow }
     );
 
+    /* widgets/dock/app/habits 四条 80ms 广播防抖的
+       pagehide 冲刷（settings 通道在 setupSettingsBroadcast 内自行冲刷；对齐
+       widget-config 150ms 通道的 pagehide 收尾范式）。根因：关窗时防抖尾包随
+       定时器蒸发 → 对端错过本窗最后一次编辑 → 对端此后任意一次编辑以陈旧
+       内存整包回写磁盘（widgets/dock 是整包 LWW，回滚面最大），本窗刚做的
+       修改被无声回滚。每条通道仅当其定时器计时中才冲刷（clear 后按各自定时器
+       回调的「现取 store 现值」口径立即发射，不用旧快照）；接收方有 rev/ts/
+       行基线守卫，等值或重复包幂等无害。监听在 cleanup 中移除，防 remount 后
+       双挂导致重复冲刷。 */
+    const flushBroadcastsOnPageHide = () => {
+      if (widgetsTimer) {
+        clearTimeout(widgetsTimer);
+        widgetsTimer = 0;
+        const cur = useWidgetStore.getState();
+        emitWidgets({
+          screenId: currentScreenId(),
+          instances: cur.instances,
+          groups: cur.groups,
+          views: cur.views,
+          activeView: cur.activeView,
+          trash: cur.trash
+        });
+      }
+      if (dockTimer) {
+        clearTimeout(dockTimer);
+        dockTimer = 0;
+        emitDockNow();
+      }
+      if (appTimer) {
+        clearTimeout(appTimer);
+        appTimer = 0;
+        appEmitPending = false;
+        const cur = useAppStore.getState();
+        const json = jsonOf({ tasks: cur.tasks, deadlines: cur.deadlines, pomodoroConfig: cur.pomodoroConfig });
+        if (json !== lastAppJson) {
+          lastAppJson = json;
+          emitApp();
+        }
+      }
+      if (habitsTimer) {
+        clearTimeout(habitsTimer);
+        habitsTimer = 0;
+        const cur = useHabitsStore.getState().habits;
+        const json = jsonOf(cur);
+        if (json !== lastHabitsJson) {
+          lastHabitsJson = json;
+          const rev = ++habitsRev;
+          emitWithRetry(SYNC_EVENTS.habits, { instanceId: INSTANCE_ID, rev, habits: cur }, () => {
+            lastHabitsJson = "";
+          });
+        }
+      }
+    };
+    window.addEventListener("pagehide", flushBroadcastsOnPageHide);
+
     // ---- 接收远端事件。emit 会广播到所有窗口（包括发送方自己）：
     //      载荷带 instanceId，自己的回声直接跳过，省一次全量 setState。 ----
-    let unsubs: (() => void)[] = [];
+    /* unsubs 改为「注册即入列」的可变数组——旧实现
+       要等全部 9 个 listen 成功才整体赋值，中途某个 reject 时 catch 迭代的
+       是空数组，u1..uk 已注册的监听全部泄漏。现在失败路径能真正拆掉已注
+       册者（未挂载卸载则由 cleanup 兜底），成功路径与 cleanup 都迭代同一
+       数组；unlisten 幂等，disposed 分支与 catch 的重复拆除无害。 */
+    const unsubs: (() => void)[] = [];
     let disposed = false;
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       const u1 = await listen<SettingsSyncPayload>(SYNC_EVENTS.settings, (e) => {
         handleRemoteSettingsPayload(e.payload);
       });
-      // A-12：按发送方记忆「上次已应用的 rev」，拒绝乱序/重复到达的旧整包快照。
+      unsubs.push(u1);
+      // 按发送方记忆「上次已应用的 rev」，拒绝乱序/重复到达的旧整包快照。
       // pendingRemoteView：幽灵视图守卫的待采纳切换（见下方 uView 注释），由
       // u2 在 views 列表跟进后补切。
       let pendingRemoteView: string | null = null;
@@ -1168,6 +1645,7 @@ export function useCrossWindowSync() {
           }
         }
       });
+      unsubs.push(u2);
       // 视图切换：同屏采纳、回声跳过。走 store 的 setActiveView 完整语义（冲刷并保存
       // 当前视图布局 → 载入目标视图布局 → 重置选中/参考线等瞬态 → 记住活动视图），
       // 与本窗口自己切换完全一致；紧随其后的 sync:widgets 整包快照会带来目标视图
@@ -1193,6 +1671,7 @@ export function useCrossWindowSync() {
           applyingRemote = false;
         }
       });
+      unsubs.push(uView);
       // 灵动岛配置：同屏采纳、回声跳过、按发送方 rev 拒旧拒重（与 widgets 同型）。
       const lastDockRevBySender = new Map<string, number>();
       const uDock = await listen<DockSyncPayload>(SYNC_EVENTS.dock, (e) => {
@@ -1206,13 +1685,19 @@ export function useCrossWindowSync() {
         applyingRemote = true;
         try {
           applyRemoteDock(e.payload);
+          /* 远端采纳后推进去重基线——本窗 dock 已变成对端内容，若基线还停在
+             自己上一次发射的 JSON，之后用户改回“恰好相同”的内容会被误判为重复
+             而拒绝广播，对端从此停留在旧态（发射侧去重的通例：凡是不经本通道
+             发射的 dock 变更都要同步刷新基线）。 */
+          lastDockJson = jsonOf(useWidgetStore.getState().dock);
         } catch (err) {
           console.error("sync:dock apply failed", err);
         } finally {
           applyingRemote = false;
         }
       });
-      // P0-DDL：单调时间戳守卫（与 sync:pomodoro 的 wallMs 同型）。相等也拒——
+      unsubs.push(uDock);
+      // -DDL：单调时间戳守卫（与 sync:pomodoro 的 wallMs 同型）。相等也拒——
       // 多窗口交错时保留先到者；回声同样推进基准。通过守卫的包不再整包覆盖，
       // 而是行级/叶子级三方合并（applyRemoteApp）：防抖窗口内两窗口分别改不同
       // 行不再互相回滚；删除凭证 + 墓碑保证已删行不会被陈旧包复活。
@@ -1242,21 +1727,53 @@ export function useCrossWindowSync() {
           replayApp();
         }
       });
-      // D-1：接收番茄钟运行态快照。wallMs 单调守卫拒乱序旧包（同一发送方
+      unsubs.push(u3);
+      // 接收番茄钟运行态快照。wallMs 单调守卫拒乱序旧包（同一发送方
       // 的事件通道是 FIFO，但多窗口操作与 primary tick 的快照仍可能交错）。
-      // P0 审计修复（暂停竞态）：
+      // 审计修复（暂停竞态）：
       //  1) 相等也拒（<=）——同毫秒内暂停包与 tick 包互踩时保留先到者；
       //  2) 回声也推进守卫基准——本窗口刚广播的时间戳成为下界，此后任何
       //     窗口（含 primary tick）更旧的运行态快照都不再可能回滚暂停。
+      // （跨发送方暂停回滚）：wallMs 仲裁只覆盖「同拍互踩」——迷你窗发
+      // 暂停包后、主窗恰逢 5s 锚点到点以 >发出「运行中」锚点包
+      // 时，两边会一致回滚到运行态。控制纪元（controlEpoch，每个用户控制
+      // 动作自增并随包携带）让纪元更新的包无条件获胜、纪元更旧的包无条件
+      // 拒收，锚点包永远压不过更新的控制态包。
       let lastPomodoroWallMs = 0;
+      let lastPomodoroEpoch = 0;
       const u4 = await listen<PomodoroSyncPayload>(SYNC_EVENTS.pomodoro, (e) => {
         if (!e.payload) return;
         const wallMs = typeof e.payload.wallMs === "number" ? e.payload.wallMs : Date.now();
+        const epoch = typeof e.payload.controlEpoch === "number" ? e.payload.controlEpoch : 0;
         if (e.payload.instanceId === INSTANCE_ID) {
           if (wallMs > lastPomodoroWallMs) lastPomodoroWallMs = wallMs;
+          if (epoch > lastPomodoroEpoch) lastPomodoroEpoch = epoch;
           return;
         }
-        if (wallMs <= lastPomodoroWallMs) return;
+        // 纪元更旧 = 发送方还没看到本地已应用/已发出的控制变更，整包拒收
+        // （旧版本载荷无纪元字段，恒 0，退回纯 wallMs 仲裁保兼容）。
+        // 纪元基线是启动墙钟（见 app-store），重载后的窗口本地纪元天然
+        // 大于老窗口的锚点包纪元——锚点包（control=false，纯走秒重发）若也
+        // 与本地控制纪元比对，会被永久拒收、无法重新采纳运行态。因此锚点
+        // 包只与「已应用的远端纪元」比对；控制包保持严格双基准仲裁（本地
+        // store 纪元 ∪ 回声基准，取大者）。
+        // 只比回声基准会在「本地控制动作与其回声之间」重开暂停回滚
+        // 竞态——锚点包额外比对本地控制动作墙钟（见下方第三基准）。
+        const isControlPacket = e.payload.control !== false;
+        const localEpoch = Math.max(lastPomodoroEpoch, getPomodoroControlEpoch());
+        const gateEpoch = isControlPacket ? localEpoch : lastPomodoroEpoch;
+        if (epoch < gateEpoch) return;
+        if (epoch === gateEpoch && wallMs <= lastPomodoroWallMs) return;
+        /* 锚点包第三基准——本地控制动作墙钟。本地控制（暂停/开始…）
+           已应用、控制包已发射而自身回声未到的窗口里，锚点早于本地控制时刻
+           即发送方尚未见过我们的控制包，其运行态认知已被超越，拒收防回滚
+           （相等也拒，与 同拍互踩口径一致）。重载窗口该值为 0 不受影响。
+           R-前端-7（复审备案）：按发送时刻仲裁仍留毫秒级残窗——对端在「本地
+           控制之后、应用控制包之前」发出的锚点（wallMs 更新、内容为运行态）
+           可通过三闸；窗口已从「回声延迟」缩窄为「对端应用延迟 × 恰逢锚点
+           拍」，且 emitWithRetry 重试保证最终收敛，接受。 */
+        if (!isControlPacket && wallMs <= getLastLocalControlWallMs()) return;
+        lastPomodoroEpoch = Math.max(lastPomodoroEpoch, epoch);
         lastPomodoroWallMs = wallMs;
         applyingRemote = true;
         try {
@@ -1289,6 +1806,7 @@ export function useCrossWindowSync() {
           stopPomodoroWalk();
         }
       });
+      unsubs.push(u4);
       // 习惯打卡：全局单例。§4.14：与 widgets 同型的按发送方 rev 守卫——
       // 多窗口交替打卡时乱序到达的旧整表不再可能回滚对方的最新打卡。
       const lastHabitsRevBySender = new Map<string, number>();
@@ -1304,58 +1822,157 @@ export function useCrossWindowSync() {
         applyingRemote = true;
         try {
           applyRemoteHabits(e.payload.habits);
+          /* 远端采纳后推进去重基线（与 uDock / lastSettingsJson 同口径）——
+             本窗 habits 已变成对端内容，基线若仍停在本地最后一次发射的 JSON，
+             之后用户改回「恰好相同」的内容会被误判为重复而拒绝广播，对端停留
+             在旧值直到下一次不同的编辑。 */
+          lastHabitsJson = jsonOf(useHabitsStore.getState().habits);
         } catch (err) {
           console.error("sync:habits apply failed", err);
         } finally {
           applyingRemote = false;
         }
       });
+      unsubs.push(u5);
       // B-恢复 ack 协议：备份整表替换/重置期间的持久化暂停闸门。任何窗口收到
       // pause 即置位闸门（此后防抖落盘直接丢弃）并回发 ack；resume 解除。
       // ack 载荷带本窗口 label：发起方按 label 排除自己（emit 会回环到发送方
       // 自身，用 INSTANCE_ID 时自回声会被计入去重集合，两窗口场景永远等不到
       // 对端真 ack 就放行）；重复 pause 再次回 ack 无害。
-      const { emit } = await import("@tauri-apps/api/event");
-      const u6 = await listen("sync:persist-pause", () => {
-        suspendPersistence();
-        void emit("sync:persist-acked", currentWindowLabel() ?? INSTANCE_ID);
+      // 抽成共用 helper——taskbar-net/snip/super-panel/fullscreen 等挂
+      // useCrossWindowSettingsSync 的卫星窗也要参与 pause-ack 协议，否则
+      // 恢复备份恒等满 1200ms 超时、卫星窗在恢复窗口内照常写共享 LS。
+      const uPauseResume = setupPersistGateListeners();
+      /* persist-gate 的两个 listen 在 helper 内部同样「注册即入列」并
+         自带失败自拆；此处只需把 helper 的统一收口句柄挂进主链的拆除列表。 */
+      unsubs.push(uPauseResume);
+      /* （副屏统计即时刷新）：接收单条新会话记录——按 id 去重 append。
+         withRemoteApply + applyingRemote 双闸，采纳不会触发本窗回播。 */
+      const u8 = await listen<{ instanceId?: string; record?: PomodoroSessionRecord }>(SYNC_EVENTS.session, (e) => {
+        if (!e.payload || e.payload.instanceId === INSTANCE_ID) return;
+        const rec = e.payload.record;
+        if (!rec || typeof rec.id !== "string") return;
+        if (useAppStore.getState().sessions.some((x) => x.id === rec.id)) return;
+        applyingRemote = true;
+        try {
+          withRemoteApply(() => {
+            useAppStore.setState((st) => ({
+              sessions: [...st.sessions, rec].slice(Math.max(0, st.sessions.length + 1 - 500))
+            }));
+          });
+        } catch (err) {
+          console.error("sync:session apply failed", err);
+        } finally {
+          applyingRemote = false;
+        }
       });
-      const u7 = await listen("sync:persist-resume", () => {
-        resumePersistence();
+      unsubs.push(u8);
+      /* （打断统计跨窗同步）：接收单条新打断记录——按 起始|结束|原因
+         组合键去重 append（记录无 id 字段），双闸内采纳不回播。 */
+      const u9 = await listen<{ instanceId?: string; record?: PomodoroInterruption }>(SYNC_EVENTS.interruption, (e) => {
+        if (!e.payload || e.payload.instanceId === INSTANCE_ID) return;
+        const rec = e.payload.record;
+        if (!rec || typeof rec.startedAt !== "string" || typeof rec.reason !== "string") return;
+        const key = `${rec.startedAt}|${rec.endedAt}|${rec.reason}`;
+        if (useAppStore.getState().interruptions.some((x) => `${x.startedAt}|${x.endedAt}|${x.reason}` === key)) return;
+        applyingRemote = true;
+        try {
+          withRemoteApply(() => {
+            useAppStore.setState((st) => ({
+              // INTERRUPTIONS_CAP=300（app-store 同值；跨窗模块不引常量）。
+              interruptions: [...st.interruptions, rec].slice(Math.max(0, st.interruptions.length + 1 - 300))
+            }));
+          });
+        } catch (err) {
+          console.error("sync:interruption apply failed", err);
+        } finally {
+          applyingRemote = false;
+        }
       });
+      unsubs.push(u9);
       if (disposed) {
-        u1();
-        u2();
-        uView();
-        uDock();
-        u3();
-        u4();
-        u5();
-        u6();
-        u7();
+        unsubs.forEach((u) => u());
         return;
       }
-      unsubs = [u1, u2, uView, uDock, u3, u4, u5, u6, u7];
-      // A-12：监听就绪后重读一次 SQLite 权威副本，兜住「启动期 sync:widgets 落在
+      // 监听就绪后重读一次 SQLite 权威副本，兜住「启动期 sync:widgets 落在
       // 监听注册前被丢弃」的陈旧布局缺口（带 seq+baseline 守卫，不覆盖新编辑）。
       void repullWidgetsFromDb();
-    })();
+      // 同款兜底扩到 settings/app 通道：设置侧回读共享 localStorage 权威快照；
+      // app 侧重跑一次水合（DB 快照补齐合并，幂等）。被丢弃的启动期广播
+      // 对应的落盘写入都会在这两次回读中被采纳。仅 Tauri（跨窗同步只存在于
+      // 多窗口运行时；浏览器/测试环境重跑水合无意义且依赖不完整的持久层）。
+      if (isTauri()) {
+        repullSettingsFromLs();
+        // （迟加入窗口初始拉取）：番茄钟通道同款兜底。sync:pomodoro 在
+        // 暂停态完全不广播、锚点包最长 5s 一发——此前晚打开的窗口在暂停态
+        // 永远拿不到数据（全屏窗停在占位、副窗显示满额）。读共享 LS 引导
+        // 快照应用一次（不回播），随后被实时广播自然接管。必须在
+        // hydrateApp 之前：应用后 remotePomodoroApplied 置位，晚到水合不再
+        // 用 defaults+LS 旧值整包覆盖。
+        const livePomo = readPomodoroLiveSnapshot();
+        if (livePomo) {
+          applyingRemote = true;
+          try {
+            applyRemotePomodoroSnapshot(livePomo);
+          } catch {
+            // 引导失败静默——实时广播仍是主路径
+          } finally {
+            applyingRemote = false;
+          }
+        }
+        void hydrateApp().catch((err) => console.error("[sync] app repull failed", err));
+        // dock 通道同款兜底——uDock 注册前被丢弃的 sync:dock 事件对应的
+        // LS 写入在此采纳（applyingRemote 抑制采纳引发的回播）。此处**不**推进
+        // 去重基线：启动期基线为空串，与任何 JSON 都不等，首次本地编辑必发射
+        // （habits 通道同口径）；基线只在「远端采纳」（uDock）与「本窗发射」
+        // 两个时点推进，凡是不经本通道发射的 dock 变更即刷新基线。
+        applyingRemote = true;
+        try {
+          repullDockFromLs();
+        } finally {
+          applyingRemote = false;
+        }
+      }
+    })().catch((err: unknown) => {
+      /* ①：注册链中断处理（对齐 setupPersistGateListeners 的口径）——
+         u1 成功后 u2 因瞬时 IPC 失败 reject，u3..u9 永不注册，本窗会进入
+         「settings 可同步、其余全聋」的静默分叉态直到 reload，且已注册监听
+         泄漏。先拆已注册监听（未挂载则由下方 cleanup 兜底），再上报进控制台
+         供诊断；不重抛，避免 unhandled rejection。
+         unsubs 已改为「注册即入列」，这里迭代到的
+         是真正已注册的集合（旧实现此时恒为空数组，u1 等已注册者照样泄漏）。 */
+      unsubs.forEach((u) => u());
+      console.error("[sync] cross-window listen chain interrupted:", err);
+    });
 
     return () => {
       disposed = true;
+      // 摘除 pagehide 冲刷监听（与各防抖定时器同生命周期）。
+      window.removeEventListener("pagehide", flushBroadcastsOnPageHide);
       // 设置通道的防抖定时器 + 订阅由共用 helper 一并清理。
       unsubSettingsStore();
       clearTimeout(settingsReplayTimer);
+      // 清理后必须复位句柄：定时器被取消不再触发回调内的复位，残留非 0 值
+      // 会让 remount 后 replay* 的「已有待发回播」早退永久成立（退避档通道失效）。
+      settingsReplayTimer = 0;
       clearTimeout(widgetsTimer);
       clearTimeout(dockTimer);
+      /* 摘除 switchScreen 挂的 dock 冲刷钩子（防迟到的 flusher 调用
+         已卸载订阅后的陈旧闭包）。：widgets 冲刷钩子同款摘除。 */
+      registerDockBroadcastFlusher(null);
+      registerWidgetsBroadcastFlusher(null);
       clearTimeout(appTimer);
+      appEmitPending = false;
       clearTimeout(appReplayTimer);
+      appReplayTimer = 0;
       clearTimeout(habitsTimer);
       unsubWidgetsStore();
       unsubViewSwitch();
       unsubDockStore();
       unsubAppStore();
       unsubPomodoroStore();
+      unsubSessionStore();
+      unsubInterruptionStore();
       stopPomodoroWalk();
       unsubHabitsStore();
       unsubs.forEach((u) => u());
@@ -1375,6 +1992,9 @@ export function useCrossWindowSettingsSync() {
   useEffect(() => {
     if (!isTauri()) return;
     const unsubBroadcast = setupSettingsBroadcast();
+    // 卫星窗同样参与恢复备份的 pause-ack 协议（置位闸门 + 回 ack +
+    // resume 解除），否则发起方按 getAll() 计数永远等不齐 ack。
+    const unsubPersistGate = setupPersistGateListeners();
     let disposed = false;
     let un: (() => void) | undefined;
     void (async () => {
@@ -1384,11 +2004,16 @@ export function useCrossWindowSettingsSync() {
       });
       if (disposed) u();
       else un = u;
-    })();
+    })().catch((err: unknown) => {
+      /* ①：卫星窗单监听注册失败不留未处理 rejection（窗口退化为「本地
+         设置不跟随远端」，下一次挂载自愈），上报进控制台供诊断。 */
+      console.error("[sync] settings-only listen chain interrupted:", err);
+    });
     return () => {
       disposed = true;
       un?.();
       unsubBroadcast();
+      unsubPersistGate();
     };
   }, []);
 }

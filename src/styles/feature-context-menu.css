@@ -1,13 +1,13 @@
 /* === 统一右键菜单（Fluent/Win11 风格） ================================
-   A2 统一后：桌面层与设置窗共用同一族 token——菜单 Portal 在 body 上，直接
+   统一后：桌面层与设置窗共用同一族 token——菜单 Portal 在 body 上，直接
    继承 <html> 上由主题引擎写入的明暗双档变量（设置窗不再局部重定义同名
-   token，此前「继承不到窗口内变量」的分歧已消失）。背景接 A1 求解的
+   token，此前「继承不到窗口内变量」的分歧已消失）。背景接 求解的
    L3 弹层色（--popover-bg，随小组件不透明度联动、α 下限 0.85）。 */
 
 .ctx-menu {
   position: fixed;
-  /* 阶梯内插层（global.css --z-ctx）：高于对话框、低于 toast。 */
-  z-index: var(--z-ctx, 10100);
+  /* 阶梯内插层（global.css --z-ctx）：高于配置 popover / 对话框、低于命令面板与 toast。 */
+  z-index: var(--z-ctx, 10120);
   min-width: 190px;
   max-width: 300px;
   padding: 5px;
@@ -54,7 +54,7 @@
   font: inherit;
   text-align: left;
   cursor: default;
-  /* A4 状态层：hover .08 / pressed .12 叠 On 色，danger 项叠危险色，
+  /* 状态层：hover .08 / pressed .12 叠 On 色，danger 项叠危险色，
      替代原手调 hover 底色（kb-active 与 hover 同视觉）。 */
   position: relative;
   isolation: isolate;

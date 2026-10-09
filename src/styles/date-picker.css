@@ -50,10 +50,14 @@
 .tm-dp-field svg {
   color: var(--muted-2);
 }
+/* absolute(向下展开) → fixed + portal 到 body——
+   原先在卡片 overflow:auto 的裁剪祖先内（倒计时/截止日期的触发点贴卡底，
+   弹层大半被裁掉）。top/left 由 DatePicker.tsx 渲染后按实测尺寸内联
+   （placePopover：上方优先、放不下翻下方、视口钳制），此处只留 fixed 与
+   层级令牌——仍用 --z-pop（阶梯语义不变：低于右键菜单/配置弹层/浮层菜单，
+   高于画布 HUD 带；portal 后挂在 body 上，不受卡片层叠栈裁剪）。 */
 .tm-dp-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   z-index: var(--z-pop);
   width: 238px;
   padding: 10px;

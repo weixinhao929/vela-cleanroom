@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 /**
- * 画布卡片拖入岛（F-2 入口 a，DROP 会话）：命中检测 + 高亮 / 插入位 / 幽灵芯片。
+ * 画布卡片拖入岛（入口 a，DROP 会话）：命中检测 + 高亮 / 插入位 / 幽灵芯片。
  *
  * 数据契约（CORE 已建）：widget-store.dockDrag 瞬态 {pointer, overIsland, insertIndex}，
  * 由画布卡片拖入（本文件）与岛内排序（DockTiles，REORDER 会话）共用。
@@ -18,22 +18,21 @@
  * translateX(-50%)，fixed 子元素会以它为包含块。三件预览：岛高亮描边
  * （--accent 45%）、插入位 2px 竖条（槽位变化时 transform 滑动；DockTiles 的共用
  * InsertBar 在场时由 CSS 隐藏本竖条，避免双条）、指针处幽灵芯片（类型图标 + 名称 +
- * D1 语义提示，scale 1.04，拖动 ghost）。
+ * 语义提示，scale 1.04，拖动 ghost）。
  * 全部 pointer-events:none；位置走 transform，动效只碰 opacity / transform。
  * 样式在 feature-dock.css 的 ══ DROP ══ 区段。
  */
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../../i18n-lite";
+import { uiZoom } from "../../lib/ui-zoom";
 import { getWidgetMeta } from "../registry";
 import { useWidgetStore, type DockDrag } from "../widget-store";
-import { insertionIndexAt } from "./dock-logic";
+import { HIT_RECTS_DIRTY_EVENT } from "../useClickThrough";
+import { DOCK_TILE_GAP_PX, insertionIndexAt } from "./dock-logic";
 
 /** 岛命中区外扩（px）：指针离胶囊边缘这么近就算命中，投放不必精确压在岛上。 */
 export const DROP_HIT_MARGIN = 24;
-
-/** `.dock-tiles` 的 flex gap（px）：插入竖条落在相邻磁贴的间隙中线。 */
-const TILE_GAP = 4;
 
 export type DropCache = {
   /** 岛本体视口矩形（高亮描边用）。 */
@@ -91,9 +90,9 @@ export function insertionBarX(cache: DropCache, insertIndex: number): number {
   if (tiles.length === 0) return island.left + island.width / 2;
   if (insertIndex >= tiles.length) {
     const last = tiles[tiles.length - 1];
-    return last.left + last.width + TILE_GAP / 2;
+    return last.left + last.width + DOCK_TILE_GAP_PX / 2;
   }
-  return tiles[Math.max(0, insertIndex)].left - TILE_GAP / 2;
+  return tiles[Math.max(0, insertIndex)].left - DOCK_TILE_GAP_PX / 2;
 }
 
 export function DockDropZone() {
@@ -123,27 +122,47 @@ export function DockDropZone() {
         useWidgetStore.getState().setDockDrag({ pointer: d.pointer, ...next });
       }
     };
-    /* 幽灵芯片跟随指针：订阅回调里直写 transform（写方已保证一帧一次）。 */
+    /* 幽灵芯片跟随指针：订阅回调里直写 transform（写方已保证一帧一次）。
+       portal 到 body 的 fixed 元素是布局单位——指针视觉坐标 ÷zoom。 */
     const moveGhost = (d: DockDrag | null) => {
       const el = ghostRef.current;
       if (el && d?.pointer) {
-        el.style.transform = `translate3d(${d.pointer.x + 14}px, ${d.pointer.y + 18}px, 0) scale(1.04)`;
+        const z = uiZoom();
+        el.style.transform = `translate3d(${(d.pointer.x + 14) / z}px, ${(d.pointer.y + 18) / z}px, 0) scale(1.04)`;
       }
     };
     sync(useWidgetStore.getState().dockDrag);
     moveGhost(useWidgetStore.getState().dockDrag);
-    return useWidgetStore.subscribe((s, prev) => {
+    /* 几何失效：收合/弹出/吸附这类只走 translate 的过渡结束后，DockShell 会派发
+       HIT_RECTS_DIRTY_EVENT。起拖瞬间岛可能还收在屏缘（autoHide：dockDrag 首写
+       与 tucked 翻 false 同一拍，React 重渲 + 360ms 过渡都晚于 readDropCache），
+       会话缓存的岛/磁贴矩形停在收合几何——收到失效事件即作废缓存重读 DOM，并
+       按最新指针立即重算（吸附 FLIP 的 cleanup 派发同一事件，顺带覆盖）。 */
+    const onGeomDirty = () => {
+      if (!session.current) return;
+      session.current = null;
+      const d = useWidgetStore.getState().dockDrag;
+      if (d) sync(d);
+    };
+    window.addEventListener(HIT_RECTS_DIRTY_EVENT, onGeomDirty);
+    const unsub = useWidgetStore.subscribe((s, prev) => {
       if (s.dockDrag !== prev.dockDrag) {
         sync(s.dockDrag);
         moveGhost(s.dockDrag);
       }
     });
+    return () => {
+      window.removeEventListener(HIT_RECTS_DIRTY_EVENT, onGeomDirty);
+      unsub();
+    };
   }, []);
 
   const c = session.current?.cache ?? null;
   if (!overIsland || !c) return null;
 
-  /* 挂载/槽位变化时刻的指针位置（非响应式读取即可：后续帧由 moveGhost 直写）。 */
+  /* 挂载/槽位变化时刻的指针位置（非响应式读取即可：后续帧由 moveGhost 直写）。
+     三件预览全 fixed（布局单位）：缓存里的 gBCR 视觉值与指针坐标统一 ÷zoom。 */
+  const z = uiZoom();
   const { x, y } = useWidgetStore.getState().dockDrag?.pointer ?? { x: 0, y: 0 };
   const meta = getWidgetMeta(c.type);
   const Icon = meta?.icon;
@@ -157,26 +176,26 @@ export function DockDropZone() {
       <div
         className="dock-drop-ring"
         style={{
-          left: c.island.left,
-          top: c.island.top,
-          width: c.island.width,
-          height: c.island.height,
-          borderRadius: c.island.height / 2
+          left: c.island.left / z,
+          top: c.island.top / z,
+          width: c.island.width / z,
+          height: c.island.height / z,
+          borderRadius: c.island.height / 2 / z
         }}
       />
       <div
         className="dock-drop-bar"
         data-insert-index={insertIndex}
-        style={{ height: barHeight, transform: `translate3d(${barX - 1}px, ${barTop}px, 0)` }}
+        style={{ height: barHeight / z, transform: `translate3d(${(barX - 1) / z}px, ${barTop / z}px, 0)` }}
       />
       <div
         ref={ghostRef}
         className="dock-drop-ghost"
-        style={{ transform: `translate3d(${x + 14}px, ${y + 18}px, 0) scale(1.04)` }}
+        style={{ transform: `translate3d(${(x + 14) / z}px, ${(y + 18) / z}px, 0) scale(1.04)` }}
       >
         {Icon && <Icon size={14} />}
         <span className="dock-drop-ghost-name">{name}</span>
-        <span className="dock-drop-ghost-hint">{tr("松手复制 · Alt 移动")}</span>
+        <span className="dock-drop-ghost-hint">{tr("松手添加 · Alt 移动")}</span>
       </div>
     </div>,
     document.body

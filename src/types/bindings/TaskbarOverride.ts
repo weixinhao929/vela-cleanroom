@@ -5,6 +5,6 @@ import type { TaskbarStates } from "./TaskbarStates";
 
 /**
  * 单显示器覆盖（§4 `Partial<TaskbarSettings>`：仅顶层可选，值为整体
- * 替换，不深合并）。P2（F-6）由 TB-UI 消费。
+ * 替换，不深合并）。由设置页消费。
  */
 export type TaskbarOverride = { enabled?: boolean, states?: TaskbarStates, rules?: TaskbarRules, ignoredWindows?: TaskbarIgnoredWindows, perMonitor?: boolean, };
